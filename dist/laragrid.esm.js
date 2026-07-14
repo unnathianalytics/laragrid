@@ -6090,6 +6090,12 @@ var GridCore = class {
       this.headerFilters.init();
     }
     this.bus.on("loading:changed", ({ loading }) => this.setLoading(loading));
+    this.bus.on("fetch:error", ({ error }) => {
+      if (this.announcer) {
+        this.announcer.message("Failed to load rows.");
+      }
+      console.error("[laragrid:" + this.store.name + "] gridFetch failed:", error);
+    });
     this.onToolbar = (e) => {
       const d = e.detail || {};
       if (d.grid !== this.store.name) {
@@ -6704,16 +6710,20 @@ function resolveWire(root) {
     return null;
   }
   const call2 = (method) => (...args) => {
-    const livewire = window.Livewire;
-    if (!livewire || typeof livewire.find !== "function") {
-      return Promise.reject(new Error('LaraGrid: Livewire is not available for RPC "' + method + '".'));
+    try {
+      const livewire = window.Livewire;
+      if (!livewire || typeof livewire.find !== "function") {
+        return Promise.reject(new Error('LaraGrid: Livewire is not available for RPC "' + method + '".'));
+      }
+      const found = livewire.find(host.getAttribute("wire:id"));
+      const wire = found && (found.$wire || found);
+      if (!wire || typeof wire[method] !== "function") {
+        return Promise.reject(new Error('LaraGrid: Livewire component has no "' + method + '" (is the WithLaraGrid trait applied?).'));
+      }
+      return Promise.resolve(wire[method](...args));
+    } catch (e) {
+      return Promise.reject(e);
     }
-    const found = livewire.find(host.getAttribute("wire:id"));
-    const wire = found && (found.$wire || found);
-    if (!wire || typeof wire[method] !== "function") {
-      return Promise.reject(new Error('LaraGrid: Livewire component has no "' + method + '" (is the WithLaraGrid trait applied?).'));
-    }
-    return wire[method](...args);
   };
   return {
     gridFetch: call2("gridFetch"),

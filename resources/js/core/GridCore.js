@@ -209,6 +209,16 @@ export default class GridCore {
         // Loading overlay reacts to fetches (empty state is wired mode-agnostically in init).
         this.bus.on('loading:changed', ({ loading }) => this.setLoading(loading));
 
+        // A failed fetch must be VISIBLE: announce for AT and log the underlying error —
+        // a silently-stuck grid is undebuggable in the field.
+        this.bus.on('fetch:error', ({ error }) => {
+            if (this.announcer) {
+                this.announcer.message('Failed to load rows.');
+            }
+            // eslint-disable-next-line no-console
+            console.error('[laragrid:' + this.store.name + '] gridFetch failed:', error);
+        });
+
         // Host-toolbar bridge: a host renders its own search/filter inputs (outside wire:ignore)
         // and dispatches `lgrid:toolbar` DOM events; we route the matching grid's ones to PageSource
         // so the host stays Livewire-free and never morphs the body. {grid, kind, key?, value}.

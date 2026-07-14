@@ -69,16 +69,23 @@ function resolveWire(root) {
     }
 
     const call = (method) => (...args) => {
-        const livewire = window.Livewire;
-        if (!livewire || typeof livewire.find !== 'function') {
-            return Promise.reject(new Error('LaraGrid: Livewire is not available for RPC "' + method + '".'));
+        // Everything sync-throwable is wrapped: Livewire.find() THROWS on an unknown id in
+        // some builds (rather than returning null), and a sync throw here would escape the
+        // callers' .catch pairing (e.g. PageSource's loading spinner would stick on forever).
+        try {
+            const livewire = window.Livewire;
+            if (!livewire || typeof livewire.find !== 'function') {
+                return Promise.reject(new Error('LaraGrid: Livewire is not available for RPC "' + method + '".'));
+            }
+            const found = livewire.find(host.getAttribute('wire:id'));
+            const wire = found && (found.$wire || found);
+            if (!wire || typeof wire[method] !== 'function') {
+                return Promise.reject(new Error('LaraGrid: Livewire component has no "' + method + '" (is the WithLaraGrid trait applied?).'));
+            }
+            return Promise.resolve(wire[method](...args));
+        } catch (e) {
+            return Promise.reject(e);
         }
-        const found = livewire.find(host.getAttribute('wire:id'));
-        const wire = found && (found.$wire || found);
-        if (!wire || typeof wire[method] !== 'function') {
-            return Promise.reject(new Error('LaraGrid: Livewire component has no "' + method + '" (is the WithLaraGrid trait applied?).'));
-        }
-        return wire[method](...args);
     };
 
     return {
