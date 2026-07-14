@@ -188,6 +188,120 @@ your hooks, and formula columns are recomputed — the response reconciles autho
 back into the grid. Rows are addressed by stable keys, never positions. Blank trailing rows
 (the auto-append artifact) are invisible to validation, totals, and `gridRows()`.
 
+## Row lifecycle & blank rows
+
+Understanding what counts as a **blank row** explains most editable-grid behavior, so here is
+the full contract.
+
+**Where rows come from.** An editable grid binds a `public array` on your component
+(`->rowsFrom('lines')`); every row carries a stable client key `_k`. You get initial rows from
+`$this->gridMountRows('lines')`, which builds `->defaultRows(n)` rows through the
+**new-row template**: every declared column set to `null`, overlaid with your
+`->newRowUsing(fn () => [...])` defaults. The *same* template builds rows grown at runtime —
+Enter-past-the-last-cell (auto-append), the Insert key, and paste-created rows — so a seeded
+row and a grown row are indistinguishable, server- and client-side.
+
+**What "blank" means.** A row is blank when every *editable* cell still equals the new-row
+template — factory defaults are not operator data. A booking grid seeded with
+`['nights' => 1]` therefore still treats an untouched row as blank; the moment the operator
+types anything real, it isn't. Non-editable carried values (ids, formula results, computed
+cells) never make a row non-blank.
+
+**What blankness controls.** Blank *trailing* rows (the auto-append artifact at the bottom)
+are exempt from validation (a `required()` column never flags a row nobody touched), excluded
+from footer totals, stripped by `gridRows()` at save, not counted by `->minRows(n)`, and are
+where the end-of-list exit appears (next section).
+
+**Row keys are law.** Every op addresses rows by `_k`, never by position — so sorting,
+insertion and concurrent edits can never target the wrong row. If your host code ever replaces
+the bound rows outside the op protocol (a save reset, importing lines), call
+`$this->reseedGrid('lines')` so the client adopts the new set wholesale; skipping it leaves
+the client referencing keys the server no longer has.
+
+## Ending entry — the completion flow
+
+Fast keyboard entry needs a deliberate *end*: with `->autoAppend()`, Enter past the last cell
+keeps growing the grid forever. LaraGrid ships two "the operator is done" signals, both
+funnelled through one channel so your page reacts identically regardless of how entry ended.
+
+### `->endOfListOption()` — the picker exit
+
+```php
+SearchSelectColumn::make('item_id')
+    ->endOfListOption()                                  // default label: <-- End of List -->
+    // ->endOfListOption('— Done adding lines —')        // custom label
+    // ->endOfListOption(allowOnEmpty: true)             // offer it even on an empty grid
+```
+
+Declared on a **picker column** (`SelectColumn` / `SearchSelectColumn` — the build fails loud
+anywhere else), it injects a synthetic first entry into that column's dropdown, but only where
+ending makes sense: on a **blank trailing row**, and only once the grid holds at least one real
+row (pass `allowOnEmpty: true` for grids whose entries are optional — a charges grid a document
+may legitimately have zero of). Choosing it commits **no value**; it fires the completion
+signal. This mirrors classic data-entry systems where the operator ends line entry inside the
+same dropdown they've been picking from, instead of tabbing out cell by cell.
+
+### `->completeWhenBalanced('dr', 'cr')` — the balancing guard
+
+For double-entry grids: while Σdr ≠ Σcr the grid keeps auto-appending; the moment the two
+columns balance (both above zero), Enter past the last cell fires the completion signal instead
+of growing the grid. With autofill (on by default), landing on an empty amount cell of the
+deficit side pre-fills the balancing amount through the normal commit pipeline — the operator
+accepts with Enter or overtypes.
+
+### What "complete" does
+
+Completion dispatches a bubbling `lgrid:complete` DOM event from the grid root
+(`detail: { grid }`). Declare `->onCompleteFocus('[data-save]')` and the grid also moves focus
+to that selector — with a built-in retry loop, so a Save button that only enables once the grid
+is valid still receives focus. The result is the full keyboard circuit: *enter lines → end
+entry (exit option or balance) → focus lands on Save → Enter posts.* For anything fancier,
+listen for the event yourself:
+
+```js
+document.addEventListener('lgrid:complete', (e) => {
+    if (e.detail.grid === 'lines') { /* open a confirm dialog, scroll a summary… */ }
+});
+```
+
+## Server hooks — enrichment & row consistency
+
+Three server-side hooks let a grid keep its rows internally consistent without any client code.
+All of them receive a `RowContext` — `get('col')`, `set('col', $value)`,
+`setLabel('col', $text)` for picker display labels — and every `set()` rides the op response
+back into the client row. Crucially, **formula columns recompute after the hooks** in the same
+operation, so a hook that sets `nights` also refreshes `amount = nights × rate` in one round
+trip.
+
+```php
+// 1. Per-pick enrichment (SearchSelectColumn): the pick pre-fills dependent cells.
+SearchSelectColumn::make('item_id')
+    ->onSelect(function (RowContext $row, mixed $value): void {
+        $item = Item::find($value);
+        $row->set('rate', $item?->rate);
+        $row->set('uom', $item?->uom);
+    })
+
+// 2. Grid-wide row consistency: runs after EVERY applied cell change (typing, paste,
+//    fill-down). Example — derive nights from a date range:
+->afterCellChange(function (RowContext $row, string $column): void {
+    if (! in_array($column, ['fromDate', 'toDate'], true)) {
+        return;
+    }
+    if ($row->get('fromDate') && $row->get('toDate')) {
+        $nights = Carbon::parse($row->get('fromDate'))
+            ->diffInDays(Carbon::parse($row->get('toDate')), false);
+        $row->set('nights', $nights >= 1 ? (int) $nights : null);
+    }
+})
+
+// 3. After a row removal — recompute host-side chrome (an "Allocated" total, a balance badge):
+->afterRowRemove(fn () => $this->recomputeTotals())
+```
+
+The hooks are the *authoritative* half of the optimistic model: the client already painted the
+keystroke; the server decides the truth and patches back anything the hooks changed.
+
 ## Display-only mode
 
 ```blade
@@ -217,8 +331,8 @@ To refresh a display grid's data later, call `$this->reseedGrid('name', $freshRo
 Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `align`, `visible`,
 `frozen`, `sortable(bool|'db.column')`, `searchable`, `filterable(Filter)`, `required` /
 `required(fn)`, `readonly` / `readonly(fn)`, `rules([...])`, `lockedWhen('col', value)`,
-`requiredWhen('col', value)`, `whenFilled(sets: [...], clears: [...])`, `endOfListOption()`,
-`opensPanel('name')`, `html()`.
+`requiredWhen('col', value)`, `whenFilled(sets: [...], clears: [...])`,
+`endOfListOption()` (see *Ending entry*), `opensPanel('name')`, `html()`.
 
 ## Grid definition reference
 
