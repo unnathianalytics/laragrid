@@ -1,173 +1,375 @@
 # LaraGrid
 
+[![Latest Version](https://img.shields.io/packagist/v/unnathianalytics/laragrid.svg)](https://packagist.org/packages/unnathianalytics/laragrid)
+[![License](https://img.shields.io/packagist/l/unnathianalytics/laragrid.svg)](LICENSE)
+[![PHP](https://img.shields.io/packagist/php-v/unnathianalytics/laragrid.svg)](composer.json)
+
 Excel-style, keyboard-first datagrid for **Laravel + Livewire**. Extracted from a production
-accounting system built for Busy/Tally-trained operators — then made app-neutral.
+accounting system built for spreadsheet-trained operators, then made app-neutral.
 
-Three modes from one fluent definition:
+The engine is framework-free vanilla JavaScript that owns every cell it paints: the grid body
+lives inside a `wire:ignore` region, Livewire never morphs a row, and all server traffic runs
+over renderless RPCs. The result is spreadsheet-grade speed with Laravel-grade authority —
+every edit is validated, authorized, and recomputed server-side.
 
-- **Display** — hand it rows, it paints them. Works on plain Blade pages with no Livewire at all.
-- **Readonly server-side** — `->query()`: sort / global search / filters / pagination through a
-  whitelisted, fail-closed pipeline. Page 1 ships in the initial config (zero-round-trip paint),
-  later pages stream over a renderless RPC with an LRU cache and idle prefetch.
-- **Editable** — the full spreadsheet experience: optimistic client, authoritative server, typed
-  op protocol, per-cell validation both sides, formula columns (one parser, two locked
-  evaluators), async pickers with row enrichment hooks, auto-append, balanced-entry completion.
+Everything is configured **in your component class with chained methods**. No blade wiring,
+no JavaScript to write, no npm step — `composer require` is the entire install.
 
-Everything is configured **in your component class with chained methods — zero blade wiring,
-zero npm for consumers**.
+## The three modes
+
+| Mode | Declare with | What you get |
+|---|---|---|
+| **Display** | rows passed to the tag | Paints in-memory rows. Works on plain Blade pages without any Livewire component. |
+| **Readonly server-side** | `->query(fn () => Model::query())` | Sort, global search, filters, pagination through a whitelisted fail-closed pipeline. Page 1 ships in the initial payload (zero-round-trip first paint); later pages stream over an RPC with an LRU cache and idle prefetch of the next page. |
+| **Editable** | `->editable()->rowsFrom('lines')` | The full spreadsheet: optimistic client, authoritative server, typed op protocol, validation on both sides, formula columns, async pickers with row enrichment, auto-append, live footer totals. |
+
+Both interactive modes share one keyboard model, one selection engine, one theming system.
 
 ## Requirements
 
-PHP ^8.1 · Laravel 10 / 11 / 12 / 13 · Livewire ^4.1 (installed automatically; Alpine ships
-inside Livewire and is never bundled here).
+- PHP ^8.1
+- Laravel 10 / 11 / 12 / 13
+- Livewire ^4.1 — installed automatically as a dependency
 
-## Install
+## Installation
 
 ```bash
 composer require unnathianalytics/laragrid
 ```
 
-Done. Assets auto-inject on any page that renders a grid (disable via
-`config('laragrid.inject_assets')`, or place `@laragridStyles` / `@laragridScripts` manually;
-`vendor:publish --tag=laragrid-assets` + `laragrid.asset_url` serves them from your CDN).
+That's all. The service provider auto-discovers, and the prebuilt script + stylesheet
+auto-inject into any page that renders a grid. No layout directives, no build step.
 
-## Quick start
+Optional publishes:
+
+```bash
+php artisan vendor:publish --tag=laragrid-config   # config/laragrid.php (global defaults)
+php artisan vendor:publish --tag=laragrid-views    # blade views (mount + badge/edit-link cells)
+php artisan vendor:publish --tag=laragrid-assets   # copy dist/ to public/vendor/laragrid
+```
+
+Asset delivery is configurable: set `laragrid.inject_assets => false` to place
+`@laragridStyles` / `@laragridScripts` yourself, or point `laragrid.asset_url` at a CDN or the
+published copy. Asset URLs carry a content hash, so upgrades bust browser caches automatically.
+
+## Quick start — a readonly list
 
 ```php
-use LaraGrid\Livewire\WithLaraGrid;
-use LaraGrid\{Grid, Aggregate};
-use LaraGrid\Columns\{SerialColumn, TextColumn, DecimalColumn, DateColumn,
-    SelectColumn, SearchSelectColumn, CheckboxColumn, FormulaColumn, ComputedColumn};
+use App\Models\Resort;
 use LaraGrid\Actions\Action;
-use LaraGrid\Filters\{SelectFilter, TernaryFilter};
+use LaraGrid\Aggregate;
+use LaraGrid\Columns\{SerialColumn, TextColumn, IntegerColumn, DateColumn, ComputedColumn};
+use LaraGrid\Filters\SelectFilter;
+use LaraGrid\Grid;
+use LaraGrid\Livewire\WithLaraGrid;
+use LaraGrid\Support\CellHtml;
+use Livewire\Component;
 
-class ItemsIndex extends \Livewire\Component
+class ResortsIndex extends Component
 {
-    use WithLaraGrid;
+    use WithLaraGrid;   // ← required: provides gridDefinition() and the grid RPCs
 
     protected function grids(): array
     {
-        return ['items' => Grid::make('items')
-            ->query(fn () => Item::query()->with('group'))
-            ->authorize('item.viewAny')                       // mandatory, fail-closed
-            ->paginate(50, [25, 50, 100])
+        return ['resorts' => Grid::make('resorts')
+            ->query(fn () => Resort::query())
+            ->authorize('resort.viewAny')            // mandatory — grids are fail-closed
+            ->paginate(25, [10, 25, 50, 100])
             ->defaultSort('name')
-            ->searchable(['name', 'code'])
-            ->filters([SelectFilter::make('group_id')->label('Group')->options(fn () => ItemGroup::pluck('name', 'id'))])
-            ->rowActivate(fn ($row) => route('items.edit', $row['id'])) // Enter/dbl-click opens
-            ->actions([
-                Action::make('edit')->icon('✎')->url(fn ($row) => route('items.edit', $row['id'])),
-                Action::make('delete')->icon('✕')->confirm('Delete this item?')
-                    ->call(fn (array $row) => Item::findOrFail($row['id'])->delete()),
+            ->searchable(['name', 'shortcode', 'resorts.slug'])   // see note below
+            ->filters([
+                SelectFilter::make('type')->label('Type')
+                    ->options(fn () => Resort::distinct()->orderBy('type')->pluck('type', 'type')),
+                SelectFilter::make('visibility')->label('Visibility')
+                    ->options(['show' => 'Show', 'hide' => 'Hide']),
             ])
-            ->toolbarActions([Action::make('new')->label('New Item')->url(fn () => route('items.create'))])
             ->columns([
-                TextColumn::make('name')->sortable()->searchable()->grow(),
-                TextColumn::make('group.name')->label('Group')->sortable('item_groups.name'),
-                DecimalColumn::make('rate')->scale(2)->sortable(),
+                SerialColumn::make(),
+                TextColumn::make('name')->label('Resort')->sortable()->searchable()->grow(),
+                TextColumn::make('type')->sortable()->width(120),
+                IntegerColumn::make('hits')->sortable()->width(90),
+                ComputedColumn::make('status')->html()->width(90)
+                    ->state(fn (array $row) => $row['visibility'] === 'show'
+                        ? CellHtml::badge('green', 'Show')
+                        : CellHtml::badge('zinc', 'Hide')),
+                DateColumn::make('created_at')->label('Added')->sortable()->width(110),
             ])
-            ->footer([Aggregate::sum('rate')->format('number', ['scale' => 2])])
-            ->stickyHeader()->striped()->maxHeight('65vh')];
+            ->footer([Aggregate::sum('hits')->format('number')])
+            ->actions([
+                Action::make('edit')->icon('✎')->url(fn ($row) => route('resorts.edit', $row['id'])),
+                Action::make('delete')->icon('✕')->confirm('Delete this resort?')
+                    ->call(fn (array $row) => Resort::whereKey($row['id'])->delete()),
+            ])
+            ->stickyHeader()->striped()->maxHeight('70vh')];
     }
 
-    public function render() { return view('livewire.items.index'); }
+    public function render()
+    {
+        return view('livewire.resorts-index');
+    }
 }
 ```
 
 ```blade
-<x-laragrid :grid="$this->gridDefinition('items')" />
+<x-laragrid :grid="$this->gridDefinition('resorts')" />
 ```
 
-### Editable grid
+**Search targets**: bare names in `->searchable()` must be declared columns — a typo fails
+loudly at build time instead of silently searching nothing. To search a database column you
+don't display, table-qualify it (`'resorts.slug'`); the dot marks it as an explicit DB column.
+
+## Quick start — an editable entry grid
 
 ```php
-Grid::make('lines')
-    ->editable()->rowsFrom('lines')          // binds public array $lines
-    ->authorize(fn () => $this->authorize('voucher.create'))
-    ->defaultRows(2)                          // with newRowUsing(), replaces hand-rolled seeding:
-    ->newRowUsing(fn () => ['dc' => 'D'])     //   $this->lines = $this->gridMountRows('lines');
-    ->minRows(1)->autoAppend()
-    ->completeWhenBalanced('dr', 'cr')        // Σdr = Σcr ends entry → lgrid:complete
-    ->onCompleteFocus('[data-save]')          // ...and focus jumps to Save (retry built in)
-    ->columns([
-        SerialColumn::make(),
-        SelectColumn::make('dc')->options(['D' => 'Dr', 'C' => 'Cr'])->required(),
-        SearchSelectColumn::make('account_id')
-            ->optionsUsing(fn (string $term) => $this->searchAccounts($term))  // any source
-            ->onSelect(fn ($row, $value) => $row->set('rate', ...))            // enrichment
-            ->minChars(0)->limit(50)->grow(),
-        DecimalColumn::make('dr')->scale(2)->lockedWhen('dc', 'C')->requiredWhen('dc', 'D'),
-        DecimalColumn::make('cr')->scale(2)->lockedWhen('dc', 'D')->requiredWhen('dc', 'C'),
-        FormulaColumn::make('total')->formula('dr - cr'),
-    ]);
+use LaraGrid\Columns\{SerialColumn, SearchSelectColumn, IntegerColumn, DecimalColumn, FormulaColumn, TextColumn};
+use LaraGrid\Editing\RowContext;
+
+class BookingEntry extends Component
+{
+    use WithLaraGrid;
+
+    /** @var list<array<string, mixed>> */
+    public array $lines = [];
+
+    public function mount(): void
+    {
+        $this->lines = $this->gridMountRows('lines');   // seeds defaultRows via the factory
+    }
+
+    protected function grids(): array
+    {
+        return ['lines' => Grid::make('lines')
+            ->editable()
+            ->rowsFrom('lines')                         // binds public array $lines
+            ->authorize(fn () => $this->authorize('booking.create'))
+            ->defaultRows(3)
+            ->newRowUsing(fn () => ['nights' => 1])     // template for seeded AND inserted rows
+            ->minRows(1)
+            ->autoAppend()                              // Enter past the last cell grows the grid
+            ->focusOnMount()
+            ->focusOutTo('[data-save]')                 // Tab past the last cell lands on Save
+            ->columns([
+                SerialColumn::make(),
+                SearchSelectColumn::make('resort_id')->label('Resort')
+                    ->optionsUsing(fn (string $term) => Resort::query()
+                        ->when($term !== '', fn ($q) => $q->where('name', 'like', "%{$term}%"))
+                        ->limit(50)->get(['id', 'name'])
+                        ->map(fn ($r) => ['value' => (string) $r->id, 'label' => $r->name])
+                        ->all())
+                    ->onSelect(function (RowContext $row, mixed $value): void {
+                        // Enrichment: the pick pre-fills the rate; write-backs reconcile
+                        // into the client row automatically.
+                        $row->set('rate', Resort::whereKey($value)->value('comparison_tariff'));
+                    })
+                    ->required()->minChars(0)->debounce(250)->grow(),
+                IntegerColumn::make('nights')->rules(['integer', 'min:1'])->required()->width(90),
+                DecimalColumn::make('rate')->scale(2)->rules(['numeric', 'min:0'])->width(120),
+                FormulaColumn::make('amount')->formula('round(nights * rate, 2)')->width(130),
+                TextColumn::make('note')->maxLength(100)->grow(),
+            ])
+            ->footer([Aggregate::sum('amount')->format('number', ['scale' => 2])])];
+    }
+
+    public function save(): void
+    {
+        $rows = $this->gridRows('lines');       // cleaned: blank trailing rows + bookkeeping stripped
+
+        Booking::createFromLines($rows);        // your persistence — the grid never owns it
+
+        $this->lines = $this->gridMountRows('lines');
+        $this->reseedGrid('lines');             // required after any out-of-band rows change
+    }
+}
 ```
 
-Save with clean rows: `$this->save($this->gridRows('lines'))`; after any out-of-band rows
-mutation call `$this->reseedGrid('lines')` (display grids too: `reseedGrid('name', $freshRows)`).
+The editable contract in one paragraph: the client applies every keystroke optimistically and
+streams typed ops to the server, where each write is authorized, cast, validated, run through
+your hooks, and formula columns are recomputed — the response reconciles authoritative values
+back into the grid. Rows are addressed by stable keys, never positions. Blank trailing rows
+(the auto-append artifact) are invisible to validation, totals, and `gridRows()`.
+
+## Display-only mode
+
+```blade
+<x-laragrid :grid="$grid" :rows="[['name' => 'Alpha'], ['name' => 'Beta']]" />
+```
+
+No `->query()`, no `->editable()` — the rows are painted as-is with full keyboard navigation,
+selection, copy, column chooser, and footer totals. No Livewire component is required.
+To refresh a display grid's data later, call `$this->reseedGrid('name', $freshRows)`.
+
+## Column types
+
+| Column | Editor | Value | Notes |
+|---|---|---|---|
+| `SerialColumn` | — | row number | the `#` gutter |
+| `TextColumn` | text | string | `->maxLength()`, `->upper()`/`->lower()` |
+| `IntegerColumn` | number | int | grouping-tolerant input |
+| `DecimalColumn` | number | fixed-scale string | `->scale(n)`; precision never rides a float |
+| `DateColumn` | date | ISO `Y-m-d` | fuzzy typed input (`31/12`, `311226`); display pattern configurable; financial-year inference opt-in |
+| `SelectColumn` | dropdown | option id | `->options([...])` embedded whitelist |
+| `SearchSelectColumn` | async picker | option id | `->optionsUsing(fn ($term, $row))`, `->onSelect()` enrichment, `->minChars()`, `->debounce()`, `->limit()` |
+| `CheckboxColumn` | instant toggle | bool | |
+| `FormulaColumn` | — | computed | `->formula('qty * rate')` — evaluated live client-side, authoritatively server-side |
+| `ComputedColumn` | — | server-baked | `->state(fn ($row))`, pair with `->html()` for badges/links via `CellHtml` |
+| `ReadonlyColumn` / `HiddenColumn` | — | display / carried | writes rejected server-side |
+
+Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `align`, `visible`,
+`frozen`, `sortable(bool|'db.column')`, `searchable`, `filterable(Filter)`, `required` /
+`required(fn)`, `readonly` / `readonly(fn)`, `rules([...])`, `lockedWhen('col', value)`,
+`requiredWhen('col', value)`, `whenFilled(sets: [...], clears: [...])`, `endOfListOption()`,
+`opensPanel('name')`, `html()`.
+
+## Grid definition reference
+
+**Data** — `query(fn)` · `authorize(ability|fn)` · `paginate(per, [options])` ·
+`defaultSort(col, dir)` · `searchable([...])` · `filters([...])` · `rowKey('id')` ·
+`rowActivate(fn ($row) => ?url)` — Enter/double-click opens a row, permission-gated per row.
+
+**Editable** — `editable()` · `rowsFrom('prop')` · `defaultRows(n)` · `newRowUsing(fn)` ·
+`minRows(n)` · `autoAppend()` · `padRows(n)` · `sync(SyncPolicy::PerCell|PerRow|Deferred)` ·
+`refreshesHost([...])` (re-render host chrome when listed columns change) ·
+`completeWhenBalanced('dr', 'cr')` · `afterCellChange(fn)` · `afterRowRemove(fn)`.
+
+**Behavior** — `keymap('entry'|'excel')` · `toolbar(...)` / `toolbar(false)` ·
+`focusOnMount()` · `focusOutTo(selector)` · `onCompleteFocus(selector)` ·
+`emptyState(text)` · `statusBar(bool)` · `persistWidths()` (column layout survives reloads).
+
+**Layout** — `stickyHeader()` · `freezeColumns(n)` · `striped()` ·
+`density(GridDensity::Compact|Normal|Comfortable)` · `height('420px')` · `maxHeight('60vh')` ·
+`fillParent()` · `themeClass('my-theme')` · `rowClass(fn)` · `cellClass(fn)`.
+
+## Actions
+
+```php
+->actions([          // per-row buttons in a trailing column
+    Action::make('edit')->icon('✎')->url(fn ($row) => route('items.edit', $row['id'])),
+    Action::make('archive')->confirm('Archive?')->visible(fn ($row) => ! $row['archived'])
+        ->call(fn (array $row) => Item::whereKey($row['id'])->archive()),
+])
+->bulkActions([      // run over checked rows; a selector gutter + toolbar bulk bar appear
+    Action::make('delete')->confirm('Delete selected?')
+        ->call(fn (array $keys) => Item::whereKey($keys)->delete()),
+])
+->toolbarActions([   // grid-scoped buttons in the toolbar
+    Action::make('new')->label('New Item')->url(fn () => route('items.create')),
+])
+```
+
+Actions are fail-closed end to end: the client only echoes an action *name* (plus row keys) —
+the server re-authorizes the grid gate, the per-action `->authorize()`, re-resolves the row
+from its authoritative source, and re-checks `->visible()` before the closure runs. A hidden
+button is an unusable button. `url()` actions bake their per-row URL server-side; rows where
+the resolver returns `null` get no button. After a `call()` action, readonly grids refetch
+their current page and editable grids receive a reseed payload automatically. Throw a
+`ValidationException` inside a callback to show the operator a refusal message.
+
+## Toolbar, search & filters
+
+The toolbar renders itself from the definition: a debounced search box (when the grid declares
+`->searchable()`), one control per grid-level filter, the bulk bar, toolbar action buttons, and
+the column chooser. Suppress or tune it: `->toolbar(false)`, `->toolbar(search: false)`. Filter
+options accept a `{value => label}` map (the `pluck()` idiom), a list of `['value' => , 'label' => ]`
+rows, or plain scalars. `SelectFilter` and `TernaryFilter` (All / Yes / No) ship in core; column
+header funnels via `->filterable()` run through the same whitelisted pipeline.
 
 ## Keyboard
 
-Serpentine `entry` keymap (default) or `excel` (`->keymap('excel')`). Arrows/Tab/Home/End/
-PageUp/Dn navigate; Shift extends; Ctrl+A / Ctrl+C select/copy (TSV, paste round-trips);
-**Delete clears cells; Shift+Delete or F7 deletes the row** (minRows-guarded); Insert inserts;
-Ctrl+D fills down; F2 edits; Ctrl+E jumps to first error; ContextMenu / Shift+F10 opens the
-row's actions menu. Type into a cell to overwrite — Excel muscle memory throughout.
+| Keys | Action |
+|---|---|
+| Arrows / Tab / Home / End / PageUp / PageDown / Ctrl+edges | navigate |
+| Shift + movement, Ctrl+A | extend / select all |
+| Ctrl+C | copy selection as TSV (pastes into Excel; paste back round-trips) |
+| Type / F2 / double-click | overwrite / edit a cell |
+| Enter | commit + advance — serpentine in `entry`, down in `excel` |
+| **Delete** | **clear** selected cells |
+| **Shift+Delete or F7** | delete the row (minRows-guarded) |
+| Insert / Ctrl+D | insert row / fill down |
+| Ctrl+E | jump to the first error |
+| ContextMenu / Shift+F10 | open the row's actions menu |
+| Escape | clear selection / cancel edit |
 
-## Chained behaviors (no blade config, ever)
-
-`->toolbar()` (search / filters / column chooser; `->toolbar(false)` or per-control overrides) ·
-`->focusOnMount()` · `->focusOutTo('#next')` · `->onCompleteFocus('#save')` ·
-`->height('420px')` / `->maxHeight('60vh')` / `->fillParent()` · `->emptyState('...')` ·
-`->density(GridDensity::Compact)` · `->freezeColumns(2)` · `->persistWidths()` ·
-`->rowClass(fn)` / `->cellClass(fn)` · `->refreshesHost([...])` · `->opensPanel('name')` +
-`$this->gridPanelDone('grid')` · `->actions()` / `->bulkActions()` / `->toolbarActions()`.
+Paste is bulk-aware: a multi-row TSV paste maps onto editable cells, auto-appends rows as
+needed, and flushes as one batch (with a confirm above 500 cells).
 
 ## Theming
 
-Override `--lgrid-*` CSS tokens (row height, paddings, every color) globally, under your own
-`->themeClass()`, or under `.dark`. In a Tailwind v4 app the grid adopts your `--color-*`
-`@theme` palette automatically; standalone it falls back to a complete neutral theme. All
-elements use stable `lgrid-*` semantic classes — nothing is ever purged, everything is
-restylable. Print collapses to a clean black-on-white table.
+Every visual is a `--lgrid-*` CSS token (row height, paddings, all colors) with self-contained
+defaults — the grid looks right on a page with no CSS framework at all. In a Tailwind v4 app it
+adopts your `--color-*` `@theme` palette automatically. Override tokens globally, under your own
+`->themeClass()`, or under `.dark` (dark mode is token-flipping, nothing more). All elements
+carry stable `lgrid-*` semantic classes, so any part is restylable and nothing is ever purged
+by a build tool. Print collapses to a clean black-on-white table.
 
 ## Extending
 
 ```php
-// PHP — a custom column type is a class:
-class RatingColumn extends Column {
+// A custom column type is just a class:
+class RatingColumn extends \LaraGrid\Columns\Column
+{
     public function painterId(): string { return 'rating'; }
     public function editorId(): ?string { return 'rating'; }
     public function parseSpec(): array { return ['kind' => 'int']; }
 }
-// Custom formatters + parse kinds (register the JS twin under the same name — see below):
-app(FormatRegistry::class)->register('inr', new InrFormatter);
-app(CastRegistry::class)->register('paise', new PaiseCast);
+
+// App-specific formatters and parse kinds register in a service provider:
+app(\LaraGrid\Formatting\FormatRegistry::class)->register('inr', new InrFormatter);
+app(\LaraGrid\Casting\CastRegistry::class)->register('paise', new PaiseCast);
 ```
 
 ```js
-// JS — the window.LaraGrid seams:
-LaraGrid.registerPainter('rating', (cellEl, ctx) => { /* draw */ });
-LaraGrid.registerEditor('rating', RatingEditor);       // {mount, value, focus, destroy}
-LaraGrid.registerFormatter('inr', (value, args) => …); // twin of the PHP formatter
-LaraGrid.registerCast('paise', { parse, editText });   // twin of the PHP cast
+// The window.LaraGrid seams (load your script after the grid bundle):
+LaraGrid.registerPainter('rating', (cellEl, ctx) => { /* draw the cell */ });
+LaraGrid.registerEditor('rating', RatingEditor);        // { mount, value, focus, destroy }
+LaraGrid.registerFormatter('inr', (value, args) => …);  // twin of the PHP formatter
+LaraGrid.registerCast('paise', { parse, editText });    // twin of the PHP cast
 ```
 
-Every PHP formatter/cast **must** have a behaviourally identical JS twin — pin each pair with a
-vector in `tests/fixtures/grid-vectors/` (the suite runs them through BOTH runtimes; that's how
-this package survived extraction unchanged). Full worked example:
+Formatting and casting run in **both** runtimes — the client for instant paint, the server for
+authority. Every PHP formatter/cast you register must have a behaviourally identical JS twin
+under the same name, pinned by a shared vector in `tests/fixtures/grid-vectors/` (the package's
+own suite runs 122 vectors through both runtimes on every build). Complete worked example —
+integer-paise money, lakh/crore grouping, financial-year dates:
 [docs/recipes/inr-paise.md](docs/recipes/inr-paise.md).
 
 ## Host events
 
-Grid → host (bubbling DOM): `lgrid:complete`, `lgrid:activate`, `lgrid:panel`,
-`lgrid:column-resized`, `lgrid:column-visibility`. Host → grid: `lgrid:reseed`,
-`lgrid:panel-done`, `lgrid:toolbar` (for fully custom host toolbars).
+Grid → host (bubbling DOM events): `lgrid:complete` (entry finished), `lgrid:activate`
+(row opened), `lgrid:panel` (cell hands off to a host modal), `lgrid:column-resized`,
+`lgrid:column-visibility`. Host → grid: `lgrid:reseed` (use `$this->reseedGrid(...)`),
+`lgrid:panel-done` (use `$this->gridPanelDone(...)`), `lgrid:toolbar` (drive the grid from
+fully custom host chrome).
 
-## Testing your grids
+## Configuration
 
-The package suite: `composer test` (Pest via Testbench) + `npm test` (Node vector runners).
-Your app tests interact through the public RPCs — `Livewire::test($host)->call('gridOps', 'lines',
-['ops' => [...]])`, `->call('gridAction', 'items', 'delete', [$id])` — exactly as the browser does.
+`config/laragrid.php` holds app-wide *defaults* only — density, keymap preset, date display
+pattern, financial-year start month (off by default), toolbar defaults, asset injection and
+asset URL. Any grid overrides any of them through its chained definition.
+
+## Troubleshooting
+
+- **"Method …::gridMountRows does not exist"** — add `use WithLaraGrid;` *inside* the component
+  class (importing the trait at the top of the file is not enough).
+- **"No hint path defined for [layouts]"** on a bare Livewire 4 app — pin the layout on your
+  full-page component: `#[Layout('components.layouts.app')]`.
+- **"searchable target [x] is not a declared column"** — declare the column, or table-qualify
+  the target (`'items.slug'`) to search an undisplayed DB column.
+- **Stale assets after upgrading** — none: tags carry a content hash. If a proxy interferes,
+  hard-refresh once.
+
+## Testing
+
+Package suite: `composer test` (Pest via Testbench) and `npm test` (Node vector runners) —
+PHP and JS are asserted against the same committed vectors. Your app tests drive grids through
+the public RPCs, exactly as the browser does:
+
+```php
+Livewire::test(BookingEntry::class)
+    ->call('gridOps', 'lines', ['ops' => [
+        ['t' => 'set', 'seq' => 1, 'row' => $key, 'col' => 'nights', 'v' => '3'],
+    ]])
+    ->call('gridAction', 'resorts', 'delete', [$id]);
+```
 
 ## License
 

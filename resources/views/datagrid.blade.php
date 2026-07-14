@@ -3,7 +3,7 @@
     sits above a single `wire:ignore` region carrying the whole client-rendered grid — JS owns
     every node inside it; Livewire never renders or morphs a cell. The vanilla boot module
     (dist/laragrid.min.js) discovers the mount by `data-lgrid`, reads the JSON config block,
-    and resolves each chrome element by its `data-lgrid-ref`. No Alpine, no directives, no
+    and resolves each chrome element by its `data-lgrid-ref`. No directives, no
     per-page configuration — behavior is declared on the Grid definition (zero-blade-config).
 --}}
 <div>

@@ -1,5 +1,5 @@
 /**
- * LaraGrid — vanilla boot module (no Alpine, no framework).
+ * LaraGrid — vanilla boot module (framework-free).
  *
  * What: Discovers `[data-lgrid]` mounts, reads each one's JSON config from its
  *       `<script type="application/json" data-lgrid-config>` child, resolves the DOM refs by
@@ -8,9 +8,9 @@
  *       a grid), and grids that LEAVE the DOM (destroyed + deregistered) — via one document-level
  *       MutationObserver. Also exposes the public extension API as `window.LaraGrid`.
  *
- * Why:  The engine is deliberately framework-free; Alpine's only historical job was this file.
- *       Going vanilla removes the `alpine:init` ordering constraint entirely and makes plain
- *       Blade pages (display grids, no Livewire) first-class. Livewire integration is a LAZY
+ * Why:  The engine is deliberately framework-free, so script load order never matters and
+ *       plain Blade pages (display grids, no Livewire) are first-class. Livewire integration
+ *       is a LAZY
  *       facade: a mount inside a `[wire:id]` component gets a `wire` object whose RPC methods
  *       resolve `Livewire.find(id)` at CALL time — so script order vs Livewire's boot never
  *       matters, and a grid outside any Livewire component simply gets `wire: null` (display

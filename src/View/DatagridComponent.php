@@ -18,8 +18,8 @@ use LaraGrid\Support\ConfigSerializer;
  * Why:  Doing the serialization here keeps the view dumb and the payload a single testable
  *       array. The grid body renders entirely client-side inside a `wire:ignore` region, so
  *       Livewire never morphs a cell; the mount carries only `data-lgrid` markers — no
- *       Alpine, no directives, nothing for the host page to configure (the zero-blade-config
- *       rule: every behavior lives on the Grid definition).
+ *       directives, nothing for the host page to configure (the zero-blade-config rule:
+ *       every behavior lives on the Grid definition).
  *
  * When: Rendered wherever a host places <x-laragrid :grid="$this->gridDefinition('name')">;
  *       registered as `laragrid` by the service provider.

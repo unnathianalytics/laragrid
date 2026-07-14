@@ -6,7 +6,7 @@
  *       and the datagrid's DateEditor (M5) — and they MUST resolve identically. One shared pure
  *       module is the anti-drift lock (umbrella plan §2.4: "the form-kit date parser reused as a
  *       shared module"); the datagrid commits the RESOLVED canonical ISO value, so no second
- *       (PHP) fuzzy parser exists anywhere. Kept pure (no Alpine/DOM) so Node tests pin it.
+ *       (PHP) fuzzy parser exists anywhere. Kept pure (no framework/DOM) so Node tests pin it.
  * When: Imported by resources/js/form-kit/date.js (which re-exports, keeping its public API),
  *       by resources/js/datagrid/format/parse.js (kind 'date'), and by the Node test suites
  *       (form-kit/date.test.mjs via the re-export; tests/js picker vectors directly).
@@ -26,7 +26,7 @@ function pad2(value) {
 
 /**
  * What: Parse arbitrary user date text into {d, m, y}, or null when unparseable.
- * Why:  The single source of truth for every accepted format. Kept PURE (no Alpine/DOM) so
+ * Why:  The single source of truth for every accepted format. Kept PURE (no framework/DOM) so
  *       it is exhaustively unit-tested in date.test.mjs. Year inference uses the financial
  *       year: with no year typed, the day/month is placed in whichever calendar year keeps
  *       it inside the current FY window (month >= fyStartMonth → fyStartYear, else + 1).
