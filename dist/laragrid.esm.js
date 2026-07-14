@@ -6711,16 +6711,35 @@ function resolveWire(root) {
   if (!host) {
     return null;
   }
+  const wireFor = (method) => {
+    const candidates = [host.__livewire];
+    const livewire = window.Livewire;
+    if (livewire && typeof livewire.find === "function") {
+      try {
+        candidates.push(livewire.find(host.getAttribute("wire:id")));
+      } catch (e) {
+      }
+    }
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+      if (candidate.$wire && typeof candidate.$wire[method] === "function") {
+        return candidate.$wire;
+      }
+      if (typeof candidate[method] === "function") {
+        return candidate;
+      }
+    }
+    return null;
+  };
   const call2 = (method) => (...args) => {
     try {
-      const livewire = window.Livewire;
-      if (!livewire || typeof livewire.find !== "function") {
-        return Promise.reject(new Error('LaraGrid: Livewire is not available for RPC "' + method + '".'));
-      }
-      const found = livewire.find(host.getAttribute("wire:id"));
-      const wire = found && (found.$wire || found);
-      if (!wire || typeof wire[method] !== "function") {
-        return Promise.reject(new Error('LaraGrid: Livewire component has no "' + method + '" (is the WithLaraGrid trait applied?).'));
+      const wire = wireFor(method);
+      if (!wire) {
+        return Promise.reject(new Error(
+          'LaraGrid: could not resolve a Livewire $wire exposing "' + method + '" (is Livewire loaded and the WithLaraGrid trait applied?).'
+        ));
       }
       return Promise.resolve(wire[method](...args));
     } catch (e) {

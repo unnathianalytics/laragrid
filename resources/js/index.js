@@ -68,19 +68,46 @@ function resolveWire(root) {
         return null;
     }
 
-    const call = (method) => (...args) => {
-        // Everything sync-throwable is wrapped: Livewire.find() THROWS on an unknown id in
-        // some builds (rather than returning null), and a sync throw here would escape the
-        // callers' .catch pairing (e.g. PageSource's loading spinner would stick on forever).
-        try {
-            const livewire = window.Livewire;
-            if (!livewire || typeof livewire.find !== 'function') {
-                return Promise.reject(new Error('LaraGrid: Livewire is not available for RPC "' + method + '".'));
+    /**
+     * Resolve a callable $wire for `method`, trying every shape Livewire builds have used:
+     * the component instance attached to the root element (`el.__livewire` — the most stable
+     * seam across Livewire 3/4), then `Livewire.find(id)` (which returns the component in
+     * some builds, the $wire proxy in others, undefined/throws in yet others).
+     */
+    const wireFor = (method) => {
+        const candidates = [host.__livewire];
+        const livewire = window.Livewire;
+        if (livewire && typeof livewire.find === 'function') {
+            try {
+                candidates.push(livewire.find(host.getAttribute('wire:id')));
+            } catch (e) {
+                // An unknown-id throw just disqualifies this candidate.
             }
-            const found = livewire.find(host.getAttribute('wire:id'));
-            const wire = found && (found.$wire || found);
-            if (!wire || typeof wire[method] !== 'function') {
-                return Promise.reject(new Error('LaraGrid: Livewire component has no "' + method + '" (is the WithLaraGrid trait applied?).'));
+        }
+        for (const candidate of candidates) {
+            if (!candidate) {
+                continue;
+            }
+            if (candidate.$wire && typeof candidate.$wire[method] === 'function') {
+                return candidate.$wire;
+            }
+            if (typeof candidate[method] === 'function') {
+                return candidate;
+            }
+        }
+        return null;
+    };
+
+    const call = (method) => (...args) => {
+        // Everything sync-throwable is wrapped so a failure always becomes a rejected promise
+        // (the callers' .catch pairing depends on it — e.g. the loading spinner).
+        try {
+            const wire = wireFor(method);
+            if (!wire) {
+                return Promise.reject(new Error(
+                    'LaraGrid: could not resolve a Livewire $wire exposing "' + method
+                    + '" (is Livewire loaded and the WithLaraGrid trait applied?).'
+                ));
             }
             return Promise.resolve(wire[method](...args));
         } catch (e) {
