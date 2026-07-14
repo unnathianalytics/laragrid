@@ -483,19 +483,33 @@ class OpApplier
     }
 
     /**
-     * A row is blank when every editable column is empty (null / '' / 0-length / an untoggled
-     * checkbox's false). Non-editable carried values (ids, formulas) don't count towards
-     * "has content".
+     * A row is blank when every editable column still matches the fresh-row TEMPLATE
+     * (newRowUsing() defaults included) — factory defaults alone are not operator data.
+     * Columns the template leaves null fall back to the classic empty check (null / '' /
+     * 0 / '0' / false). Non-editable carried values (ids, formulas) never count.
      *
      * @param  array<string, mixed>  $row
      */
     private function isBlankRow(Grid $grid, array $row): bool
     {
+        $template = $grid->newRowTemplate();
+
         foreach ($grid->getColumns() as $column) {
             if (! $column->isEditable()) {
                 continue;
             }
             $value = $row[$column->key] ?? null;
+            $default = $template[$column->key] ?? null;
+
+            if ($default !== null) {
+                // Loose comparison bridges cast/hydration boundaries ('1' == 1).
+                if ($value != $default && $value !== null && $value !== '') {
+                    return false;
+                }
+
+                continue;
+            }
+
             if ($value !== null && $value !== '' && $value !== 0 && $value !== '0' && $value !== false) {
                 return false;
             }

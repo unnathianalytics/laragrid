@@ -958,6 +958,23 @@ class Grid
         return $row;
     }
 
+    /**
+     * The fresh-row VALUE template (makeNewRow without the `_k`): every declared column null,
+     * overlaid with the newRowUsing() factory. THE reference for "blank": a row whose editable
+     * cells still equal this template holds no operator data — factory defaults alone must not
+     * make a row count as filled (they would break auto-append validation-skip, gridRows()
+     * stripping, minRows accounting and the end-of-list eligibility).
+     *
+     * @return array<string, mixed>
+     */
+    public function newRowTemplate(): array
+    {
+        $template = $this->makeNewRow('_template');
+        unset($template['_k']);
+
+        return $template;
+    }
+
     // ---- Editable accessors (serializer / applier / trait) ------------------------------
 
     /**

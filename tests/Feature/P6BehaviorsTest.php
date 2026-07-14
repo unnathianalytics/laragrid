@@ -116,3 +116,33 @@ it('dispatches lgrid:panel-done from the trait helper', function () {
         ->call('closePanel')
         ->assertDispatched('lgrid:panel-done', grid: 'lines');
 });
+
+it('treats factory-default rows as blank — template-aware blank detection', function () {
+    $grid = Grid::make('lines')
+        ->editable()->rowsFrom('lines')->authorize(fn (): bool => true)
+        ->newRowUsing(fn (): array => ['qty' => 1])
+        ->columns([
+            TextColumn::make('name')->required(),
+            LaraGrid\Columns\IntegerColumn::make('qty'),
+        ]);
+
+    // The template ships to the client so its blank check mirrors the server's.
+    $layout = (new ConfigSerializer)->serialize($grid)['layout'];
+    expect($layout['newRow'])->toBe(['name' => null, 'qty' => 1]);
+
+    // A trailing row holding ONLY the factory default is blank: setting its qty back to the
+    // default must not trigger the required-name validation (blank-trailing skip applies).
+    $rows = [
+        ['_k' => 'a', 'name' => 'Real', 'qty' => 3],
+        ['_k' => 'b', 'name' => null, 'qty' => 1],
+    ];
+    $result = (new OpApplier)->apply($grid, $rows, OpBatch::fromPayload(['ops' => [
+        ['t' => 'set', 'seq' => 1, 'row' => 'b', 'col' => 'qty', 'v' => '1'],
+    ]]));
+    expect($result->results[0]['ok'])->toBeTrue();
+
+    // gridRows() stripping agrees: the template-only trailing row is dropped at save.
+    $clean = (new LaraGrid\Support\RowSerializer)->cleanEditableRows($grid, $rows);
+    expect($clean)->toHaveCount(1);
+    expect($clean[0]['name'])->toBe('Real');
+});

@@ -485,11 +485,18 @@ export default class StateStore {
         if (!hit) {
             return false;
         }
+        const template = (this.layout && this.layout.newRow) || {};
         return this.visibleColumns().every((column) => {
             if (!column.editable) {
                 return true;
             }
             const value = hit.row[column.key];
+            const preset = template[column.key];
+            if (preset !== undefined && preset !== null) {
+                // A factory default is not operator data (mirrors the server's
+                // template-aware blank check); loose compare bridges '1' vs 1.
+                return value == null || value === '' || String(value) === String(preset);
+            }
             return value == null || value === '';
         });
     }
@@ -589,10 +596,14 @@ export default class StateStore {
      * @param {string|null} afterKey
      */
     insertRow(newKey, afterKey = null) {
+        const template = (this.layout && this.layout.newRow) || {};
         const blank = { _k: newKey };
         for (const c of this.columns) {
             if (c && c.key && !c.key.startsWith('_')) {
-                blank[c.key] = null;
+                // Seed factory defaults (layout.newRow) so the optimistic row matches the
+                // server's makeNewRow — otherwise the client shows empties while the host
+                // property already carries the defaults (drift at save).
+                blank[c.key] = template[c.key] !== undefined ? template[c.key] : null;
             }
         }
         const at = afterKey !== null ? this.rowIndexOf(afterKey) : -1;

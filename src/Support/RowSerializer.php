@@ -261,11 +261,23 @@ class RowSerializer
      */
     protected function isBlankEditableRow(Grid $grid, array $row): bool
     {
+        $template = $grid->newRowTemplate();
+
         foreach ($grid->getColumns() as $column) {
             if (! $column->isEditable()) {
                 continue;
             }
             $value = $row[$column->key] ?? null;
+            $default = $template[$column->key] ?? null;
+
+            if ($default !== null) {
+                if ($value != $default && $value !== null && $value !== '') {
+                    return false;
+                }
+
+                continue;
+            }
+
             if ($value !== null && $value !== '' && $value !== 0 && $value !== '0' && $value !== false) {
                 return false;
             }

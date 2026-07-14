@@ -172,6 +172,16 @@ class ConfigSerializer
             $layout['rowActivate'] = true;
         }
 
+        // The fresh-row template (emitted only when the factory sets any default): the client
+        // seeds optimistic inserts from it AND uses it as the blank-row reference, mirroring
+        // the server's template-aware blank detection.
+        if ($grid->isEditable()) {
+            $template = $grid->newRowTemplate();
+            if (array_filter($template, fn ($v): bool => $v !== null) !== []) {
+                $layout['newRow'] = $template;
+            }
+        }
+
         // Complete guard (balanced-entry grids): the client suppresses auto-append and signals
         // `lgrid:complete` once the two columns balance. Emitted only when declared.
         if ($grid->isEditable() && $grid->getCompleteSpec() !== null) {

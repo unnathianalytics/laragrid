@@ -558,11 +558,16 @@ var StateStore = class {
     if (!hit) {
       return false;
     }
+    const template = this.layout && this.layout.newRow || {};
     return this.visibleColumns().every((column) => {
       if (!column.editable) {
         return true;
       }
       const value = hit.row[column.key];
+      const preset = template[column.key];
+      if (preset !== void 0 && preset !== null) {
+        return value == null || value === "" || String(value) === String(preset);
+      }
       return value == null || value === "";
     });
   }
@@ -652,10 +657,11 @@ var StateStore = class {
    * @param {string|null} afterKey
    */
   insertRow(newKey, afterKey = null) {
+    const template = this.layout && this.layout.newRow || {};
     const blank = { _k: newKey };
     for (const c of this.columns) {
       if (c && c.key && !c.key.startsWith("_")) {
-        blank[c.key] = null;
+        blank[c.key] = template[c.key] !== void 0 ? template[c.key] : null;
       }
     }
     const at = afterKey !== null ? this.rowIndexOf(afterKey) : -1;
