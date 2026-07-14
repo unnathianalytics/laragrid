@@ -1,0 +1,48 @@
+{
+  "_comment": "Shared navigation vectors — the M2 anti-drift lock for keyboard movement. Each case: from `start` (row,col in index space), pressing `chord` under `keymap` over a grid of `rowCount` rows whose columns have navigability `mask` (false = serial gutter / hidden, skipped) yields `expected` {row,col[,escape]}. Run in Node against resolveMove(keymapFor(chord).intent, …) during development, and in-browser against the live engine at M2 (mirrors formats.json). `mask` here is the GST-register shape: a non-navigable serial gutter (index 0) then 7 value columns.",
+  "mask": [false, true, true, true, true, true, true, true],
+  "rowCount": 1000,
+  "page": 20,
+  "vectors": [
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "ArrowRight", "expected": { "row": 5, "col": 4 } },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "ArrowLeft", "expected": { "row": 5, "col": 2 } },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "ArrowUp", "expected": { "row": 4, "col": 3 } },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "ArrowDown", "expected": { "row": 6, "col": 3 } },
+
+    { "keymap": "entry", "start": { "row": 5, "col": 1 }, "chord": "ArrowLeft", "expected": { "row": 5, "col": 1 }, "_note": "col 1 is first navigable; ArrowLeft skips the serial gutter (col 0) and clamps" },
+    { "keymap": "entry", "start": { "row": 5, "col": 7 }, "chord": "ArrowRight", "expected": { "row": 5, "col": 7 }, "_note": "last column clamps (no wrap on plain arrow)" },
+    { "keymap": "entry", "start": { "row": 0, "col": 3 }, "chord": "ArrowUp", "expected": { "row": 0, "col": 3 }, "_note": "top row clamps" },
+    { "keymap": "entry", "start": { "row": 999, "col": 3 }, "chord": "ArrowDown", "expected": { "row": 999, "col": 3 }, "_note": "bottom row clamps" },
+
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "Home", "expected": { "row": 5, "col": 1 }, "_note": "first NAVIGABLE cell in row = col 1, not the gutter" },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "End", "expected": { "row": 5, "col": 7 } },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "Ctrl+Home", "expected": { "row": 0, "col": 1 } },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "Ctrl+End", "expected": { "row": 999, "col": 7 } },
+
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "Ctrl+ArrowUp", "expected": { "row": 0, "col": 3 } },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "Ctrl+ArrowDown", "expected": { "row": 999, "col": 3 } },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "Ctrl+ArrowLeft", "expected": { "row": 5, "col": 1 } },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "Ctrl+ArrowRight", "expected": { "row": 5, "col": 7 } },
+
+    { "keymap": "entry", "start": { "row": 30, "col": 3 }, "chord": "PageUp", "expected": { "row": 10, "col": 3 } },
+    { "keymap": "entry", "start": { "row": 30, "col": 3 }, "chord": "PageDown", "expected": { "row": 50, "col": 3 } },
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "PageUp", "expected": { "row": 0, "col": 3 }, "_note": "PageUp clamps at row 0" },
+    { "keymap": "entry", "start": { "row": 990, "col": 3 }, "chord": "PageDown", "expected": { "row": 999, "col": 3 }, "_note": "PageDown clamps at last row" },
+
+    { "keymap": "entry", "start": { "row": 5, "col": 3 }, "chord": "Enter", "expected": { "row": 5, "col": 4 }, "_note": "entry: Enter advances RIGHT" },
+    { "keymap": "entry", "start": { "row": 5, "col": 7 }, "chord": "Enter", "expected": { "row": 6, "col": 1 }, "_note": "entry: Enter on last column wraps to next row, first navigable cell (serpentine)" },
+    { "keymap": "entry", "start": { "row": 999, "col": 7 }, "chord": "Enter", "expected": { "row": 999, "col": 7, "escape": "next" }, "_note": "entry: Enter on the very last grid cell signals boundary escape, position unchanged" },
+    { "keymap": "entry", "start": { "row": 5, "col": 1 }, "chord": "Shift+Enter", "expected": { "row": 4, "col": 7 }, "_note": "entry: Shift+Enter on first column wraps to previous row, last cell" },
+    { "keymap": "entry", "start": { "row": 0, "col": 1 }, "chord": "Shift+Enter", "expected": { "row": 0, "col": 1, "escape": "prev" }, "_note": "entry: Shift+Enter on the very first grid cell signals boundary escape" },
+
+    { "keymap": "entry", "start": { "row": 5, "col": 7 }, "chord": "Tab", "expected": { "row": 6, "col": 1 }, "_note": "Tab wraps like Enter in entry too (shared)" },
+    { "keymap": "entry", "start": { "row": 999, "col": 7 }, "chord": "Tab", "expected": { "row": 999, "col": 7, "escape": "next" }, "_note": "Tab escapes grid at last cell" },
+    { "keymap": "entry", "start": { "row": 0, "col": 1 }, "chord": "Shift+Tab", "expected": { "row": 0, "col": 1, "escape": "prev" }, "_note": "Shift+Tab escapes grid at first cell" },
+
+    { "keymap": "excel", "start": { "row": 5, "col": 3 }, "chord": "Enter", "expected": { "row": 6, "col": 3 }, "_note": "excel: Enter moves DOWN same column" },
+    { "keymap": "excel", "start": { "row": 5, "col": 3 }, "chord": "Shift+Enter", "expected": { "row": 4, "col": 3 }, "_note": "excel: Shift+Enter moves UP" },
+    { "keymap": "excel", "start": { "row": 999, "col": 3 }, "chord": "Enter", "expected": { "row": 999, "col": 3 }, "_note": "excel: Enter on last row clamps (no escape — it's a plain down move)" },
+    { "keymap": "excel", "start": { "row": 5, "col": 3 }, "chord": "ArrowRight", "expected": { "row": 5, "col": 4 }, "_note": "arrows identical across presets" },
+    { "keymap": "excel", "start": { "row": 5, "col": 7 }, "chord": "Tab", "expected": { "row": 6, "col": 1 }, "_note": "excel Tab still serpentine-wraps (shared)" }
+  ]
+}

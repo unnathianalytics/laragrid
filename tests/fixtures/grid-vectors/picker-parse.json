@@ -1,0 +1,57 @@
+{
+    "comment": "M5 picker parse + editText vectors run through the REAL JS modules by tests/js/run-picker-vectors.mjs. Date cases pin FY 2026-27 (April start). '__unparseable__' marks the undefined sentinel (refuse-the-commit).",
+    "date": [
+        { "raw": "31/12/2026", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
+        { "raw": "31.12.26", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
+        { "raw": "31 12 2026", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
+        { "raw": "311226", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
+        { "raw": "31122026", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
+        { "raw": "3112", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
+        { "raw": "2-1", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2027-01-02" },
+        { "raw": "15/4", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-04-15" },
+        { "raw": "31/3", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2027-03-31" },
+        { "raw": "29/2/2028", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2028-02-29" },
+        { "raw": "2026-12-31", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
+        { "raw": "31-12-2026", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
+        { "raw": "", "fyStartMonth": 4, "fyStartYear": 2026, "expected": null },
+        { "raw": "   ", "fyStartMonth": 4, "fyStartYear": 2026, "expected": null },
+        { "raw": "31/13/2026", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "__unparseable__" },
+        { "raw": "29/2/2026", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "__unparseable__" },
+        { "raw": "garbage", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "__unparseable__" },
+        { "raw": "12345", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "__unparseable__" }
+    ],
+    "bool": [
+        { "raw": true, "expected": true },
+        { "raw": "1", "expected": true },
+        { "raw": "true", "expected": true },
+        { "raw": "YES", "expected": true },
+        { "raw": "on", "expected": true },
+        { "raw": false, "expected": false },
+        { "raw": "0", "expected": false },
+        { "raw": "false", "expected": false },
+        { "raw": "", "expected": false },
+        { "raw": null, "expected": false },
+        { "raw": "banana", "expected": false }
+    ],
+    "select": [
+        { "raw": " i9 ", "expected": "i9" },
+        { "raw": "kg", "expected": "kg" },
+        { "raw": "", "expected": null },
+        { "raw": null, "expected": null }
+    ],
+    "editText": [
+        { "parse": { "kind": "paise" }, "value": 12500, "expected": "125.00" },
+        { "parse": { "kind": "paise" }, "value": 5000, "expected": "50.00" },
+        { "parse": { "kind": "paise" }, "value": 125050, "expected": "1250.50" },
+        { "parse": { "kind": "paise" }, "value": null, "expected": "" },
+        { "parse": { "kind": "decimal", "scale": 3 }, "value": "2.000", "expected": "2.000" },
+        { "parse": { "kind": "int" }, "value": 42, "expected": "42" },
+        { "parse": { "kind": "date" }, "value": "2026-12-31", "expected": "31-12-2026" },
+        { "parse": { "kind": "date" }, "value": null, "expected": "" },
+        { "parse": { "kind": "bool" }, "value": true, "expected": "1" },
+        { "parse": { "kind": "bool" }, "value": false, "expected": "0" },
+        { "parse": { "kind": "select" }, "value": "i9", "expected": "i9" },
+        { "parse": { "kind": "text" }, "value": "Bolt", "expected": "Bolt" },
+        { "parse": { "kind": "text" }, "value": null, "expected": "" }
+    ]
+}

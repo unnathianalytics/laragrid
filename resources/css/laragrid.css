@@ -1,0 +1,1099 @@
+/*
+ * LaraGrid — stylesheet.
+ *
+ * What: The semantic layer for <x-laragrid>. Structure classes (lgrid, -scroll, -head,
+ *       -headrow, -headcell, -headgroup, -rows, -row, -cell, -footer, -footcell), state
+ *       modifiers (--right/--center/--frozen/--stripe/--active/--selected/--error/...),
+ *       density modifiers (lgrid--compact/--comfortable) and the lgrid--tally dense skin,
+ *       all reading from --lgrid-* design tokens.
+ * Why:  The JS renderer toggles ONLY these stable semantic classes (never composed utility
+ *       classes), so no build-tool purge can strip them. Every color token carries a
+ *       self-contained fallback: standalone apps get a complete neutral theme out of the
+ *       box, while Tailwind v4 apps that define --color-* @theme variables see the grid
+ *       adopt their palette automatically. Consumers restyle by overriding --lgrid-* tokens
+ *       (globally, per theme class via ->themeClass(), or under .dark).
+ * When: Served prebuilt as dist/laragrid.min.css (auto-injected), or imported from
+ *       resources/css/laragrid.css by apps bundling their own assets.
+ */
+
+@layer components {
+    .lgrid {
+        --lgrid-row-h: 1.75rem;
+        --lgrid-cell-pad-x: 0.5rem;
+        --lgrid-cell-pad-y: 0.25rem;
+        --lgrid-font-size: 0.8125rem;
+        --lgrid-border: var(--color-zinc-200, #e4e4e7);
+        --lgrid-header-bg: var(--color-zinc-100, #f4f4f5);
+        --lgrid-footer-bg: var(--color-zinc-100, #f4f4f5);
+        --lgrid-stripe-bg: var(--color-zinc-50, #fafafa);
+        --lgrid-cell-bg: var(--color-white, #fff);
+        --lgrid-text: var(--color-zinc-800, #27272a);
+        --lgrid-header-text: var(--color-zinc-600, #52525b);
+        --lgrid-accent: var(--color-accent, #262626);
+
+        /* M2 interaction tokens — the active-cell ring and the range/selection fill. */
+        --lgrid-active-ring: var(--lgrid-accent);
+        --lgrid-selected-bg: color-mix(in oklab, var(--lgrid-accent) 14%, transparent);
+
+        /* M4 editing tokens — error ring, dirty marker, pending shimmer. */
+        --lgrid-error: var(--color-rose-500, #f43f5e);
+        --lgrid-error-bg: color-mix(in oklab, var(--color-rose-500, #f43f5e) 10%, transparent);
+        --lgrid-dirty: var(--color-amber-400, #fbbf24);
+
+        position: relative;
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.375rem;
+        overflow: hidden;
+        font-size: var(--lgrid-font-size);
+        line-height: 1.15;
+        outline: none;
+        background: var(--lgrid-cell-bg);
+    }
+
+    .lgrid:focus-visible {
+        box-shadow: none;
+    }
+
+    /* Single scroll container — header, rows and footer share it so horizontal scroll aligns. */
+    .lgrid-scroll {
+        position: relative;
+        max-height: var(--lgrid-max-h, 70vh);
+        overflow: auto;
+        width: 100%;
+    }
+
+    /* ->fillParent(): the grid fills its containing box; the scroll region flexes, so the
+       pagination/status chrome below it stays visible. Pair with a sized ancestor div. */
+    .lgrid--fill {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+
+    .lgrid--fill .lgrid-scroll {
+        flex: 1 1 auto;
+        min-height: 0;
+        max-height: none;
+    }
+
+    /* ---- Header (single- or two-tier) --------------------------------------------- */
+
+    .lgrid-head {
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        min-width: 100%;
+        background: var(--lgrid-header-bg);
+        border-bottom: 1px solid var(--lgrid-border);
+    }
+
+    .lgrid-headrow {
+        display: grid;
+        grid-template-columns: var(--lgrid-cols);
+        min-width: 100%;
+    }
+
+    .lgrid-headcell,
+    .lgrid-headgroup {
+        padding: var(--lgrid-cell-pad-y) var(--lgrid-cell-pad-x);
+        font-weight: 600;
+        color: var(--lgrid-header-text);
+        /* See .lgrid-cell — min-width:0 keeps header tracks resolving from --lgrid-cols alone so a
+           long header label never widens its track out of sync with the body below it. */
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border-right: 1px solid var(--lgrid-border);
+        background: var(--lgrid-header-bg);
+        user-select: none;
+    }
+
+    /* Header cells share the body cell's flex box model so the shared alignment modifiers
+       (lgrid-cell--right / --center) justify a header label EXACTLY like the values below it.
+       Without this the header stayed text-left while right-aligned body cells shifted right
+       (justify-content is a no-op on a non-flex block) — the # vs 1/2/3 mismatch. */
+    .lgrid-headcell {
+        display: flex;
+        align-items: center;
+        /* Positioning context for the resize handle; frozen headcells override to sticky
+           (.lgrid-cell--frozen, later in the file), which is a positioning context too. */
+        position: relative;
+    }
+
+    /* Group-label cell (grouped header, top row) — centered over its member columns with a
+       hairline under it separating it from the member headers on the row below. */
+    .lgrid-headgroup {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-bottom: 1px solid var(--lgrid-border);
+    }
+
+    /* ---- Column resize (M7) --------------------------------------------------------- */
+
+    /* The grab strip on a header cell's trailing edge. Kept INSIDE the cell (headcells clip
+       overflow), full height, wide enough to hit at speed; the visual affordance is the ::after
+       bar shown on hover so the header stays clean at rest. */
+    .lgrid-resize {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 8px;
+        height: 100%;
+        cursor: col-resize;
+        z-index: 3;
+        touch-action: none;
+    }
+
+    .lgrid-resize::after {
+        content: '';
+        position: absolute;
+        top: 18%;
+        bottom: 18%;
+        right: 2px;
+        width: 3px;
+        border-radius: 2px;
+        background: transparent;
+    }
+
+    .lgrid-headcell:hover .lgrid-resize::after,
+    .lgrid-resize:hover::after {
+        background: color-mix(in oklab, var(--lgrid-accent) 55%, transparent);
+    }
+
+    /* While a drag is live: no text selection anywhere in the grid, col-resize everywhere so
+       the cursor doesn't flicker as the pointer crosses cells. */
+    .lgrid--resizing,
+    .lgrid--resizing * {
+        cursor: col-resize !important;
+        user-select: none !important;
+    }
+
+    /* ---- Column chooser (M7) -------------------------------------------------------- */
+
+    /* Grid-owned chrome: a small ghost button floating at the grid's top-right, above the
+       header row (z above the resize handles). Quiet at rest, obvious on hover. */
+    .lgrid-chooser-btn {
+        position: absolute;
+        top: 2px;
+        right: 4px;
+        z-index: 6;
+        width: 1.375rem;
+        height: 1.375rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 0.25rem;
+        color: var(--lgrid-header-text);
+        opacity: 0.55;
+        cursor: pointer;
+        font-size: 0.8125rem;
+        line-height: 1;
+    }
+
+    .lgrid-chooser-btn:hover,
+    .lgrid-chooser-btn:focus-visible {
+        opacity: 1;
+        background: color-mix(in oklab, var(--lgrid-accent) 12%, transparent);
+    }
+
+    .lgrid-chooser {
+        padding: 0.25rem 0;
+    }
+
+    .lgrid-chooser-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.3125rem var(--lgrid-cell-pad-x);
+        cursor: pointer;
+        white-space: nowrap;
+    }
+
+    .lgrid-chooser-item:hover {
+        background: var(--lgrid-selected-bg);
+    }
+
+    .lgrid-chooser-item--locked {
+        opacity: 0.5;
+        cursor: default;
+    }
+
+    .lgrid-chooser-item input {
+        accent-color: var(--lgrid-accent);
+    }
+
+    .lgrid-chooser-reset {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 0.375rem var(--lgrid-cell-pad-x);
+        border-top: 1px solid var(--lgrid-border);
+        color: var(--lgrid-header-text);
+        cursor: pointer;
+    }
+
+    .lgrid-chooser-reset:hover {
+        background: var(--lgrid-selected-bg);
+        color: var(--lgrid-text);
+    }
+
+    /* ---- Header filters (M7) --------------------------------------------------------- */
+
+    /* The funnel control on a filterable column's header cell: quiet until the cell is
+       hovered or its filter is ACTIVE (accent-filled) — the register idiom. */
+    .lgrid-filter {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: none;
+        width: 1rem;
+        height: 1rem;
+        margin-left: 0.25rem;
+        border-radius: 0.1875rem;
+        cursor: pointer;
+        color: var(--lgrid-header-text);
+        opacity: 0;
+    }
+
+    .lgrid-headcell:hover .lgrid-filter,
+    .lgrid-filter:focus-visible {
+        opacity: 0.65;
+    }
+
+    .lgrid-filter:hover {
+        opacity: 1;
+        background: color-mix(in oklab, var(--lgrid-accent) 12%, transparent);
+    }
+
+    .lgrid-filter--active {
+        opacity: 1 !important;
+        color: var(--lgrid-accent);
+    }
+
+    /* CSS-drawn funnel — no inline SVG, keeps the renderer markup-free. */
+    .lgrid-filter-icon {
+        display: block;
+        width: 0.625rem;
+        height: 0.625rem;
+        background: currentColor;
+        clip-path: polygon(0 0, 100% 0, 62% 45%, 62% 88%, 38% 100%, 38% 45%);
+    }
+
+    /* ---- Body --------------------------------------------------------------------- */
+
+    .lgrid-rows {
+        min-width: 100%;
+    }
+
+    /* content-visibility: near-virtual perf for 1k–5k rows (plan §1.4, proven in M0). */
+    .lgrid-rows--cv .lgrid-row {
+        content-visibility: auto;
+        contain-intrinsic-size: auto var(--lgrid-row-h);
+    }
+
+    .lgrid-row {
+        display: grid;
+        grid-template-columns: var(--lgrid-cols);
+        min-height: var(--lgrid-row-h);
+        background: var(--lgrid-cell-bg);
+    }
+
+    .lgrid-row--stripe {
+        background: var(--lgrid-stripe-bg);
+    }
+
+    /* Busy-style dedicated entry rows (layout.padRows): inert visual padding below the last
+       real row so short grids keep a fixed working area and editor popups open over grid
+       space, not the page chrome below. Unreachable by keyboard/mouse by construction. */
+    .lgrid-row--pad .lgrid-cell {
+        cursor: default;
+        user-select: none;
+    }
+
+    .lgrid-cell,
+    .lgrid-footcell {
+        padding: var(--lgrid-cell-pad-y) var(--lgrid-cell-pad-x);
+        display: flex;
+        align-items: center;
+        /* min-width: 0 lets a grid item shrink below its content's intrinsic size, so every track
+           resolves PURELY from --lgrid-cols — identical across the header/body/footer grids
+           regardless of the text each cell holds. Without it a grid item's default min-width:auto
+           forces long content (e.g. a long code) to widen its track, which resolves differently in
+           the body than the header and drifts the columns out of alignment (the one-column shift a
+           grow column exposed). */
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border-right: 1px solid var(--lgrid-border);
+        border-bottom: 1px solid var(--lgrid-border);
+        color: var(--lgrid-text);
+        background: inherit;
+    }
+
+    .lgrid-cell--right {
+        justify-content: flex-end;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .lgrid-cell--center {
+        justify-content: center;
+    }
+
+    /* Left-frozen columns: sticky with a JS-computed cumulative left offset. The cell must
+       carry an opaque background (inherits row/stripe/header bg) so scrolled content doesn't
+       show through; a higher z-index keeps it above the non-frozen cells it overlaps. */
+    .lgrid-cell--frozen {
+        position: sticky;
+        z-index: 2;
+    }
+
+    .lgrid-head .lgrid-cell--frozen {
+        z-index: 4;
+    }
+
+    /* ---- Interaction state (M2: navigate & select) -------------------------------- */
+
+    /* The selected range fill. Painted per-cell for partial ranges; for a whole-grid select
+       (Ctrl+A) the root carries lgrid--all-selected and every cell reads the fill in one rule
+       (the O(1) fast path — no per-cell class churn on 1000s of cells). */
+    .lgrid-cell--selected,
+    .lgrid--all-selected .lgrid-cell {
+        background: var(--lgrid-selected-bg);
+    }
+
+    /* Keep the non-navigable serial gutter unfilled during a whole-grid select. */
+    .lgrid--all-selected .lgrid-cell.lgrid-filler {
+        background: inherit;
+    }
+
+    /* The active cell — a crisp inset ring drawn with box-shadow so it never shifts layout and
+       reads inside the cell's border grid. Deliberately does NOT set `position`: a frozen cell
+       is `position: sticky`, and overriding that with `relative` would drop its pinning and
+       reflow the column on focus (the "push right" bug). The inset shadow paints over the cell's
+       own content/borders without needing a stacking context, so no z-index is required here;
+       frozen cells keep the z-index they already carry from .lgrid-cell--frozen. */
+    .lgrid-cell--active {
+        box-shadow: inset 0 0 0 2px var(--lgrid-active-ring);
+    }
+
+    /* ---- Status bar (selection Sum · Count · Avg) --------------------------------- */
+
+    .lgrid-statusbar {
+        display: flex;
+        gap: 1.25rem;
+        align-items: center;
+        padding: 0.25rem var(--lgrid-cell-pad-x);
+        border-top: 1px solid var(--lgrid-border);
+        background: var(--lgrid-footer-bg);
+        color: var(--lgrid-header-text);
+        font-size: var(--lgrid-font-size);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .lgrid-status-seg {
+        display: inline-flex;
+        gap: 0.375rem;
+        align-items: baseline;
+    }
+
+    .lgrid-status-label {
+        font-weight: 600;
+        opacity: 0.75;
+    }
+
+    .lgrid-status-value {
+        font-weight: 600;
+        color: var(--lgrid-text);
+    }
+
+    /* Visually-hidden aria-live region (announcer) — present for AT, invisible on screen. */
+    .lgrid-sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    /* ---- Footer ------------------------------------------------------------------- */
+
+    .lgrid-footer {
+        position: sticky;
+        bottom: 0;
+        z-index: 3;
+        display: grid;
+        grid-template-columns: var(--lgrid-cols);
+        min-width: 100%;
+        background: var(--lgrid-footer-bg);
+        border-top: 1px solid var(--lgrid-border);
+        font-weight: 600;
+    }
+
+    .lgrid-footcell {
+        background: var(--lgrid-footer-bg);
+        color: var(--lgrid-header-text);
+    }
+
+    /* Trailing filler cell — occupies the shared `1fr` filler track so header/body/footer
+       resolve to identical column tracks (kills the scrollbar-gutter misalignment). It is
+       inert: no right border, carries the surrounding surface, never tabular. Padding must be
+       zero too: border-box padding is a width FLOOR, so when grow columns consume all slack and
+       the filler track resolves to 0px, an inherited cell pad-x would overflow the scroll box
+       by 2×pad-x and summon a phantom horizontal scrollbar. */
+    .lgrid-filler {
+        border-right: 0;
+        padding: 0;
+    }
+
+    /* ---- Sort affordance (M3 — server-side) --------------------------------------- */
+
+    /* A sortable header cell hosts a dedicated sort button so a click on IT re-sorts while a
+       click on the rest of the cell still selects the whole column (M2 coexistence). */
+    .lgrid-headcell--sortable {
+        cursor: pointer;
+    }
+
+    .lgrid-sort {
+        display: inline-flex;
+        align-items: center;
+        margin-inline-start: 0.25rem;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        opacity: 0.55;
+    }
+
+    .lgrid-headcell--sorted .lgrid-sort {
+        opacity: 1;
+    }
+
+    /* The caret: neutral by default, up when asc, down when desc (CSS-only triangle). */
+    .lgrid-sort-icon {
+        width: 0;
+        height: 0;
+        border-inline: 4px solid transparent;
+        border-block-end: 5px solid currentColor;
+        opacity: 0.4;
+    }
+
+    .lgrid-headcell--asc .lgrid-sort-icon {
+        opacity: 1;
+        border-block-end: 5px solid currentColor;
+        border-block-start: 0;
+    }
+
+    .lgrid-headcell--desc .lgrid-sort-icon {
+        opacity: 1;
+        border-block-start: 5px solid currentColor;
+        border-block-end: 0;
+    }
+
+    /* ---- Pagination chrome (M3) --------------------------------------------------- */
+
+    .lgrid-pagination {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.375rem var(--lgrid-cell-pad-x);
+        border-top: 1px solid var(--lgrid-border);
+        background: var(--lgrid-footer-bg);
+        color: var(--lgrid-header-text);
+        font-size: var(--lgrid-font-size);
+    }
+
+    .lgrid-pagination.lgrid-pg--busy {
+        opacity: 0.6;
+    }
+
+    .lgrid-pg-info {
+        font-variant-numeric: tabular-nums;
+    }
+
+    .lgrid-pg-nav {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
+    .lgrid-pg-btn {
+        min-width: 1.75rem;
+        padding: 0.125rem 0.5rem;
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.25rem;
+        background: var(--lgrid-cell-bg);
+        color: var(--lgrid-text);
+        cursor: pointer;
+        line-height: 1.25;
+    }
+
+    .lgrid-pg-btn:disabled {
+        opacity: 0.4;
+        cursor: default;
+    }
+
+    .lgrid-pg-perpage {
+        margin-inline-start: 0.5rem;
+        padding: 0.125rem 0.375rem;
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.25rem;
+        background: var(--lgrid-cell-bg);
+        color: var(--lgrid-text);
+        font-size: var(--lgrid-font-size);
+    }
+
+    /* ---- Loading + empty states (M3) ---------------------------------------------- */
+
+    .lgrid-loading {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: color-mix(in oklab, var(--lgrid-cell-bg) 60%, transparent);
+        z-index: 5;
+    }
+
+    .lgrid-loading-spinner {
+        width: 1.5rem;
+        height: 1.5rem;
+        border: 2px solid var(--lgrid-border);
+        border-block-start-color: var(--lgrid-accent);
+        border-radius: 50%;
+        animation: lgrid-spin 0.6s linear infinite;
+    }
+
+    @keyframes lgrid-spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
+    .lgrid-empty {
+        padding: 1.5rem var(--lgrid-cell-pad-x);
+        text-align: center;
+        color: var(--lgrid-header-text);
+        font-size: var(--lgrid-font-size);
+    }
+
+    /* ---- Density modifiers -------------------------------------------------------- */
+
+    .lgrid--compact {
+        --lgrid-row-h: 1.5rem;
+        --lgrid-cell-pad-y: 0.125rem;
+        --lgrid-font-size: 0.75rem;
+    }
+
+    .lgrid--comfortable {
+        --lgrid-row-h: 2.25rem;
+        --lgrid-cell-pad-y: 0.5rem;
+        --lgrid-cell-pad-x: 0.75rem;
+    }
+
+    /* Dense Busy/Tally skin — tightest rows, hairline feel. */
+    .lgrid--tally {
+        --lgrid-row-h: 1.375rem;
+        --lgrid-cell-pad-y: 0.0625rem;
+        --lgrid-cell-pad-x: 0.375rem;
+        --lgrid-font-size: 0.75rem;
+    }
+
+    /* ---- M4 editing — floating editor, error/dirty/pending state -------------------- */
+
+    /* The single floating editor host: absolutely positioned over the active cell inside the
+       scroll region (positioned by EditorManager). One element for the whole grid. */
+    .lgrid-cell-editor {
+        position: absolute;
+        z-index: 5;
+        box-sizing: border-box;
+        padding: 0;
+        margin: 0;
+    }
+
+    .lgrid-cell-editor-input {
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+        padding: var(--lgrid-cell-pad-y) var(--lgrid-cell-pad-x);
+        border: 2px solid var(--lgrid-active-ring);
+        border-radius: 0;
+        background: var(--lgrid-cell-bg);
+        color: var(--lgrid-text);
+        font: inherit;
+        font-size: var(--lgrid-font-size);
+        outline: none;
+    }
+
+    .lgrid-cell-editor-input--right {
+        text-align: right;
+    }
+
+    /* Editable cells get a subtle cursor affordance. */
+    .lgrid-cell--editable {
+        cursor: cell;
+    }
+
+    /* Per-row LOCKED cell (declarative lockedWhen — e.g. the voucher's inactive amount side
+       under the D/C selector): the editor refuses it and the serpentine flow skips it, so it
+       reads muted and non-interactive. Header-bg-derived, so dark mode follows the tokens. */
+    .lgrid-cell--locked.lgrid-cell--editable {
+        cursor: not-allowed;
+        background: color-mix(in oklab, var(--lgrid-header-bg) 65%, transparent);
+        color: color-mix(in oklab, var(--lgrid-text) 45%, transparent);
+    }
+
+    /* NAV Enter blocked on a blank REQUIRED cell (entry keymap, G7 — form-kit red-flash parity).
+       Deliberately NOT named --flash: the still-imported M0 spike stylesheet owns
+       .lgrid-cell--flash (the M4 collision lesson). */
+    .lgrid-cell--blocked {
+        animation: lgrid-blocked-flash 0.4s ease-out;
+    }
+
+    @keyframes lgrid-blocked-flash {
+
+        0%,
+        60% {
+            box-shadow: inset 0 0 0 2px var(--lgrid-error);
+            background: var(--lgrid-error-bg);
+        }
+
+        100% {
+            box-shadow: none;
+        }
+    }
+
+    /* Dirty (unsynced) cell — a small amber corner marker. */
+    .lgrid-cell--dirty::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        right: 0;
+        border-width: 0 4px 4px 0;
+        border-style: solid;
+        border-color: transparent var(--lgrid-dirty) transparent transparent;
+    }
+
+    /* Pending (op in flight) — a faint pulse so the operator knows it's syncing. */
+    .lgrid-cell--pending {
+        opacity: 0.85;
+    }
+
+    /* Error cell — a rose ring + tint + corner marker. Overrides dirty's corner. */
+    .lgrid-cell--error {
+        box-shadow: inset 0 0 0 2px var(--lgrid-error);
+        background: var(--lgrid-error-bg);
+    }
+
+    .lgrid-cell--error::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        right: 0;
+        border-width: 0 5px 5px 0;
+        border-style: solid;
+        border-color: transparent var(--lgrid-error) transparent transparent;
+    }
+
+    /* Error summary bar — hidden unless the grid has errors (root class toggled by ErrorPainter). */
+    .lgrid-errorbar {
+        display: none;
+        align-items: center;
+        gap: 0.375rem;
+        padding: 0.25rem 0.5rem;
+        color: var(--lgrid-error);
+        font-size: var(--lgrid-font-size);
+    }
+
+    .lgrid--has-errors .lgrid-errorbar {
+        display: flex;
+    }
+
+    .lgrid-errorbar-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1rem;
+        height: 1rem;
+        border-radius: 9999px;
+        background: var(--lgrid-error);
+        color: var(--lgrid-cell-bg);
+        font-weight: 700;
+        line-height: 1;
+    }
+
+    /* ---- M5 pickers — layered popup, option list, checkbox, paste confirm ----------- */
+
+    /* The single layered popup (PopupManager): a child of the grid ROOT (not the scroll clip),
+       anchored to the active cell, above the floating editor. Names deliberately avoid the M0
+       spike stylesheet's selectors (it owns .lgrid-editor / --active / --flash). */
+    .lgrid-popup {
+        position: absolute;
+        z-index: 7;
+        max-width: 22rem;
+        max-height: 15rem;
+        overflow: auto;
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.375rem;
+        background: var(--lgrid-cell-bg);
+        color: var(--lgrid-text);
+        box-shadow: 0 8px 24px -8px color-mix(in oklab, var(--color-zinc-950, #09090b) 35%, transparent);
+        font-size: var(--lgrid-font-size);
+    }
+
+    .lgrid-popup-option {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.3125rem var(--lgrid-cell-pad-x);
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .lgrid-popup-option--active {
+        background: var(--lgrid-selected-bg);
+    }
+
+    /* The Busy "End of List" exit control: a pinned, accented row that reads as an action, not a
+       data option (bold, accent-coloured, separated from the matches below it). */
+    .lgrid-popup-option--end-of-list {
+        font-weight: 600;
+        color: var(--lgrid-accent);
+        border-bottom: 1px solid var(--lgrid-border);
+    }
+
+    .lgrid-popup-option--end-of-list.lgrid-popup-option--active {
+        background: color-mix(in oklab, var(--lgrid-accent) 20%, transparent);
+    }
+
+    /* Muted informational rows: "type to search", "no matches", the loading row. */
+    .lgrid-popup-hint,
+    .lgrid-popup-empty,
+    .lgrid-popup-loading {
+        padding: 0.375rem var(--lgrid-cell-pad-x);
+        color: var(--lgrid-header-text);
+        font-style: italic;
+    }
+
+    .lgrid-popup--loading .lgrid-popup-option {
+        opacity: 0.55;
+    }
+
+    /* Checkbox cell mark — CSS-drawn so the painter writes no HTML (G13). */
+    .lgrid-check {
+        display: inline-block;
+        width: 0.875rem;
+        height: 0.875rem;
+        border: 1.5px solid var(--lgrid-header-text);
+        border-radius: 0.1875rem;
+        position: relative;
+    }
+
+    .lgrid-check--on {
+        border-color: var(--lgrid-accent);
+        background: var(--lgrid-accent);
+    }
+
+    .lgrid-check--on::after {
+        content: '';
+        position: absolute;
+        left: 0.25rem;
+        top: 0.0625rem;
+        width: 0.25rem;
+        height: 0.5rem;
+        border: solid var(--lgrid-cell-bg);
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+    }
+
+    /* Paste confirm (oversize paste, G15) — rendered inside the popup. */
+    .lgrid-confirm {
+        padding: 0.625rem 0.75rem;
+        display: grid;
+        gap: 0.5rem;
+    }
+
+    .lgrid-confirm-actions {
+        display: flex;
+        gap: 0.5rem;
+        justify-content: flex-end;
+    }
+
+    .lgrid-confirm-btn {
+        padding: 0.125rem 0.625rem;
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.25rem;
+        background: var(--lgrid-cell-bg);
+        color: var(--lgrid-text);
+        cursor: pointer;
+    }
+
+    .lgrid-confirm-btn--primary {
+        border-color: var(--lgrid-accent);
+        background: var(--lgrid-accent);
+        color: var(--color-white, #fff);
+    }
+
+    /* ---- Package toolbar (P6) ------------------------------------------------------ */
+
+    .lgrid-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.375rem 0.5rem;
+        background: var(--lgrid-header-bg);
+        border-bottom: 1px solid var(--lgrid-border);
+        font-size: var(--lgrid-font-size);
+    }
+
+    .lgrid-toolbar[hidden] {
+        display: none;
+    }
+
+    .lgrid-toolbar-search,
+    .lgrid-toolbar-select {
+        font: inherit;
+        color: var(--lgrid-text);
+        background: var(--lgrid-cell-bg);
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.3125rem;
+        padding: 0.2rem 0.5rem;
+        outline: none;
+    }
+
+    .lgrid-toolbar-search {
+        min-width: 12rem;
+    }
+
+    .lgrid-toolbar-search:focus,
+    .lgrid-toolbar-select:focus {
+        border-color: var(--lgrid-accent);
+    }
+
+    .lgrid-toolbar-filter {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        color: var(--lgrid-header-text);
+    }
+
+    .lgrid-toolbar-spacer {
+        flex: 1 1 auto;
+    }
+
+    /* The chooser button loses its floating position when it mounts inside the toolbar. */
+    .lgrid-toolbar .lgrid-chooser-btn {
+        position: static;
+    }
+
+    /* ---- Actions system (P7) -------------------------------------------------------- */
+
+    .lgrid-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.5rem;
+        height: 1.375rem;
+        margin-left: 0.25rem;
+        padding: 0 0.3rem;
+        border: 1px solid transparent;
+        border-radius: 0.25rem;
+        background: transparent;
+        color: var(--lgrid-header-text);
+        font: inherit;
+        cursor: pointer;
+    }
+
+    .lgrid-action:hover,
+    .lgrid-action:focus-visible {
+        border-color: var(--lgrid-border);
+        background: color-mix(in oklab, var(--lgrid-text) 8%, transparent);
+        color: var(--lgrid-text);
+        outline: none;
+    }
+
+    .lgrid-cell[data-col='_select'] {
+        cursor: pointer;
+    }
+
+    .lgrid-cell--checked .lgrid-check {
+        background: var(--lgrid-accent);
+        border-color: var(--lgrid-accent);
+    }
+
+    .lgrid-toolbar-btn {
+        font: inherit;
+        color: var(--lgrid-text);
+        background: var(--lgrid-cell-bg);
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.3125rem;
+        padding: 0.2rem 0.6rem;
+        cursor: pointer;
+    }
+
+    .lgrid-toolbar-btn:hover,
+    .lgrid-toolbar-btn:focus-visible {
+        border-color: var(--lgrid-accent);
+        outline: none;
+    }
+
+    .lgrid-toolbar-bulk {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+    }
+
+    .lgrid-toolbar-bulk-count {
+        font-weight: 600;
+        color: var(--lgrid-text);
+    }
+
+    .lgrid-popup--actions .lgrid-popup-option {
+        display: block;
+        width: 100%;
+        text-align: left;
+        font: inherit;
+        border: 0;
+        background: transparent;
+        cursor: pointer;
+    }
+
+    /* ---- ->html() cell fragments (CellHtml partials) ------------------------------- */
+
+    .lgrid-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0 0.5em;
+        border-radius: 9999px;
+        font-size: 0.72em;
+        font-weight: 600;
+        line-height: 1.7;
+        letter-spacing: 0.01em;
+        --lgrid-badge-tone: var(--lgrid-text);
+        color: var(--lgrid-badge-tone);
+        background: color-mix(in oklab, var(--lgrid-badge-tone) 13%, transparent);
+    }
+
+    .lgrid-badge--green,
+    .lgrid-badge--emerald { --lgrid-badge-tone: #059669; }
+    .lgrid-badge--red,
+    .lgrid-badge--rose { --lgrid-badge-tone: #e11d48; }
+    .lgrid-badge--amber,
+    .lgrid-badge--yellow { --lgrid-badge-tone: #d97706; }
+    .lgrid-badge--blue,
+    .lgrid-badge--sky { --lgrid-badge-tone: #0284c7; }
+    .lgrid-badge--purple,
+    .lgrid-badge--violet { --lgrid-badge-tone: #7c3aed; }
+    /* zinc/unknown colors keep the neutral text tone. */
+
+    .lgrid-edit-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25em;
+        padding: 0.05em 0.55em;
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.3125rem;
+        color: var(--lgrid-text);
+        text-decoration: none;
+        font-size: 0.85em;
+        line-height: 1.6;
+        background: transparent;
+    }
+
+    .lgrid-edit-link:hover {
+        background: color-mix(in oklab, var(--lgrid-text) 8%, transparent);
+    }
+
+    .lgrid-muted {
+        color: color-mix(in oklab, var(--lgrid-text) 45%, transparent);
+    }
+
+    /* ---- Dark mode — override tokens/surfaces only -------------------------------- */
+
+    .dark .lgrid {
+        --lgrid-accent: var(--color-accent, #fafafa);
+        --lgrid-border: var(--color-zinc-700, #3f3f46);
+        --lgrid-header-bg: var(--color-zinc-800, #27272a);
+        --lgrid-footer-bg: var(--color-zinc-800, #27272a);
+        --lgrid-stripe-bg: var(--color-zinc-900, #18181b);
+        --lgrid-cell-bg: var(--color-zinc-950, #09090b);
+        --lgrid-text: var(--color-zinc-100, #f4f4f5);
+        --lgrid-header-text: var(--color-zinc-300, #d4d4d8);
+        --lgrid-error-bg: color-mix(in oklab, var(--color-rose-500, #f43f5e) 22%, transparent);
+    }
+
+    /* ---- Print (M7, umbrella G18) — collapse to a plain black-on-white table -------- */
+
+    @media print {
+
+        /* Light tokens regardless of the on-screen theme; hairline borders print reliably. */
+        .lgrid,
+        .dark .lgrid {
+            --lgrid-border: #999;
+            --lgrid-header-bg: #fff;
+            --lgrid-footer-bg: #fff;
+            --lgrid-stripe-bg: #fff;
+            --lgrid-cell-bg: #fff;
+            --lgrid-text: #000;
+            --lgrid-header-text: #000;
+            border: none;
+            print-color-adjust: exact;
+        }
+
+        /* The scroll clip becomes the page: everything flows, nothing sticks or floats. */
+        .lgrid-scroll {
+            max-height: none;
+            overflow: visible;
+        }
+
+        .lgrid-head,
+        .lgrid-footer,
+        .lgrid-cell--frozen {
+            position: static;
+        }
+
+        /* content-visibility:auto skips off-screen rows — on paper EVERY row is on-screen. */
+        .lgrid-rows--cv .lgrid-row {
+            content-visibility: visible;
+        }
+
+        /* Pad rows are screen furniture (popup landing space), not data — never print them. */
+        .lgrid-row--pad {
+            display: none !important;
+        }
+
+        /* Interactive chrome has no meaning on paper (current page only, G18). */
+        .lgrid-pagination,
+        .lgrid-statusbar,
+        .lgrid-errorbar,
+        .lgrid-loading,
+        .lgrid-popup,
+        .lgrid-cell-editor,
+        .lgrid-chooser-btn,
+        .lgrid-filter,
+        .lgrid-sort,
+        .lgrid-resize {
+            display: none !important;
+        }
+
+        /* Interaction paint (selection/active/dirty) is screen state, not data. */
+        .lgrid-cell--selected,
+        .lgrid--all-selected .lgrid-cell {
+            background: inherit;
+        }
+
+        .lgrid-cell--active {
+            box-shadow: none;
+        }
+    }
+}

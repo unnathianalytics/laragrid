@@ -1,0 +1,41 @@
+{
+  "_comment": "Shared PHP<->JS format vectors — the R2 anti-drift lock. FormatVectorsTest asserts the PHP FormatRegistry produces `expected` for every case; the JS port in resources/js/datagrid/format/formatters.js is written to satisfy the same cases (browser-asserted at M2/M7). Do not edit `expected` by hand — regenerate from the PHP formatters if a formatter's behaviour changes intentionally.",
+  "vectors": [
+    { "name": "inr", "args": {}, "input": 12345678, "expected": "1,23,456.78" },
+    { "name": "inr", "args": {}, "input": 100, "expected": "1.00" },
+    { "name": "inr", "args": {}, "input": 0, "expected": "0.00" },
+    { "name": "inr", "args": {}, "input": -12345678, "expected": "-1,23,456.78" },
+    { "name": "inr", "args": {}, "input": 999, "expected": "9.99" },
+    { "name": "inr", "args": {}, "input": 123456789012, "expected": "1,23,45,67,890.12" },
+    { "name": "inr", "args": {}, "input": 5000000000, "expected": "5,00,00,000.00" },
+    { "name": "inr", "args": {}, "input": null, "expected": "" },
+
+    { "name": "qty", "args": { "scale": 3 }, "input": 1234567.5, "expected": "12,34,567.500" },
+    { "name": "qty", "args": { "scale": 3 }, "input": 100, "expected": "100.000" },
+    { "name": "qty", "args": { "scale": 3 }, "input": 0, "expected": "0.000" },
+    { "name": "qty", "args": { "scale": 2 }, "input": -12.5, "expected": "-12.50" },
+    { "name": "qty", "args": { "scale": 3 }, "input": 999.999, "expected": "999.999" },
+    { "name": "qty", "args": { "scale": 0 }, "input": 1234.5, "expected": "1,235" },
+    { "name": "qty", "args": { "scale": 3 }, "input": 5, "expected": "5.000" },
+    { "name": "qty", "args": { "scale": 3 }, "input": null, "expected": "" },
+
+    { "name": "number", "args": { "scale": 0, "group": true }, "input": 1234567, "expected": "1,234,567" },
+    { "name": "number", "args": { "scale": 2, "group": true }, "input": 1234.567, "expected": "1,234.57" },
+    { "name": "number", "args": { "scale": 0, "group": false }, "input": 1234.5, "expected": "1235" },
+    { "name": "number", "args": { "scale": 2, "group": true }, "input": -1234.5, "expected": "-1,234.50" },
+    { "name": "number", "args": { "scale": 0, "group": true }, "input": 0, "expected": "0" },
+    { "name": "number", "args": {}, "input": null, "expected": "" },
+
+    { "name": "text", "args": {}, "input": "hello", "expected": "hello" },
+    { "name": "text", "args": { "transform": "upper" }, "input": "Mixed Case", "expected": "MIXED CASE" },
+    { "name": "text", "args": { "transform": "lower" }, "input": "Mixed Case", "expected": "mixed case" },
+    { "name": "text", "args": {}, "input": null, "expected": "" },
+    { "name": "text", "args": {}, "input": 42, "expected": "42" },
+
+    { "name": "date", "args": { "display": "d-m-Y" }, "input": "2026-07-02", "expected": "02-07-2026" },
+    { "name": "date", "args": { "display": "d-m-Y" }, "input": "2026-01-09", "expected": "09-01-2026" },
+    { "name": "date", "args": { "display": "Y-m-d" }, "input": "2026-07-02", "expected": "2026-07-02" },
+    { "name": "date", "args": { "display": "d M Y" }, "input": "2026-12-31", "expected": "31 Dec 2026" },
+    { "name": "date", "args": { "display": "d-m-Y" }, "input": null, "expected": "" }
+  ]
+}
