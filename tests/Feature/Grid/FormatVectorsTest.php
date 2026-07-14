@@ -14,8 +14,8 @@ use LaraGrid\Formatting\FormatRegistry;
  * Why:  Formatting is the one layer implemented in both PHP and JS (anti-drift rule R2).
  *       These vectors are the contract: this test locks the PHP side, the node runners lock
  *       the JS port over the same file. The reference inr/qty registrations here mirror
- *       docs/recipes/inr-paise.md, so the extension seam itself stays vector-proven even
- *       though those formatters left the core.
+ *       the kind an app would register, so the extension seam itself stays vector-proven
+ *       even though those formatters left the core.
  */
 function laragridRegisterReferenceFormats(FormatRegistry $registry): void
 {

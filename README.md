@@ -442,9 +442,7 @@ LaraGrid.registerCast('paise', { parse, editText });    // twin of the PHP cast
 Formatting and casting run in **both** runtimes — the client for instant paint, the server for
 authority. Every PHP formatter/cast you register must have a behaviourally identical JS twin
 under the same name, pinned by a shared vector in `tests/fixtures/grid-vectors/` (the package's
-own suite runs 122 vectors through both runtimes on every build). Complete worked example —
-integer-paise money, lakh/crore grouping, financial-year dates:
-[docs/recipes/inr-paise.md](docs/recipes/inr-paise.md).
+own suite runs 122 vectors through both runtimes on every build).
 
 ## Host events
 

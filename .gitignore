@@ -6,3 +6,5 @@ package-lock.json
 /.phpstan.cache/
 .DS_Store
 Thumbs.db
+/plans
+/docs

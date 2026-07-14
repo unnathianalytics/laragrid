@@ -22,7 +22,7 @@ const { parseDecimal, parseInt10, parseText, roundHalfUp, stripGrouping } = awai
 );
 
 // 'paise' left core in the extraction (app-registered cast); these vectors keep pinning the
-// REFERENCE implementation an app registers via registerCast('paise', ...) — see docs/recipes.
+// REFERENCE implementation an app registers via registerCast('paise', ...).
 const parsePaise = (raw) => {
     const normalised = stripGrouping(raw);
     if (normalised === '' || Number.isNaN(Number(normalised))) {
