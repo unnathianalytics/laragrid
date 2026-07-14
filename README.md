@@ -15,6 +15,35 @@ every edit is validated, authorized, and recomputed server-side.
 Everything is configured **in your component class with chained methods**. No blade wiring,
 no JavaScript to write, no npm step — `composer require` is the entire install.
 
+## Contents
+
+- [The three modes](#the-three-modes)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start — a readonly list](#quick-start--a-readonly-list)
+- [Quick start — an editable entry grid](#quick-start--an-editable-entry-grid)
+- [Row lifecycle & blank rows](#row-lifecycle--blank-rows)
+- [Ending entry — the completion flow](#ending-entry--the-completion-flow)
+  - [`->endOfListOption()` — the picker exit](#-endoflistoption--the-picker-exit)
+  - [`->completeWhenBalanced()` — the balancing guard](#-completewhenbalanceddr-cr--the-balancing-guard)
+  - [What "complete" does](#what-complete-does)
+- [Server hooks — enrichment & row consistency](#server-hooks--enrichment--row-consistency)
+- [Display-only mode](#display-only-mode)
+- [Column types](#column-types)
+- [Grid definition reference](#grid-definition-reference)
+- [Actions](#actions)
+- [Toolbar, search & filters](#toolbar-search--filters)
+- [Keyboard](#keyboard)
+- [Theming](#theming)
+  - [Shipped color schemes](#shipped-color-schemes)
+  - [Custom tokens](#custom-tokens)
+- [Extending](#extending)
+- [Host events](#host-events)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Testing](#testing)
+- [License](#license)
+
 ## The three modes
 
 | Mode | Declare with | What you get |
