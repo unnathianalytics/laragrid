@@ -294,6 +294,12 @@
     /* ---- Body --------------------------------------------------------------------- */
 
     .lgrid-rows {
+        /* max-content: the rows container must be as wide as the column tracks, so each row
+           BOX spans the full content width. Without it, row boxes stop at the scroller's
+           client width and content-visibility's paint containment CLIPS every cell beyond
+           the first viewport-width — invisible on desktop (grids fit), blank cells after a
+           horizontal scroll on narrow screens. min-width keeps short grids full-width. */
+        width: max-content;
         min-width: 100%;
     }
 
