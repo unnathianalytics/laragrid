@@ -271,7 +271,17 @@ class Grid
     /** @var list<Action> Toolbar buttons (grid-scoped, no row context). */
     protected array $toolbarActions = [];
 
-    final public function __construct(public readonly string $name) {}
+    final public function __construct(public readonly string $name)
+    {
+        // App-wide defaults (config/laragrid.php) seed the per-grid state; any chained call
+        // (->density(), ->keymap()) overrides them. Guarded parses: an invalid config value
+        // falls back to the shipped default rather than shipping an unstyled/unknown preset.
+        $this->density = GridDensity::tryFrom((string) config('laragrid.density', GridDensity::Compact->value))
+            ?? GridDensity::Compact;
+
+        $keymap = (string) config('laragrid.keymap', 'entry');
+        $this->keymap = in_array($keymap, ['entry', 'excel'], true) ? $keymap : 'entry';
+    }
 
     public static function make(string $name): static
     {
