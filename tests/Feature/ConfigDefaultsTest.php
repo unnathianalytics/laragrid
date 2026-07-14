@@ -38,3 +38,17 @@ it('falls back to shipped defaults on invalid config values', function () {
     expect($layout['density'])->toBe('compact');
     expect($layout['keymap'])->toBe('entry');
 });
+
+it('applies shipped themes via ->theme(), config default, and rejects unknown names', function () {
+    $grid = LaraGrid\Grid::make('t')->columns([LaraGrid\Columns\TextColumn::make('name')])->theme('blue');
+    expect((new LaraGrid\Support\ConfigSerializer)->serialize($grid)['layout']['themeClass'])
+        ->toBe('lgrid--theme-blue');
+
+    config()->set('laragrid.theme', 'emerald');
+    $seeded = LaraGrid\Grid::make('t2')->columns([LaraGrid\Columns\TextColumn::make('name')]);
+    expect((new LaraGrid\Support\ConfigSerializer)->serialize($seeded)['layout']['themeClass'])
+        ->toBe('lgrid--theme-emerald');
+
+    expect(fn () => LaraGrid\Grid::make('t3')->theme('neon'))
+        ->toThrow(InvalidArgumentException::class, 'unknown theme [neon]');
+});

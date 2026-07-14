@@ -408,6 +408,32 @@ needed, and flushes as one batch (with a confirm above 500 cells).
 
 ## Theming
 
+### Shipped color schemes
+
+Six presets ship with the package, each with a coordinated **light and dark** variant:
+`zinc` · `blue` · `emerald` · `amber` · `rose` · `violet`.
+
+```php
+Grid::make('items')->theme('blue')        // per grid (unknown names fail loud at build time)
+```
+
+```php
+// config/laragrid.php — app-wide default; any grid's ->theme() overrides it
+'theme' => 'emerald',
+```
+
+A scheme tints the accent (active-cell ring, selection, focus), header/footer surfaces,
+stripes, and borders as one coordinated family; the dark variant applies automatically under
+your `.dark` class. Internally each preset is just an accent pair — every surface derives from
+it via a shared `color-mix` formula — so all schemes stay tonally consistent, and adding your
+own is two custom properties on a class you pass to `->themeClass()`:
+
+```css
+.lgrid--theme-brand { --lgrid-theme-accent: #0f766e; --lgrid-theme-accent-dark: #2dd4bf; }
+```
+
+### Custom tokens
+
 Every visual is a `--lgrid-*` CSS token (row height, paddings, all colors) with self-contained
 defaults — the grid looks right on a page with no CSS framework at all. In a Tailwind v4 app it
 adopts your `--color-*` `@theme` palette automatically. Override tokens globally, under your own

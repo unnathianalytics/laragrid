@@ -33,6 +33,16 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Color scheme
+    |--------------------------------------------------------------------------
+    | One of the shipped presets ('zinc', 'blue', 'emerald', 'amber', 'rose',
+    | 'violet' — each with light + dark variants), or null for the neutral
+    | default. Per grid: ->theme('blue'), or ->themeClass() for custom tokens.
+    */
+    'theme' => null,
+
+    /*
+    |--------------------------------------------------------------------------
     | Dates
     |--------------------------------------------------------------------------
     | display        — default DateColumn/date-formatter display pattern.

@@ -1034,6 +1034,36 @@
         color: color-mix(in oklab, var(--lgrid-text) 45%, transparent);
     }
 
+    /* ---- Shipped color schemes (->theme('blue') etc.) ------------------------------ */
+    /* Each theme is ONE accent pair (light/dark); every surface derives from it via a
+       shared color-mix formula, so all schemes stay tonally consistent and adding a new
+       one is two custom properties. ->themeClass() remains the fully-custom escape hatch. */
+
+    .lgrid[class*='lgrid--theme-'] {
+        --lgrid-accent: var(--lgrid-theme-accent);
+        --lgrid-header-bg: color-mix(in oklab, var(--lgrid-theme-accent) 8%, #fff);
+        --lgrid-footer-bg: color-mix(in oklab, var(--lgrid-theme-accent) 8%, #fff);
+        --lgrid-stripe-bg: color-mix(in oklab, var(--lgrid-theme-accent) 4%, #fff);
+        --lgrid-border: color-mix(in oklab, var(--lgrid-theme-accent) 22%, #e4e4e7);
+        --lgrid-header-text: color-mix(in oklab, var(--lgrid-theme-accent) 55%, #3f3f46);
+    }
+
+    .dark .lgrid[class*='lgrid--theme-'] {
+        --lgrid-accent: var(--lgrid-theme-accent-dark);
+        --lgrid-header-bg: color-mix(in oklab, var(--lgrid-theme-accent-dark) 14%, #09090b);
+        --lgrid-footer-bg: color-mix(in oklab, var(--lgrid-theme-accent-dark) 14%, #09090b);
+        --lgrid-stripe-bg: color-mix(in oklab, var(--lgrid-theme-accent-dark) 7%, #09090b);
+        --lgrid-border: color-mix(in oklab, var(--lgrid-theme-accent-dark) 28%, #27272a);
+        --lgrid-header-text: color-mix(in oklab, var(--lgrid-theme-accent-dark) 55%, #d4d4d8);
+    }
+
+    .lgrid--theme-zinc    { --lgrid-theme-accent: #52525b; --lgrid-theme-accent-dark: #a1a1aa; }
+    .lgrid--theme-blue    { --lgrid-theme-accent: #2563eb; --lgrid-theme-accent-dark: #60a5fa; }
+    .lgrid--theme-emerald { --lgrid-theme-accent: #059669; --lgrid-theme-accent-dark: #34d399; }
+    .lgrid--theme-amber   { --lgrid-theme-accent: #d97706; --lgrid-theme-accent-dark: #fbbf24; }
+    .lgrid--theme-rose    { --lgrid-theme-accent: #e11d48; --lgrid-theme-accent-dark: #fb7185; }
+    .lgrid--theme-violet  { --lgrid-theme-accent: #7c3aed; --lgrid-theme-accent-dark: #a78bfa; }
+
     /* ---- Dark mode — override tokens/surfaces only -------------------------------- */
 
     .dark .lgrid {

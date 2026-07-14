@@ -73,6 +73,9 @@ class Grid
      */
     protected GridDensity $density = GridDensity::Compact;
 
+    /** The shipped color schemes ->theme() accepts (each has light + dark variants in CSS). */
+    public const THEMES = ['zinc', 'blue', 'emerald', 'amber', 'rose', 'violet'];
+
     protected ?string $themeClass = null;
 
     /**
@@ -281,6 +284,11 @@ class Grid
 
         $keymap = (string) config('laragrid.keymap', 'entry');
         $this->keymap = in_array($keymap, ['entry', 'excel'], true) ? $keymap : 'entry';
+
+        $theme = config('laragrid.theme');
+        if (is_string($theme) && in_array($theme, self::THEMES, true)) {
+            $this->themeClass = 'lgrid--theme-'.$theme;
+        }
     }
 
     public static function make(string $name): static
@@ -378,6 +386,27 @@ class Grid
     public function themeClass(string $class): static
     {
         $this->themeClass = $class;
+
+        return $this;
+    }
+
+    /**
+     * Apply one of the SHIPPED color schemes (light + dark variants included) — sugar over
+     * themeClass() with a validated preset list, so a typo fails loudly at build time. For a
+     * fully custom scheme, use ->themeClass() with your own token overrides instead.
+     *
+     * @throws InvalidArgumentException On an unknown theme name.
+     */
+    public function theme(string $name): static
+    {
+        if (! in_array($name, self::THEMES, true)) {
+            throw new InvalidArgumentException(
+                "Grid [{$this->name}] unknown theme [{$name}]; shipped themes: "
+                .implode(', ', self::THEMES).'. Use themeClass() for a custom scheme.'
+            );
+        }
+
+        $this->themeClass = 'lgrid--theme-'.$name;
 
         return $this;
     }
