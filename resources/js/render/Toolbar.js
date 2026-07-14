@@ -135,8 +135,14 @@ export default class Toolbar {
             add('no', 'No');
         } else {
             add('', 'All');
-            for (const option of filter.options || []) {
-                add(String(option.value), option.label);
+            // PHP serializes options as EITHER a {value: label} map (assoc array — the pluck()
+            // idiom) or a list of {value, label} objects / scalars. Normalise all three.
+            const raw = filter.options || {};
+            const entries = Array.isArray(raw)
+                ? raw.map((o) => (o && typeof o === 'object' ? [o.value, o.label] : [o, o]))
+                : Object.entries(raw);
+            for (const [value, label] of entries) {
+                add(String(value), String(label));
             }
         }
 
