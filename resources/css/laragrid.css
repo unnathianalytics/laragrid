@@ -54,6 +54,16 @@
         box-shadow: none;
     }
 
+    /* The HTML `hidden` attribute must ALWAYS win. Tailwind's preflight guarantees this in
+       Tailwind apps ([hidden]{display:none!important}), but LaraGrid must not depend on it:
+       standalone pages have no preflight, and our own authored display:flex/grid rules on
+       chrome elements (loading overlay, footer, statusbar, editor, popup, pagination) would
+       otherwise override the UA default and paint them permanently. */
+    .lgrid [hidden],
+    .lgrid[hidden] {
+        display: none !important;
+    }
+
     /* Single scroll container — header, rows and footer share it so horizontal scroll aligns. */
     .lgrid-scroll {
         position: relative;
