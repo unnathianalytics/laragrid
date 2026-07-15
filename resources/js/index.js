@@ -17,13 +17,18 @@
  *       mode, exactly as before).
  *
  * When: Bundled as the entry of dist/laragrid.min.js (auto-boots on import); ESM consumers
- *       get the same auto-boot plus the named exports for custom builds.
+ *       get the same auto-boot plus the named exports for custom builds. Boot order contract:
+ *       on import the module (1) merges the public API onto window.LaraGrid, (2) drains the
+ *       consumer's pre-seeded `window.LaraGrid.pending` registration queue, and (3) schedules
+ *       the first scan for DOMContentLoaded — so app registrations land before the first
+ *       paint REGARDLESS of whether the app's script ran before or after this bundle.
  */
 import GridCore from './core/GridCore.js';
 import { registerPainter } from './render/CellPainters.js';
 import { registerEditor } from './edit/EditorRegistry.js';
 import { registerFormatter } from './format/formatters.js';
 import { registerCast } from './format/parse.js';
+import { el } from './util/dom.js';
 
 /** Every live mount: root element → GridCore. Iterable so removals can be matched. */
 const cores = new Map();
@@ -200,13 +205,27 @@ function reap(node) {
 /**
  * Start LaraGrid: initial scan + the arrival/removal observer. Idempotent. Runs automatically
  * on import; exported so a consumer with unusual bootstrapping can call it explicitly.
+ *
+ * Why the first scan waits for DOMContentLoaded: this bundle ships as a deferred script, so
+ * import happens at readyState 'interactive' — scanning synchronously here would paint BEFORE
+ * any other deferred script (the app's own bundle, later in <head>) gets to register its
+ * formatters/casts/painters/editors. Deferring the scan to DCL means every deferred consumer
+ * script — before or after this bundle in the document — has executed before the first paint.
+ * 'interactive' is ambiguous (it also means "DCL already fired, subresources loading"), so a
+ * `load` listener is the safety net for post-DCL injection, and readyState 'complete' (post-
+ * load injection, e.g. dynamic import) starts synchronously.
  */
 export function boot() {
     if (observer) {
         return;
     }
 
+    let started = false;
     const start = () => {
+        if (started) {
+            return; // both DCL and load fire in the pre-DCL case — start exactly once
+        }
+        started = true;
         scan(document.documentElement);
         observer = new MutationObserver((records) => {
             for (const record of records) {
@@ -217,26 +236,77 @@ export function boot() {
         observer.observe(document.documentElement, { childList: true, subtree: true });
     };
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', start, { once: true });
-        // Mark "booted" immediately so a second boot() before DOMContentLoaded stays a no-op.
-        observer = /** @type {any} */ ({ pending: true });
+    if (document.readyState === 'complete') {
+        start();
         return;
     }
 
-    start();
+    // Mark "booted" immediately so a second boot() before the first scan stays a no-op.
+    observer = /** @type {any} */ ({ pending: true });
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+    window.addEventListener('load', start, { once: true });
+}
+
+/**
+ * Apply the consumer's queued registrations, then leave a live sink in their place.
+ *
+ * What: `window.LaraGrid.pending` is the ORDER-INDEPENDENT registration seam. A consumer
+ *       script that runs before this bundle (the default with auto-injection, which appends
+ *       the bundle at the end of <head>) cannot call the API — it doesn't exist yet — so it
+ *       seeds an array of callbacks instead:
+ *
+ *           (window.LaraGrid = window.LaraGrid || {}).pending = [
+ *               (LG) => { LG.registerFormatter('inr', …); LG.registerCast('paise', …); },
+ *           ];
+ *
+ *       Each callback receives the public API. The queue drains here, BEFORE boot() — i.e.
+ *       before the first scan/paint — which is the entire point: registrations must win the
+ *       first paint, not reconcile after it.
+ *
+ * Why the replacement sink: after draining, `pending` becomes an object whose push() runs
+ *       callbacks immediately. A script that loads after the bundle can keep using the exact
+ *       same idiom (or call the API directly — same effect); nothing ever rots unread in an
+ *       array. This also makes a second evaluation of the bundle harmless: the sink is not an
+ *       array, so nothing double-registers.
+ *
+ * When: On import, between the window.LaraGrid merge and boot(). Callback exceptions are NOT
+ *       swallowed — a broken registration fails as loudly as any other boot-time self-check.
+ */
+function drainPending(api) {
+    const run = (fn) => {
+        if (typeof fn === 'function') {
+            fn(api);
+        }
+    };
+
+    const queue = api.pending;
+
+    // Install the live sink BEFORE draining, so a push from inside a draining callback
+    // (or from any later script) registers immediately instead of being lost.
+    api.pending = {
+        push: (...fns) => {
+            fns.forEach(run);
+            return fns.length;
+        },
+    };
+
+    if (Array.isArray(queue)) {
+        queue.splice(0).forEach(run);
+    }
 }
 
 /**
  * The public extension surface, mirrored onto window.LaraGrid by boot below:
  * painters/editors (custom column UI), formatters/casts (the JS twins of the PHP registries),
- * and mount/unmount/find for host-page scripting.
+ * `el` (the element factory custom painters/editors are written against), and
+ * mount/unmount/find for host-page scripting.
  */
 export const LaraGrid = {
     boot,
     mount,
     unmount,
     find,
+    el,
     registerPainter,
     registerEditor,
     registerFormatter,
@@ -244,7 +314,13 @@ export const LaraGrid = {
 };
 
 if (typeof window !== 'undefined') {
+    // Order is load-bearing:
+    //   merge  — the consumer's pre-seeded `pending` array is on the assign TARGET (and
+    //            `pending` is not a key of the package export), so it survives the merge;
+    //   drain  — registrations land while nothing has painted;
+    //   boot   — the first scan sees the completed registries.
     window.LaraGrid = Object.assign(window.LaraGrid || {}, LaraGrid);
+    drainPending(window.LaraGrid);
     boot();
 }
 

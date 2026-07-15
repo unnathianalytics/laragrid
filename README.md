@@ -499,12 +499,31 @@ app(\LaraGrid\Casting\CastRegistry::class)->register('paise', new PaiseCast);
 ```
 
 ```js
-// The window.LaraGrid seams (load your script after the grid bundle):
-LaraGrid.registerPainter('rating', (cellEl, ctx) => { /* draw the cell */ });
-LaraGrid.registerEditor('rating', RatingEditor);        // { mount, value, focus, destroy }
-LaraGrid.registerFormatter('inr', (value, args) => …);  // twin of the PHP formatter
-LaraGrid.registerCast('paise', { parse, editText });    // twin of the PHP cast
+// The JS twins and custom UI register through window.LaraGrid — via the ORDER-INDEPENDENT
+// `pending` queue, which works from any script position, before or after the grid bundle:
+(window.LaraGrid = window.LaraGrid || {}).pending = [
+    (LG) => {
+        LG.registerPainter('rating', (cellEl, ctx) => { /* draw the cell */ });
+        LG.registerEditor('rating', RatingEditor);        // { mount, value, focus, destroy }
+        LG.registerFormatter('inr', (value, args) => …);  // twin of the PHP formatter
+        LG.registerCast('paise', { parse, editText });    // twin of the PHP cast
+    },
+];
 ```
+
+**Why the queue**: with auto-injection the grid bundle is appended at the end of `<head>` —
+*after* your app bundle — and both are deferred, so yours executes first, when
+`window.LaraGrid` doesn't exist yet. The queue closes that gap: seed callbacks from any
+script, and the bundle applies them **before the first paint** (it drains the queue when it
+loads, and defers its first scan to `DOMContentLoaded` so every deferred script has run by
+then). After boot the queue stays live — `window.LaraGrid.pending.push(fn)` applies
+immediately — so the idiom above is always correct, everywhere. Calling
+`LaraGrid.registerFormatter(...)` directly is safe only from code that provably runs after
+boot (a click handler, a dynamic import); anything that must affect the first paint goes
+through the queue.
+
+Custom painters and editors build their DOM with `LG.el(tag, className, text)` — the same
+XSS-safe element factory the built-in renderers use.
 
 Formatting and casting run in **both** runtimes — the client for instant paint, the server for
 authority. Every PHP formatter/cast you register must have a behaviourally identical JS twin

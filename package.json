@@ -6,7 +6,7 @@
     "scripts": {
         "build": "node build/build.mjs",
         "watch": "node build/build.mjs --watch",
-        "test": "node tests/js/run-expression-vectors.mjs && node tests/js/run-lru-vectors.mjs && node tests/js/run-nav-vectors.mjs && node tests/js/run-picker-vectors.mjs"
+        "test": "node tests/js/run-expression-vectors.mjs && node tests/js/run-lru-vectors.mjs && node tests/js/run-nav-vectors.mjs && node tests/js/run-picker-vectors.mjs && node tests/js/run-boot-order.mjs"
     },
     "devDependencies": {
         "esbuild": "^0.28.1"
