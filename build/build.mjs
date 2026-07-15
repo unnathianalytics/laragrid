@@ -23,7 +23,14 @@ const builds = [
         format: 'iife',
         target: 'es2020',
         sourcemap: true,
-        define: { 'import.meta.env.DEV': 'false' },
+        // `import.meta` has no meaning in an IIFE, so every bare occurrence must be defined
+        // away or esbuild warns and substitutes an empty stand-in. Longest key wins, so the
+        // .DEV leaf still resolves to false and the dev-only guards constant-fold out.
+        define: {
+            'import.meta.env.DEV': 'false',
+            'import.meta.env': '{}',
+            'import.meta': '{}',
+        },
     },
     {
         entryPoints: ['resources/js/index.js'],
@@ -33,7 +40,11 @@ const builds = [
         format: 'esm',
         target: 'es2020',
         sourcemap: true,
-        define: { 'import.meta.env.DEV': 'false' },
+        define: {
+            'import.meta.env.DEV': 'false',
+            'import.meta.env': '{}',
+            'import.meta': '{}',
+        },
     },
     {
         entryPoints: ['resources/css/laragrid.css'],
