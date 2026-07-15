@@ -1,5 +1,5 @@
 {
-    "comment": "M5 picker parse + editText vectors run through the REAL JS modules by tests/js/run-picker-vectors.mjs. Date cases pin FY 2026-27 (April start). '__unparseable__' marks the undefined sentinel (refuse-the-commit).",
+    "comment": "M5 picker parse + editText vectors run through the REAL JS modules by tests/js/run-picker-vectors.mjs; the bool + yn sections also feed the PHP casts via CastVectorsTest. Date cases pin FY 2026-27 (April start). '__unparseable__' marks the undefined sentinel (refuse-the-commit).",
     "date": [
         { "raw": "31/12/2026", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
         { "raw": "31.12.26", "fyStartMonth": 4, "fyStartYear": 2026, "expected": "2026-12-31" },
@@ -33,6 +33,24 @@
         { "raw": null, "expected": false },
         { "raw": "banana", "expected": false }
     ],
+    "yn": [
+        { "raw": true, "expected": true },
+        { "raw": "y", "expected": true },
+        { "raw": "Y", "expected": true },
+        { "raw": " y ", "expected": true },
+        { "raw": "YES", "expected": true },
+        { "raw": "1", "expected": true },
+        { "raw": "true", "expected": true },
+        { "raw": "on", "expected": true },
+        { "raw": false, "expected": false },
+        { "raw": "n", "expected": false },
+        { "raw": "N", "expected": false },
+        { "raw": "no", "expected": false },
+        { "raw": "0", "expected": false },
+        { "raw": "", "expected": false },
+        { "raw": null, "expected": false },
+        { "raw": "banana", "expected": false }
+    ],
     "select": [
         { "raw": " i9 ", "expected": "i9" },
         { "raw": "kg", "expected": "kg" },
@@ -50,6 +68,10 @@
         { "parse": { "kind": "date" }, "value": null, "expected": "" },
         { "parse": { "kind": "bool" }, "value": true, "expected": "1" },
         { "parse": { "kind": "bool" }, "value": false, "expected": "0" },
+        { "parse": { "kind": "yn" }, "value": true, "expected": "Y" },
+        { "parse": { "kind": "yn" }, "value": false, "expected": "N" },
+        { "parse": { "kind": "yn" }, "value": "y", "expected": "Y" },
+        { "parse": { "kind": "yn" }, "value": null, "expected": "" },
         { "parse": { "kind": "select" }, "value": "i9", "expected": "i9" },
         { "parse": { "kind": "text" }, "value": "Bolt", "expected": "Bolt" },
         { "parse": { "kind": "text" }, "value": null, "expected": "" }

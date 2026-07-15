@@ -17,7 +17,7 @@
  * When: Constructed by GridCore for an editable grid; KeyboardManager routes open intents to it.
  */
 import { editorFor } from './EditorRegistry.js';
-import { parseValue, editTextFor, parseBool } from '../format/parse.js';
+import { parseValue, editTextFor } from '../format/parse.js';
 import { firstNavigable } from '../util/geometry.js';
 import Lru from '../util/lru.js';
 
@@ -102,7 +102,17 @@ export default class EditorManager {
         }
 
         if (EditorClass.instant) {
-            this.toggleInstant(addr, column, hit.row);
+            // A typed char the instant editor maps (YesNoInline.chars: y/n) SETS that value and
+            // advances like an Enter commit; any other open gesture (Space/F2/dblclick) toggles.
+            const chars = EditorClass.chars || null;
+            const mapped = chars && opts.seed != null
+                ? chars[String(opts.seed).toLowerCase()]
+                : undefined;
+            if (mapped !== undefined) {
+                this.setInstant(addr, column, mapped);
+            } else {
+                this.toggleInstant(addr, column, hit.row);
+            }
             return;
         }
 
@@ -168,15 +178,31 @@ export default class EditorManager {
     }
 
     /**
-     * Instant toggle for a checkbox cell (Space / Enter-open / dblclick): flip the current value
-     * through the SHARED commit pipeline (optimistic apply + op) without entering EDIT mode.
+     * Instant toggle for a checkbox/Y-N cell (Space / dblclick): flip the current value through
+     * the SHARED commit pipeline (optimistic apply + op) without entering EDIT mode. The current
+     * value reads through the column's own parse kind (bool vs yn), so a host feeding 'Y'/'N'
+     * strings still flips correctly. Stays on the cell — the deliberate stay-put gesture.
      */
     toggleInstant(addr, column, row) {
-        const next = !parseBool(row[column.key]);
+        const next = !parseValue(column.parse, row[column.key]);
         this.commitCell(addr.rowKey, addr.colKey, column, {
             parsed: next,
             wireValue: next,
         });
+    }
+
+    /**
+     * Instant SET for a typed char an instant editor maps (YesNoInline: y → true, n → false):
+     * commit that value through the SHARED pipeline, then advance exactly like an Enter commit
+     * (serpentine + auto-append under entry, down under excel, honouring opensPanel) — the Tally
+     * Yes/No flow: one keystroke both answers the cell and moves on.
+     */
+    setInstant(addr, column, value) {
+        this.commitCell(addr.rowKey, addr.colKey, column, {
+            parsed: value,
+            wireValue: value,
+        });
+        this.panelOrAdvance(column, addr.rowKey, 'enter');
     }
 
     /**
@@ -486,7 +512,7 @@ export default class EditorManager {
      */
     wireValueFor(column, raw, parsed) {
         const kind = (column.parse && column.parse.kind) || 'text';
-        return kind === 'select' || kind === 'date' || kind === 'bool' ? parsed : raw;
+        return kind === 'select' || kind === 'date' || kind === 'bool' || kind === 'yn' ? parsed : raw;
     }
 
     /** Whether a column is a picker (its cells carry a display label in the row's _labels bag). */

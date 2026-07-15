@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..', '..'); // tests/js -> repo root
 
-const { parseDate, parseBool, parseSelect, editTextFor , registerCast, stripGrouping, roundHalfUp } = await import(
+const { parseDate, parseBool, parseYn, parseSelect, editTextFor , registerCast, stripGrouping, roundHalfUp } = await import(
     pathToFileURL(resolve(root, 'resources', 'js', 'format', 'parse.js')).href
 );
 
@@ -64,6 +64,10 @@ for (const v of vectors.bool) {
     check(`bool ${JSON.stringify(v.raw)}`, parseBool(v.raw), v.expected);
 }
 
+for (const v of vectors.yn) {
+    check(`yn ${JSON.stringify(v.raw)}`, parseYn(v.raw), v.expected);
+}
+
 for (const v of vectors.select) {
     check(`select ${JSON.stringify(v.raw)}`, parseSelect(v.raw), v.expected);
 }
@@ -77,7 +81,8 @@ for (const v of vectors.editText) {
 }
 
 const total =
-    vectors.date.length + vectors.bool.length + vectors.select.length + vectors.editText.length;
+    vectors.date.length + vectors.bool.length + vectors.yn.length
+    + vectors.select.length + vectors.editText.length;
 
 if (failures.length > 0) {
     console.error(`picker vectors: ${pass}/${total}`);

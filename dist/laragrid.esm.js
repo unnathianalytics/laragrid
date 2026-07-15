@@ -8,7 +8,7 @@ var define_import_meta_default = {};
 // <define:import.meta.env>
 var define_import_meta_env_default = {};
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/core/EventBus.js
+// resources/js/core/EventBus.js
 var EventBus = class {
   constructor() {
     this.listeners = /* @__PURE__ */ new Map();
@@ -55,7 +55,7 @@ var EventBus = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/formula/ExprEval.js
+// resources/js/formula/ExprEval.js
 function roundHalfUp(value, scale) {
   if (!Number.isFinite(value)) {
     return 0;
@@ -144,7 +144,7 @@ function call(node, scope) {
   }
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/util/dom.js
+// resources/js/util/dom.js
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) {
@@ -173,7 +173,7 @@ function cellMapKey(rowKey, colKey) {
   return `${rowKey}${colKey}`;
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/core/StateStore.js
+// resources/js/core/StateStore.js
 var StateStore = class {
   /**
    * @param {object} config the declarative config from ConfigSerializer
@@ -952,7 +952,7 @@ var StateStore = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/Layout.js
+// resources/js/render/Layout.js
 var DEFAULT_WIDTH = 120;
 var Layout = class {
   /**
@@ -1121,7 +1121,7 @@ var Layout = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/HeaderRenderer.js
+// resources/js/render/HeaderRenderer.js
 var HeaderRenderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1258,7 +1258,7 @@ var HeaderRenderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/format/formatters.js
+// resources/js/format/formatters.js
 function arg(args, key, fallback) {
   if (args == null) {
     return fallback;
@@ -1351,7 +1351,7 @@ function formatValue(format, value) {
   return fn(value, format.args || {});
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/shared/date.js
+// resources/js/shared/date.js
 function daysInMonth(month, year) {
   return new Date(year, month, 0).getDate();
 }
@@ -1458,7 +1458,7 @@ function formatIso(parts) {
   return formatValue2(parts, "Y-m-d");
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/format/parse.js
+// resources/js/format/parse.js
 function stripGrouping(raw) {
   return String(raw == null ? "" : raw).replace(/[,\s]/g, "");
 }
@@ -1503,6 +1503,13 @@ function parseBool(raw) {
   const text = String(raw == null ? "" : raw).trim().toLowerCase();
   return ["1", "true", "on", "yes"].includes(text);
 }
+function parseYn(raw) {
+  if (raw === true) {
+    return true;
+  }
+  const text = String(raw == null ? "" : raw).trim().toLowerCase();
+  return ["y", "yes", "1", "true", "on"].includes(text);
+}
 function parseDate(raw, spec) {
   const text = raw == null ? "" : String(raw).trim();
   if (text === "") {
@@ -1536,6 +1543,10 @@ var CASTS = {
     parse: (raw) => parseBool(raw),
     editText: (value) => parseBool(value) ? "1" : "0"
   },
+  yn: {
+    parse: (raw) => parseYn(raw),
+    editText: (value) => parseYn(value) ? "Y" : "N"
+  },
   date: {
     parse: (raw, spec) => parseDate(raw, spec || {}),
     editText: (value) => {
@@ -1564,7 +1575,7 @@ function editTextFor(column, value) {
   return String(value);
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/CellPainters.js
+// resources/js/render/CellPainters.js
 function paintText(cellEl, ctx) {
   const display = formatValue(ctx.column.format, ctx.value);
   if (ctx.column.html) {
@@ -1595,6 +1606,10 @@ function paintCheckbox(cellEl, ctx) {
   cellEl.textContent = "";
   cellEl.appendChild(el("span", "lgrid-check" + (on ? " lgrid-check--on" : "")));
   cellEl.setAttribute("aria-checked", on ? "true" : "false");
+}
+function paintYesNo(cellEl, ctx) {
+  const answered = !(ctx.value == null || ctx.value === "");
+  setText(cellEl, answered ? parseYn(ctx.value) ? "Y" : "N" : "");
 }
 function paintActions(cellEl, ctx) {
   cellEl.textContent = "";
@@ -1629,6 +1644,7 @@ var PAINTERS = {
   formula: paintFormula,
   select: paintSelect,
   checkbox: paintCheckbox,
+  yesno: paintYesNo,
   actions: paintActions,
   rowselect: paintRowselect
 };
@@ -1639,7 +1655,7 @@ function registerPainter(painterId, fn) {
   PAINTERS[painterId] = fn;
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/BodyRenderer.js
+// resources/js/render/BodyRenderer.js
 var BodyRenderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1776,7 +1792,7 @@ var BodyRenderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/FooterRenderer.js
+// resources/js/render/FooterRenderer.js
 var FooterRenderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1823,7 +1839,7 @@ var FooterRenderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/Renderer.js
+// resources/js/render/Renderer.js
 var Renderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1900,7 +1916,7 @@ var Renderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/util/geometry.js
+// resources/js/util/geometry.js
 function clamp(n, lo, hi) {
   return n < lo ? lo : n > hi ? hi : n;
 }
@@ -1984,7 +2000,7 @@ function resolveMove(p) {
   }
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/selection/SelectionManager.js
+// resources/js/selection/SelectionManager.js
 var _SelectionManager = class _SelectionManager {
   /**
    * @param {import('../core/StateStore').default} store
@@ -2224,7 +2240,7 @@ var _SelectionManager = class _SelectionManager {
 __publicField(_SelectionManager, "LOCK_SKIPPING_INTENTS", /* @__PURE__ */ new Set(["left", "right", "nextWrap", "prevWrap"]));
 var SelectionManager = _SelectionManager;
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/selection/SelectionPainter.js
+// resources/js/selection/SelectionPainter.js
 var SelectionPainter = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -2351,7 +2367,7 @@ var SelectionPainter = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/keys.js
+// resources/js/keyboard/keys.js
 function keyToken(key) {
   if (typeof key === "string" && key.length === 1) {
     return key.toLowerCase();
@@ -2410,21 +2426,21 @@ var SHARED_KEYMAP = {
   "Shift+F10": { action: "actionsMenu" }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/keymap-entry.js
+// resources/js/keyboard/keymap-entry.js
 var ENTRY_KEYMAP = {
   ...SHARED_KEYMAP,
   Enter: { action: "move", intent: "nextWrap" },
   "Shift+Enter": { action: "move", intent: "prevWrap" }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/keymap-excel.js
+// resources/js/keyboard/keymap-excel.js
 var EXCEL_KEYMAP = {
   ...SHARED_KEYMAP,
   Enter: { action: "move", intent: "down" },
   "Shift+Enter": { action: "move", intent: "up" }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/EditorRegistry.js
+// resources/js/edit/EditorRegistry.js
 var EDITORS = {};
 function registerEditor(id, EditorClass) {
   EDITORS[id] = EditorClass;
@@ -2433,7 +2449,7 @@ function editorFor(id) {
   return EDITORS[id] || null;
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/KeyboardManager.js
+// resources/js/keyboard/KeyboardManager.js
 function keymapFor(name) {
   return name === "excel" ? EXCEL_KEYMAP : ENTRY_KEYMAP;
 }
@@ -2496,7 +2512,7 @@ var KeyboardManager = class {
         this.editor.open({});
         return;
       }
-      if (this.isPrintable(e) && !this.activeCellInstant()) {
+      if (this.isPrintable(e) && (!this.activeCellInstant() || this.instantCharCommits(e.key))) {
         e.preventDefault();
         this.editor.open({ seed: e.key });
         return;
@@ -2652,21 +2668,35 @@ var KeyboardManager = class {
     return !!(column && column.editable);
   }
   /**
-   * True when the active cell's editor is an INSTANT one (checkbox) — a registry lookup, so the
+   * The active cell's INSTANT editor class (checkbox/yesno), or null — a registry lookup, so the
    * dispatcher stays type-agnostic (any future instant editor gets the same Space/Enter rules).
    */
-  activeCellInstant() {
+  activeInstantClass() {
     const addr = this.store.active;
     if (!addr) {
-      return false;
+      return null;
     }
     const column = this.store.columnByKey(addr.colKey);
     const EditorClass = column && column.editor ? editorFor(column.editor) : null;
-    return !!(EditorClass && EditorClass.instant);
+    return EditorClass && EditorClass.instant ? EditorClass : null;
+  }
+  /** True when the active cell's editor is an INSTANT one (checkbox/yesno). */
+  activeCellInstant() {
+    return !!this.activeInstantClass();
+  }
+  /**
+   * True when the active instant editor maps this typed key to a direct value commit
+   * (YesNoInline.chars: y/n) — the one type-through allowed on an instant column; the
+   * EditorManager's open() applies the mapping.
+   */
+  instantCharCommits(key) {
+    const EditorClass = this.activeInstantClass();
+    const chars = EditorClass ? EditorClass.chars : null;
+    return !!chars && Object.prototype.hasOwnProperty.call(chars, String(key).toLowerCase());
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/clipboard/ClipboardManager.js
+// resources/js/clipboard/ClipboardManager.js
 function parseTsv(text) {
   const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
   if (lines.length && lines[lines.length - 1] === "") {
@@ -2886,7 +2916,7 @@ var _ClipboardManager = class _ClipboardManager {
 __publicField(_ClipboardManager, "CONFIRM_THRESHOLD", 500);
 var ClipboardManager = _ClipboardManager;
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/statusbar/StatusBar.js
+// resources/js/statusbar/StatusBar.js
 var StatusBar = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -2959,7 +2989,7 @@ var StatusBar = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/a11y/Announcer.js
+// resources/js/a11y/Announcer.js
 var Announcer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3027,7 +3057,7 @@ var Announcer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/util/lru.js
+// resources/js/util/lru.js
 var Lru = class {
   /**
    * @param {number} capacity max entries kept (>=1)
@@ -3081,7 +3111,7 @@ var Lru = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/sync/PageSource.js
+// resources/js/sync/PageSource.js
 var PageSource = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3272,7 +3302,7 @@ var PageSource = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/PaginationBar.js
+// resources/js/render/PaginationBar.js
 var PaginationBar = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3348,7 +3378,7 @@ var PaginationBar = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/sync/SyncManager.js
+// resources/js/sync/SyncManager.js
 var SyncManager = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3501,7 +3531,7 @@ var SyncManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/EditorManager.js
+// resources/js/edit/EditorManager.js
 var EditorManager = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3571,7 +3601,13 @@ var EditorManager = class {
       return;
     }
     if (EditorClass.instant) {
-      this.toggleInstant(addr, column, hit.row);
+      const chars = EditorClass.chars || null;
+      const mapped = chars && opts.seed != null ? chars[String(opts.seed).toLowerCase()] : void 0;
+      if (mapped !== void 0) {
+        this.setInstant(addr, column, mapped);
+      } else {
+        this.toggleInstant(addr, column, hit.row);
+      }
       return;
     }
     this.mode = "EDIT";
@@ -3625,15 +3661,30 @@ var EditorManager = class {
     return false;
   }
   /**
-   * Instant toggle for a checkbox cell (Space / Enter-open / dblclick): flip the current value
-   * through the SHARED commit pipeline (optimistic apply + op) without entering EDIT mode.
+   * Instant toggle for a checkbox/Y-N cell (Space / dblclick): flip the current value through
+   * the SHARED commit pipeline (optimistic apply + op) without entering EDIT mode. The current
+   * value reads through the column's own parse kind (bool vs yn), so a host feeding 'Y'/'N'
+   * strings still flips correctly. Stays on the cell — the deliberate stay-put gesture.
    */
   toggleInstant(addr, column, row) {
-    const next = !parseBool(row[column.key]);
+    const next = !parseValue(column.parse, row[column.key]);
     this.commitCell(addr.rowKey, addr.colKey, column, {
       parsed: next,
       wireValue: next
     });
+  }
+  /**
+   * Instant SET for a typed char an instant editor maps (YesNoInline: y → true, n → false):
+   * commit that value through the SHARED pipeline, then advance exactly like an Enter commit
+   * (serpentine + auto-append under entry, down under excel, honouring opensPanel) — the Tally
+   * Yes/No flow: one keystroke both answers the cell and moves on.
+   */
+  setInstant(addr, column, value) {
+    this.commitCell(addr.rowKey, addr.colKey, column, {
+      parsed: value,
+      wireValue: value
+    });
+    this.panelOrAdvance(column, addr.rowKey, "enter");
   }
   /**
    * Search a column's server options for a term, through a per-column LRU. The monotonic-seq
@@ -3894,7 +3945,7 @@ var EditorManager = class {
    */
   wireValueFor(column, raw, parsed) {
     const kind = column.parse && column.parse.kind || "text";
-    return kind === "select" || kind === "date" || kind === "bool" ? parsed : raw;
+    return kind === "select" || kind === "date" || kind === "bool" || kind === "yn" ? parsed : raw;
   }
   /** Whether a column is a picker (its cells carry a display label in the row's _labels bag). */
   isPickerColumn(column) {
@@ -4122,7 +4173,7 @@ var EditorManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/validate/ClientValidator.js
+// resources/js/validate/ClientValidator.js
 var ClientValidator = class {
   /**
    * Validate a value against a column's compiled `validate.client` rules.
@@ -4182,7 +4233,7 @@ var ClientValidator = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/ErrorPainter.js
+// resources/js/render/ErrorPainter.js
 var ErrorPainter = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -4285,7 +4336,7 @@ var ErrorPainter = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/popup/PopupManager.js
+// resources/js/popup/PopupManager.js
 var PopupManager = class {
   /**
    * @param {{root: HTMLElement, scroll: HTMLElement, popup: HTMLElement}} refs
@@ -4378,7 +4429,7 @@ var PopupManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/persist/LayoutStore.js
+// resources/js/persist/LayoutStore.js
 var SCHEMA_VERSION = 1;
 var LayoutStore = class {
   /**
@@ -4454,7 +4505,7 @@ var LayoutStore = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/resize/ResizeManager.js
+// resources/js/resize/ResizeManager.js
 var HARD_MIN = 36;
 var HARD_MAX = 2e3;
 var AUTOFIT_SAMPLE = 200;
@@ -4632,7 +4683,7 @@ var ResizeManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/ColumnChooser.js
+// resources/js/render/ColumnChooser.js
 var ColumnChooser = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -4793,7 +4844,7 @@ var ColumnChooser = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/HeaderFilters.js
+// resources/js/render/HeaderFilters.js
 var HeaderFilters = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -4880,7 +4931,7 @@ var HeaderFilters = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/Toolbar.js
+// resources/js/render/Toolbar.js
 var Toolbar = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -5036,7 +5087,7 @@ var Toolbar = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/interact/RowActivator.js
+// resources/js/interact/RowActivator.js
 var RowActivator = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -5113,7 +5164,7 @@ var RowActivator = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/interact/ActionRunner.js
+// resources/js/interact/ActionRunner.js
 var ActionRunner = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -5314,7 +5365,7 @@ var ActionRunner = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/TextEditor.js
+// resources/js/edit/editors/TextEditor.js
 var TextEditor = class {
   /**
    * Build the input into the host element.
@@ -5399,7 +5450,7 @@ var TextEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/NumberEditor.js
+// resources/js/edit/editors/NumberEditor.js
 var NumberEditor = class {
   /**
    * @param {HTMLElement} host
@@ -5465,7 +5516,7 @@ var NumberEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/endOfList.js
+// resources/js/edit/endOfList.js
 var END_OF_LIST_VALUE = "__lgrid_end_of_list__";
 function endOfListOption(label) {
   return { value: END_OF_LIST_VALUE, label, __endOfList: true };
@@ -5474,7 +5525,7 @@ function isEndOfListOption(option) {
   return !!(option && option.__endOfList === true);
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/SelectEditor.js
+// resources/js/edit/editors/SelectEditor.js
 var SelectEditor = class {
   /**
    * @param {HTMLElement} host
@@ -5656,7 +5707,7 @@ var SelectEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/SearchSelectEditor.js
+// resources/js/edit/editors/SearchSelectEditor.js
 var SearchSelectEditor = class {
   /**
    * @param {HTMLElement} host
@@ -5915,7 +5966,7 @@ var SearchSelectEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/DateEditor.js
+// resources/js/edit/editors/DateEditor.js
 var DateEditor = class {
   /**
    * @param {HTMLElement} host
@@ -5982,7 +6033,7 @@ var DateEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/CheckboxInline.js
+// resources/js/edit/editors/CheckboxInline.js
 var CheckboxInline = class {
   /* The class is never instantiated — EditorManager short-circuits on `instant`. The stubs
      document the editor contract for anyone extending from this file. */
@@ -5997,15 +6048,33 @@ var CheckboxInline = class {
 /** Marks the editor as an in-place toggle: open() flips the value instead of mounting. */
 __publicField(CheckboxInline, "instant", true);
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/builtin.js
+// resources/js/edit/editors/YesNoInline.js
+var YesNoInline = class {
+  /* The class is never instantiated — EditorManager short-circuits on `instant`. The stubs
+     document the editor contract for anyone extending from this file. */
+  mount() {
+  }
+  value() {
+    return null;
+  }
+  destroy() {
+  }
+};
+/** Marks the editor as an in-place toggle: open() without a mapped seed flips the value. */
+__publicField(YesNoInline, "instant", true);
+/** NAV typed chars (lower-cased) → the value committed + advanced through the shared pipeline. */
+__publicField(YesNoInline, "chars", { y: true, n: false });
+
+// resources/js/edit/builtin.js
 registerEditor("text", TextEditor);
 registerEditor("number", NumberEditor);
 registerEditor("select", SelectEditor);
 registerEditor("searchselect", SearchSelectEditor);
 registerEditor("date", DateEditor);
 registerEditor("checkbox", CheckboxInline);
+registerEditor("yesno", YesNoInline);
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/core/GridCore.js
+// resources/js/core/GridCore.js
 var GridCore = class {
   /**
    * @param {object} config the @js() config from ConfigSerializer
@@ -6695,7 +6764,7 @@ var GridCore = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/index.js
+// resources/js/index.js
 var cores = /* @__PURE__ */ new Map();
 var observer = null;
 function resolveRefs(root) {

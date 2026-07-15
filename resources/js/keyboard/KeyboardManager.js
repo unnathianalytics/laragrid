@@ -89,7 +89,8 @@ export default class KeyboardManager {
         // end, G4) and is BLOCKED with a flash on a blank required cell (G7); under excel it
         // falls through to the keymap's move-down. Typing / F2 / double-click are the edit
         // gestures. Instant (checkbox) columns are likewise excluded from type-through — Space
-        // (and double-click) are the deliberate toggle gestures.
+        // (and double-click) are the deliberate toggle gestures — EXCEPT the chars the instant
+        // editor itself maps (YesNoInline: y/n), which commit that value directly and advance.
         if (this.editor) {
             if (e.key === 'F2') {
                 e.preventDefault();
@@ -101,7 +102,7 @@ export default class KeyboardManager {
                 this.editor.open({});
                 return;
             }
-            if (this.isPrintable(e) && !this.activeCellInstant()) {
+            if (this.isPrintable(e) && (!this.activeCellInstant() || this.instantCharCommits(e.key))) {
                 e.preventDefault();
                 this.editor.open({ seed: e.key });
                 return;
@@ -293,16 +294,32 @@ export default class KeyboardManager {
     }
 
     /**
-     * True when the active cell's editor is an INSTANT one (checkbox) — a registry lookup, so the
+     * The active cell's INSTANT editor class (checkbox/yesno), or null — a registry lookup, so the
      * dispatcher stays type-agnostic (any future instant editor gets the same Space/Enter rules).
      */
-    activeCellInstant() {
+    activeInstantClass() {
         const addr = this.store.active;
         if (!addr) {
-            return false;
+            return null;
         }
         const column = this.store.columnByKey(addr.colKey);
         const EditorClass = column && column.editor ? editorFor(column.editor) : null;
-        return !!(EditorClass && EditorClass.instant);
+        return EditorClass && EditorClass.instant ? EditorClass : null;
+    }
+
+    /** True when the active cell's editor is an INSTANT one (checkbox/yesno). */
+    activeCellInstant() {
+        return !!this.activeInstantClass();
+    }
+
+    /**
+     * True when the active instant editor maps this typed key to a direct value commit
+     * (YesNoInline.chars: y/n) — the one type-through allowed on an instant column; the
+     * EditorManager's open() applies the mapping.
+     */
+    instantCharCommits(key) {
+        const EditorClass = this.activeInstantClass();
+        const chars = EditorClass ? EditorClass.chars : null;
+        return !!chars && Object.prototype.hasOwnProperty.call(chars, String(key).toLowerCase());
     }
 }

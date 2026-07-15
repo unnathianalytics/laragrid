@@ -90,6 +90,20 @@ export function parseBool(raw) {
 }
 
 /**
+ * Parse a Y/N value to a real boolean: the checkbox truthy set PLUS 'y' — the letter the operator
+ * actually types on a YesNoColumn. Mirrors LaraGrid\Casting\Casts\YnCast (a distinct kind rather
+ * than a widened 'bool', so checkbox semantics — pinned to PHP's FILTER_VALIDATE_BOOLEAN — stay
+ * untouched). Everything unrecognised → false, same discipline as parseBool.
+ */
+export function parseYn(raw) {
+    if (raw === true) {
+        return true;
+    }
+    const text = String(raw == null ? '' : raw).trim().toLowerCase();
+    return ['y', 'yes', '1', 'true', 'on'].includes(text);
+}
+
+/**
  * Parse typed date text to canonical ISO `Y-m-d` via the SHARED fuzzy parser: blank → null
  * (cleared); an already-canonical ISO / display-pattern value passes through re-canonicalised;
  * fuzzy text (`31/12`, `311226`, `2-1`) resolves a missing year against the column's
@@ -144,6 +158,10 @@ const CASTS = {
     bool: {
         parse: (raw) => parseBool(raw),
         editText: (value) => (parseBool(value) ? '1' : '0'),
+    },
+    yn: {
+        parse: (raw) => parseYn(raw),
+        editText: (value) => (parseYn(value) ? 'Y' : 'N'),
     },
     date: {
         parse: (raw, spec) => parseDate(raw, spec || {}),

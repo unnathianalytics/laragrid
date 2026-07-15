@@ -10,11 +10,12 @@ use LaraGrid\Casting\Casts\DecimalCast;
 use LaraGrid\Casting\Casts\IntCast;
 use LaraGrid\Casting\Casts\SelectCast;
 use LaraGrid\Casting\Casts\TextCast;
+use LaraGrid\Casting\Casts\YnCast;
 use LaraGrid\Columns\Column;
 
 /**
  * What: The parse-kind registry — maps a column's parseSpec kind ('text', 'int', 'decimal',
- *       'select', 'bool', 'date', + app-registered kinds) to the Cast that produces the
+ *       'select', 'bool', 'yn', 'date', + app-registered kinds) to the Cast that produces the
  *       server-side model value.
  *
  * Why:  The extraction seam that removed the source app's Money::toPaise from the core editing
@@ -36,6 +37,7 @@ class CastRegistry
         $this->register('decimal', new DecimalCast);
         $this->register('select', new SelectCast);
         $this->register('bool', new BoolCast);
+        $this->register('yn', new YnCast);
         $this->register('date', new DateCast);
     }
 

@@ -9,7 +9,7 @@
  * When: Used by BodyRenderer for every cell.
  */
 import { formatValue } from '../format/formatters.js';
-import { parseBool } from '../format/parse.js';
+import { parseBool, parseYn } from '../format/parse.js';
 import { el, setText } from '../util/dom.js';
 
 /**
@@ -81,6 +81,18 @@ function paintCheckbox(cellEl, ctx) {
 }
 
 /**
+ * Paint a Y/N cell: 'Y' / 'N' text for a committed answer, BLANK while unanswered (null/'').
+ * Unlike the checkbox — whose unchecked box IS its false — an unanswered Y/N must look different
+ * from an explicit No, so a required cell's Enter block reads honestly on screen.
+ * @param {HTMLElement} cellEl
+ * @param {object} ctx {value, column}
+ */
+function paintYesNo(cellEl, ctx) {
+    const answered = !(ctx.value == null || ctx.value === '');
+    setText(cellEl, answered ? (parseYn(ctx.value) ? 'Y' : 'N') : '');
+}
+
+/**
  * Paint the per-row action buttons (P7). Buttons render ONLY for actions present in the
  * row's server-baked `_actions` bag (visibility/permission already resolved); each carries
  * its name + row key as data attributes for the ActionRunner's delegated click.
@@ -128,6 +140,7 @@ const PAINTERS = {
     formula: paintFormula,
     select: paintSelect,
     checkbox: paintCheckbox,
+    yesno: paintYesNo,
     actions: paintActions,
     rowselect: paintRowselect,
 };

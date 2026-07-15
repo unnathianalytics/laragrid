@@ -364,7 +364,8 @@ To refresh a display grid's data later, call `$this->reseedGrid('name', $freshRo
 | `DateColumn` | date | ISO `Y-m-d` | fuzzy typed input (`31/12`, `311226`); display pattern configurable; financial-year inference opt-in |
 | `SelectColumn` | dropdown | option id | `->options([...])` embedded whitelist |
 | `SearchSelectColumn` | async picker | option id | `->optionsUsing(fn ($term, $row))`, `->onSelect()` enrichment, `->minChars()`, `->debounce()`, `->limit()` |
-| `CheckboxColumn` | instant toggle | bool | |
+| `CheckboxColumn` | instant toggle | bool | Space/double-click toggle in place; Enter just advances |
+| `YesNoColumn` | typed Y/N | bool | painted `Y`/`N` (blank until answered); typing `Y`/`N` commits and advances like Enter — the Tally Yes/No flow; Space still toggles in place |
 | `FormulaColumn` | — | computed | `->formula('qty * rate')` — evaluated live client-side, authoritatively server-side |
 | `ComputedColumn` | — | server-baked | `->state(fn ($row))`, pair with `->html()` for badges/links via `CellHtml` |
 | `ReadonlyColumn` / `HiddenColumn` | — | display / carried | writes rejected server-side |
@@ -436,6 +437,8 @@ header funnels via `->filterable()` run through the same whitelisted pipeline.
 | Shift + movement, Ctrl+A | extend / select all |
 | Ctrl+C | copy selection as TSV (pastes into Excel; paste back round-trips) |
 | Type / F2 / double-click | overwrite / edit a cell |
+| Space | toggle a `CheckboxColumn` / `YesNoColumn` cell in place |
+| `Y` / `N` | answer a `YesNoColumn` cell **and advance** — one keystroke per row |
 | Enter | commit + advance — serpentine in `entry`, down in `excel` |
 | **Delete** | **clear** selected cells |
 | **Shift+Delete or F7** | delete the row (minRows-guarded) |
@@ -528,7 +531,7 @@ XSS-safe element factory the built-in renderers use.
 Formatting and casting run in **both** runtimes — the client for instant paint, the server for
 authority. Every PHP formatter/cast you register must have a behaviourally identical JS twin
 under the same name, pinned by a shared vector in `tests/fixtures/grid-vectors/` (the package's
-own suite runs 122 vectors through both runtimes on every build).
+own suite runs 142 vectors through both runtimes on every build).
 
 ## Host events
 

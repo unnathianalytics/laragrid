@@ -13,6 +13,7 @@ import SelectEditor from './editors/SelectEditor.js';
 import SearchSelectEditor from './editors/SearchSelectEditor.js';
 import DateEditor from './editors/DateEditor.js';
 import CheckboxInline from './editors/CheckboxInline.js';
+import YesNoInline from './editors/YesNoInline.js';
 
 registerEditor('text', TextEditor);
 registerEditor('number', NumberEditor);
@@ -20,3 +21,4 @@ registerEditor('select', SelectEditor);
 registerEditor('searchselect', SearchSelectEditor);
 registerEditor('date', DateEditor);
 registerEditor('checkbox', CheckboxInline);
+registerEditor('yesno', YesNoInline);
