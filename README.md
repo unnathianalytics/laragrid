@@ -1,6 +1,6 @@
 # LaraGrid
 
-[![Latest Version](https://img.shields.io/packagist/v/unnathianalytics/laragrid.svg)](https://packagist.org/packages/unnathianalytics/laragrid)
+[![Total Downloads](https://img.shields.io/packagist/dt/unnathianalytics/laragrid.svg)](https://packagist.org/packages/unnathianalytics/laragrid/stats)
 [![License](https://img.shields.io/packagist/l/unnathianalytics/laragrid.svg)](LICENSE)
 [![PHP](https://img.shields.io/packagist/php-v/unnathianalytics/laragrid.svg)](composer.json)
 
