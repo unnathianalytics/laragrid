@@ -15,6 +15,18 @@ every edit is validated, authorized, and recomputed server-side.
 Everything is configured **in your component class with chained methods**. No blade wiring,
 no JavaScript to write, no npm step — `composer require` is the entire install.
 
+**Try it live → [grid.laravel.cloud](https://grid.laravel.cloud/)**
+
+A readonly server-side grid — sorting, global search, filters, pagination, bulk selection and
+footer totals, all through a whitelisted fail-closed pipeline:
+
+![A paginated Resorts list with a search box, Type and Visibility filters, sortable headers, a checkbox selection gutter, status badges, a summed footer and a per-page picker](assets/images/table.png)
+
+An editable entry grid — typed cell editors, an async picker that enriches the row on select,
+live formula columns, auto-append and a running footer:
+
+![A Booking Entry form where a resort picker auto-fills the nightly rate, nights derive from a date range, the amount column recomputes live, and a status bar shows count, sum and average](assets/images/form.png)
+
 ## Contents
 
 - [The three modes](#the-three-modes)
