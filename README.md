@@ -85,6 +85,16 @@ composer require unnathianalytics/laragrid
 That's all. The service provider auto-discovers, and the prebuilt script + stylesheet
 auto-inject into any page that renders a grid. No layout directives, no build step.
 
+Using [saved views](#saved-views) (`->savedViews()`)? Run the migrations once — the packaged
+migration creates the `laragrid_views` table (name configurable via `laragrid.views.table`):
+
+```bash
+php artisan migrate
+```
+
+Grids that never declare `->savedViews()` don't need the table; skipping this step changes
+nothing for them.
+
 Optional publishes:
 
 ```bash
