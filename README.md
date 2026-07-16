@@ -39,6 +39,7 @@ live formula columns, auto-append and a running footer:
   - [`->endOfListOption()` — the picker exit](#-endoflistoption--the-picker-exit)
   - [`->completeWhenBalanced()` — the balancing guard](#-completewhenbalanceddr-cr--the-balancing-guard)
   - [What "complete" does](#what-complete-does)
+  - [`->focusOutTo()` vs `->onCompleteFocus()`](#-focusoutto-vs--oncompletefocus)
 - [Server hooks — enrichment & row consistency](#server-hooks--enrichment--row-consistency)
 - [Display-only mode](#display-only-mode)
 - [Column types](#column-types)
@@ -305,6 +306,52 @@ document.addEventListener('lgrid:complete', (e) => {
 });
 ```
 
+### `->focusOutTo()` vs `->onCompleteFocus()`
+
+Both take a selector and send focus there, and both resolve it through the same retrying
+lookup — so a Save button that is disabled until the very commit that triggered the focus still
+receives it (retried every 50ms for ~2s, and a `disabled` target is treated as not there yet).
+That shared tail is where the similarity ends. They answer two different questions:
+
+| | `->focusOutTo(selector)` | `->onCompleteFocus(selector)` |
+|---|---|---|
+| **Question it answers** | "Where does Tab go when it leaves the grid?" | "Where does focus go when entry is *finished*?" |
+| **Trigger** | Forward Tab pressed on the **last navigable cell** | The **completion signal** — an `->endOfListOption()` pick, or Enter past the last cell once `->completeWhenBalanced()` balances |
+| **Meaning** | Positional — the cursor ran out of grid | Semantic — the operator declared they're done |
+| **Fires `lgrid:complete`?** | **No.** It's a navigation intercept, nothing else | **Yes.** The event dispatches first; the focus move is the packaged reaction to it |
+| **Applies to** | Any grid, editable or readonly | Editable grids that declare a completion source |
+| **While a cell editor is open** | Ignored — the editor owns Tab | N/A — completion only fires from a committed flow |
+| **Rows left behind** | Grid keeps whatever rows it has; nothing is signalled | Same — completion commits no value; it only announces |
+
+The practical difference: `focusOutTo` is a *tab-order repair*. Without it, Tab off the last
+cell falls to whatever the browser thinks is next in the DOM — often nothing useful, since the
+grid body is a `wire:ignore` island. It fires every time the operator tabs off the end, even on
+row one of an empty grid, and it says nothing about whether the work is done.
+`onCompleteFocus` is the *end of the entry circuit*: it only fires when the grid's own
+completion guard says the operator finished, and it always comes with the `lgrid:complete`
+event, so host code can react beyond focus.
+
+Declaring both is the normal setup, and they don't conflict — they cover different exits from
+the same grid:
+
+```php
+Grid::make('lines')
+    ->editable()->rowsFrom('lines')->autoAppend()
+    ->focusOutTo('[data-save]')        // operator tabs off the end → Save
+    ->onCompleteFocus('[data-save]')   // operator picks "End of List" → lgrid:complete + Save
+```
+
+Point them at different targets when the two exits mean different things — Tab moves on to the
+next form field, while completion jumps to Save:
+
+```php
+    ->focusOutTo('#remarks')
+    ->onCompleteFocus('[data-save]')
+```
+
+If you only want the DOM event and will move focus yourself, declare `->onCompleteFocus()` not
+at all and listen for `lgrid:complete` — the event fires with or without it.
+
 ## Server hooks — enrichment & row consistency
 
 Three server-side hooks let a grid keep its rows internally consistent without any client code.
@@ -388,8 +435,10 @@ Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `alig
 `completeWhenBalanced('dr', 'cr')` · `afterCellChange(fn)` · `afterRowRemove(fn)`.
 
 **Behavior** — `keymap('entry'|'excel')` · `toolbar(...)` / `toolbar(false)` ·
-`focusOnMount()` · `focusOutTo(selector)` · `onCompleteFocus(selector)` ·
-`emptyState(text)` · `statusBar(bool)` · `persistWidths()` (column layout survives reloads).
+`focusOnMount()` · `focusOutTo(selector)` (Tab off the last cell lands here) ·
+`onCompleteFocus(selector)` (the completion signal lands here — see
+[the comparison](#-focusoutto-vs--oncompletefocus)) · `emptyState(text)` · `statusBar(bool)` ·
+`persistWidths()` (column layout survives reloads).
 
 **Layout** — `stickyHeader()` · `freezeColumns(n)` · `striped()` ·
 `density(GridDensity::Compact|Normal|Comfortable)` · `height('420px')` · `maxHeight('60vh')` ·
