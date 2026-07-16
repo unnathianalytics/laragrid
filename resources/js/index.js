@@ -130,6 +130,9 @@ function resolveWire(root) {
         gridOptions: call('gridOptions'),
         gridAction: call('gridAction'),
         gridExport: call('gridExport'),
+        gridViews: call('gridViews'),
+        gridViewSave: call('gridViewSave'),
+        gridViewDelete: call('gridViewDelete'),
     };
 }
 

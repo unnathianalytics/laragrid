@@ -99,8 +99,15 @@ export default class StateStore {
         this.pending = new Set();
         /** @type {Map<string, string>} error message by cellMapKey (or `${_k}_row` for row errors). */
         this.errors = new Map();
-        /** @type {Array<object>} the recorded op log (sync spine now; undo/redo later, §1.4). */
+        /** @type {Array<object>} the recorded op log (the sync spine). */
         this.opLog = [];
+        /**
+         * The undo/redo recorder (§1.4, completed): GridCore points this at the UndoManager for
+         * an editable grid; every optimistic mutator below reports its before/after through it.
+         * Null on readonly/display grids — recording is a no-op there.
+         * @type {{record: (entry: object) => void, clear: () => void}|null}
+         */
+        this.recorder = null;
         /** Bulk-checked row keys (the selector gutter, P7). */
         this.checked = new Set();
         /** Columns that are formulas, with their AST — recomputed client-side on every dependent set. */
@@ -570,6 +577,9 @@ export default class StateStore {
         if (!hit) {
             return [];
         }
+        if (this.recorder && hit.row[colKey] !== value) {
+            this.recorder.record({ t: 'set', rowKey, colKey, before: hit.row[colKey], after: value });
+        }
         hit.row[colKey] = value;
 
         const changed = [{ rowKey, colKey }];
@@ -613,6 +623,11 @@ export default class StateStore {
             this.rows.splice(at + 1, 0, blank);
         }
         this.reindex();
+        if (this.recorder) {
+            this.recorder.record({
+                t: 'insert', rowKey: newKey, index: this.rowIndexOf(newKey), snapshot: { ...blank },
+            });
+        }
         this.bus.emit('rows:changed', { rows: this.rows });
         return blank;
     }
@@ -625,6 +640,13 @@ export default class StateStore {
         const at = this.rowIndexOf(rowKey);
         if (at < 0) {
             return;
+        }
+        if (this.recorder) {
+            const row = this.rows[at];
+            this.recorder.record({
+                t: 'remove', rowKey, index: at,
+                snapshot: { ...row, _labels: { ...(row._labels || {}) } },
+            });
         }
         this.rows.splice(at, 1);
         this.clearRowState(rowKey);
@@ -645,8 +667,30 @@ export default class StateStore {
         const clone = { ...this.rows[at], _k: newKey };
         this.rows.splice(at + 1, 0, clone);
         this.reindex();
+        if (this.recorder) {
+            this.recorder.record({
+                t: 'insert', rowKey: newKey, index: at + 1,
+                snapshot: { ...clone, _labels: { ...(clone._labels || {}) } },
+            });
+        }
         this.bus.emit('rows:changed', { rows: this.rows });
         return clone;
+    }
+
+    /**
+     * Re-insert a previously removed row snapshot at an index (the UndoManager's restore path —
+     * undo of a remove / redo of an insert). Structural → full body repaint. Deliberately NOT
+     * recorded: only replay calls it, and replay never records itself.
+     *
+     * @param {object} row the full row snapshot (carrying `_k` and `_labels`)
+     * @param {number} index
+     */
+    restoreRow(row, index) {
+        const at = Math.max(0, Math.min(index, this.rows.length));
+        this.rows.splice(at, 0, row);
+        this.reindex();
+        this.bus.emit('rows:changed', { rows: this.rows });
+        return row;
     }
 
     /**
@@ -699,6 +743,11 @@ export default class StateStore {
         this.errors.clear();
         this.opLog = [];
         this.version = 0;
+        if (this.recorder) {
+            // The reseed replaced the rows wholesale — every undo record describes rows that
+            // may no longer exist, so the history must die with them.
+            this.recorder.clear();
+        }
         this.setRows(rows || []);
 
         if (this.active && this.rowByKey.has(this.active.rowKey)) {
@@ -735,6 +784,13 @@ export default class StateStore {
         const hit = this.rowByKey.get(rowKey);
         if (!hit) {
             return;
+        }
+        if (this.recorder) {
+            const before = (hit.row._labels || {})[colKey] ?? null;
+            const after = label ?? null;
+            if (before !== after) {
+                this.recorder.record({ t: 'label', rowKey, colKey, before, after });
+            }
         }
         const labels = { ...(hit.row._labels || {}) };
         if (label == null) {

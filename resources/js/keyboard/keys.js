@@ -90,6 +90,12 @@ export const SHARED_KEYMAP = {
     'Ctrl+c': { action: 'copy' },
     Escape: { action: 'clearSelection' },
 
+    // Undo/redo (editable grids) — recognised everywhere, handled only where GridCore wired
+    // an UndoManager (readonly/display grids leave the keys to the browser).
+    'Ctrl+z': { action: 'undo' },
+    'Ctrl+y': { action: 'redo' },
+    'Ctrl+Shift+z': { action: 'redo' },
+
     // Row/cell-op chords — recognised, but no-op in readonly (wired to editable handlers).
     // Excel-trained operators expect Delete to CLEAR content, never to remove the row;
     // row removal sits behind the deliberate Shift+Delete (or the classic F7).

@@ -90,6 +90,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Saved views
+    |--------------------------------------------------------------------------
+    | Defaults for grids that chain ->savedViews() (named, per-user snapshots
+    | of a readonly grid's search/filters/sort/per-page/column layout).
+    | `table` is where the shipped DatabaseViewStore keeps them (the packaged
+    | migration creates it on `artisan migrate`); rebind the
+    | LaraGrid\Views\ViewStore interface for custom storage. `max_per_grid`
+    | caps how many views one operator may save on one grid.
+    */
+    'views' => [
+        'table' => 'laragrid_views',
+        'max_per_grid' => 50,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Asset injection
     |--------------------------------------------------------------------------
     | When true the service provider auto-injects the prebuilt dist/ script and

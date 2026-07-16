@@ -990,6 +990,77 @@
         cursor: pointer;
     }
 
+    /* ---- Saved views menu (->savedViews()) ------------------------------------------ */
+
+    .lgrid-popup--views {
+        min-width: 13rem;
+    }
+
+    .lgrid-views-item {
+        display: flex;
+        align-items: center;
+    }
+
+    .lgrid-views-item .lgrid-popup-option {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .lgrid-views-delete {
+        font: inherit;
+        color: var(--lgrid-header-text);
+        background: transparent;
+        border: 0;
+        padding: 0 0.5rem;
+        cursor: pointer;
+    }
+
+    .lgrid-views-delete:hover,
+    .lgrid-views-delete:focus-visible {
+        color: var(--lgrid-accent);
+        outline: none;
+    }
+
+    .lgrid-views-savebtn {
+        border-top: 1px solid var(--lgrid-border);
+        color: var(--lgrid-accent);
+    }
+
+    .lgrid-views-note {
+        padding: 0.35rem 0.6rem;
+        color: var(--lgrid-header-text);
+        font-size: 0.92em;
+    }
+
+    .lgrid-views-form {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        padding: 0.5rem;
+    }
+
+    .lgrid-views-name {
+        font: inherit;
+        color: var(--lgrid-text);
+        background: var(--lgrid-cell-bg);
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.3125rem;
+        padding: 0.25rem 0.5rem;
+    }
+
+    .lgrid-views-name:focus {
+        border-color: var(--lgrid-accent);
+        outline: none;
+    }
+
+    .lgrid-views-actions {
+        display: flex;
+        gap: 0.4rem;
+    }
+
     /* ---- ->html() cell fragments (CellHtml partials) ------------------------------- */
 
     .lgrid-badge {

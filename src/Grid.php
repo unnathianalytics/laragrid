@@ -163,6 +163,14 @@ class Grid
      */
     protected ?array $export = null;
 
+    /**
+     * Saved-views declaration (readonly grids only): ['key' => string] when the grid offers
+     * named per-user view snapshots, or null when it never does.
+     *
+     * @var array{key: string}|null
+     */
+    protected ?array $savedViews = null;
+
     // ---- Editable (in-memory) mode — M4 --------------------------------------------------
 
     /**
@@ -592,6 +600,31 @@ class Grid
             'fileName' => $fileName,
             'limit' => $limit,
         ];
+
+        return $this;
+    }
+
+    /**
+     * Offer named SAVED VIEWS on this readonly grid — per-operator snapshots of the current
+     * search, filters, sort, per-page and column layout (widths + hidden), recalled from a
+     * toolbar "Views" menu.
+     *
+     * What: Enables the gridViews/gridViewSave/gridViewDelete RPCs and the toolbar control.
+     *       Views persist server-side through the bound ViewStore (the shipped table-backed
+     *       store by default) under an opaque per-user scope — one operator can never see
+     *       another's views.
+     * Why:  Operators live inside the same few register views all day ("Pending GST invoices");
+     *       recalling one keystroke-free beats re-building filters every session. Server-side
+     *       (unlike ->persistWidths()'s localStorage) so views follow the user across machines.
+     * When: Readonly ->query() grids only (declared elsewhere it fails at build time — the
+     *       state being saved IS the query pipeline's input). Requires an authenticated user
+     *       at call time; the RPCs refuse guests.
+     *
+     * @param  string|null  $key  Storage key override; defaults to the grid name.
+     */
+    public function savedViews(?string $key = null): static
+    {
+        $this->savedViews = ['key' => $key ?? $this->name];
 
         return $this;
     }
@@ -1274,6 +1307,17 @@ class Grid
         return $this->export !== null;
     }
 
+    /**
+     * The saved-views declaration, or null when the grid never offers them (drives the
+     * toolbar Views control + the gridViews* RPC gates).
+     *
+     * @return array{key: string}|null
+     */
+    public function getSavedViews(): ?array
+    {
+        return $this->savedViews;
+    }
+
     // ---- Accessors used by the serializer -------------------------------------------
 
     /**
@@ -1476,6 +1520,12 @@ class Grid
             if ($this->export !== null) {
                 throw new InvalidArgumentException(
                     "Grid [{$this->name}] declares exportable() but no query(); exports need a server-side readonly grid."
+                );
+            }
+
+            if ($this->savedViews !== null) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] declares savedViews() but no query(); saved views need a server-side readonly grid."
                 );
             }
 

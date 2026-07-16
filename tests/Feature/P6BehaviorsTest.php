@@ -2,11 +2,13 @@
 
 declare(strict_types=1);
 
+use LaraGrid\Columns\IntegerColumn;
 use LaraGrid\Columns\TextColumn;
 use LaraGrid\Editing\OpApplier;
 use LaraGrid\Editing\OpBatch;
 use LaraGrid\Grid;
 use LaraGrid\Support\ConfigSerializer;
+use LaraGrid\Support\RowSerializer;
 use LaraGrid\Tests\Hosts\EditableGridComponent;
 use Livewire\Livewire;
 
@@ -123,7 +125,7 @@ it('treats factory-default rows as blank — template-aware blank detection', fu
         ->newRowUsing(fn (): array => ['qty' => 1])
         ->columns([
             TextColumn::make('name')->required(),
-            LaraGrid\Columns\IntegerColumn::make('qty'),
+            IntegerColumn::make('qty'),
         ]);
 
     // The template ships to the client so its blank check mirrors the server's.
@@ -142,7 +144,7 @@ it('treats factory-default rows as blank — template-aware blank detection', fu
     expect($result->results[0]['ok'])->toBeTrue();
 
     // gridRows() stripping agrees: the template-only trailing row is dropped at save.
-    $clean = (new LaraGrid\Support\RowSerializer)->cleanEditableRows($grid, $rows);
+    $clean = (new RowSerializer)->cleanEditableRows($grid, $rows);
     expect($clean)->toHaveCount(1);
     expect($clean[0]['name'])->toBe('Real');
 });

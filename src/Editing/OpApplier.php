@@ -209,8 +209,9 @@ class OpApplier
     }
 
     /**
-     * Apply a row insert: a fresh blank row keyed by the client's `as`, placed after `after` (or
-     * appended when `after` is null / not found).
+     * Apply a row insert: a fresh blank row keyed by the client's `as`, placed before `before`
+     * when given (undo restoring a removed row at its original position — `after` alone cannot
+     * express "first row"), else after `after`, else appended.
      *
      * @param  list<array<string, mixed>>  $rows
      * @return array{0: list<array<string, mixed>>, 1: OpResultShape, 2: bool}
@@ -219,8 +220,11 @@ class OpApplier
     {
         $blank = $grid->makeNewRow((string) $op->as);
 
+        $beforeIndex = $op->before !== null ? $this->indexOfKey($rows, $op->before) : null;
         $afterIndex = $op->after !== null ? $this->indexOfKey($rows, $op->after) : null;
-        if ($afterIndex === null) {
+        if ($beforeIndex !== null) {
+            array_splice($rows, $beforeIndex, 0, [$blank]);
+        } elseif ($afterIndex === null) {
             $rows[] = $blank;
         } else {
             array_splice($rows, $afterIndex + 1, 0, [$blank]);
@@ -532,7 +536,6 @@ class OpApplier
 
         return $count;
     }
-
 
     // ---- Small utilities ------------------------------------------------------------------
 

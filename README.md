@@ -47,7 +47,9 @@ live formula columns, auto-append and a running footer:
 - [Actions](#actions)
 - [Toolbar, search & filters](#toolbar-search--filters)
 - [Exports (CSV / XLSX / PDF)](#exports-csv--xlsx--pdf)
+- [Saved views](#saved-views)
 - [Keyboard](#keyboard)
+- [Undo & redo](#undo--redo)
 - [Theming](#theming)
   - [Shipped color schemes](#shipped-color-schemes)
   - [Custom tokens](#custom-tokens)
@@ -63,8 +65,8 @@ live formula columns, auto-append and a running footer:
 | Mode | Declare with | What you get |
 |---|---|---|
 | **Display** | rows passed to the tag | Paints in-memory rows. Works on plain Blade pages without any Livewire component. |
-| **Readonly server-side** | `->query(fn () => Model::query())` | Sort, global search, filters, pagination through a whitelisted fail-closed pipeline. Page 1 ships in the initial payload (zero-round-trip first paint); later pages stream over an RPC with an LRU cache and idle prefetch of the next page. Opt-in CSV/XLSX/PDF downloads of the current view (`->exportable()`). |
-| **Editable** | `->editable()->rowsFrom('lines')` | The full spreadsheet: optimistic client, authoritative server, typed op protocol, validation on both sides, formula columns, async pickers with row enrichment, auto-append, live footer totals. |
+| **Readonly server-side** | `->query(fn () => Model::query())` | Sort, global search, filters, pagination through a whitelisted fail-closed pipeline. Page 1 ships in the initial payload (zero-round-trip first paint); later pages stream over an RPC with an LRU cache and idle prefetch of the next page. Opt-in CSV/XLSX/PDF downloads of the current view (`->exportable()`) and named per-user saved views (`->savedViews()`). |
+| **Editable** | `->editable()->rowsFrom('lines')` | The full spreadsheet: optimistic client, authoritative server, typed op protocol, validation on both sides, formula columns, async pickers with row enrichment, auto-append, undo/redo, live footer totals. |
 
 Both interactive modes share one keyboard model, one selection engine, one theming system.
 
@@ -86,9 +88,10 @@ auto-inject into any page that renders a grid. No layout directives, no build st
 Optional publishes:
 
 ```bash
-php artisan vendor:publish --tag=laragrid-config   # config/laragrid.php (global defaults)
-php artisan vendor:publish --tag=laragrid-views    # blade views (mount + badge/edit-link cells)
-php artisan vendor:publish --tag=laragrid-assets   # copy dist/ to public/vendor/laragrid
+php artisan vendor:publish --tag=laragrid-config      # config/laragrid.php (global defaults)
+php artisan vendor:publish --tag=laragrid-views       # blade views (mount + badge/edit-link cells)
+php artisan vendor:publish --tag=laragrid-assets      # copy dist/ to public/vendor/laragrid
+php artisan vendor:publish --tag=laragrid-migrations  # the saved-views table migration (auto-loads otherwise)
 ```
 
 Asset delivery is configurable: set `laragrid.inject_assets => false` to place
@@ -431,6 +434,7 @@ Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `alig
 **Data** — `query(fn)` · `authorize(ability|fn)` · `paginate(per, [options])` ·
 `defaultSort(col, dir)` · `searchable([...])` · `filters([...])` · `rowKey('id')` ·
 `exportable([formats], fileName:, limit:)` (see [Exports](#exports-csv--xlsx--pdf)) ·
+`savedViews(key?)` (see [Saved views](#saved-views)) ·
 `rowActivate(fn ($row) => ?url)` — Enter/double-click opens a row, permission-gated per row.
 
 **Editable** — `editable()` · `rowsFrom('prop')` · `defaultRows(n)` · `newRowUsing(fn)` ·
@@ -536,6 +540,41 @@ el.dispatchEvent(new CustomEvent('lgrid:toolbar', {
 }));
 ```
 
+## Saved views
+
+Readonly `->query()` grids can offer **named, server-persisted view snapshots** — an operator
+sets up "Pending GST invoices" once (search + filters + sort + per-page + column widths and
+hidden columns) and recalls it from a toolbar **❖ Views** menu in any later session, on any
+machine:
+
+```php
+Grid::make('resorts')
+    ->query(fn () => Resort::query())
+    ->authorize('resort.viewAny')
+    ->savedViews()                    // opt-in; ->savedViews('key') overrides the storage key
+```
+
+Run `php artisan migrate` once — the packaged migration creates the `laragrid_views` table
+(name configurable via `laragrid.views.table`). The Views menu then lists the operator's saved
+views: picking one applies it (layout instantly, data through the same whitelisted pipeline as
+any filter change), **＋ Save current view…** captures the current state under a name (saving
+an existing name updates it), and ✕ deletes.
+
+Views are **per-user and fail-closed**: the scope is minted server-side from the authenticated
+user (guests are refused), every RPC re-runs the grid's `->authorize()` gate, and the saved
+state is sanitized against the grid's *declared* columns, filters and page sizes — unknown keys
+are dropped on write, and applying a view still runs through the same whitelisted `gridFetch`
+pipeline as every fetch. One operator can never see, apply or delete another's views. Each
+operator may keep up to `laragrid.views.max_per_grid` (default 50) views per grid.
+
+Storage is swappable: rebind `LaraGrid\Views\ViewStore` in a service provider to keep views in
+Redis, a tenant-scoped table, or an existing preferences service — the three-method interface
+(`list` / `save` / `delete`) is the whole contract.
+
+Note `->savedViews()` persists views **server-side by name, on demand**, while
+`->persistWidths()` silently persists the current column layout in `localStorage` — the two
+compose: recalling a view also updates the persisted layout.
+
 ## Keyboard
 
 | Keys | Action |
@@ -550,12 +589,32 @@ el.dispatchEvent(new CustomEvent('lgrid:toolbar', {
 | **Delete** | **clear** selected cells |
 | **Shift+Delete or F7** | delete the row (minRows-guarded) |
 | Insert / Ctrl+D | insert row / fill down |
+| **Ctrl+Z** | **undo** the last change (editable grids) |
+| **Ctrl+Y or Ctrl+Shift+Z** | **redo** |
 | Ctrl+E | jump to the first error |
 | ContextMenu / Shift+F10 | open the row's actions menu |
 | Escape | clear selection / cancel edit |
 
 Paste is bulk-aware: a multi-row TSV paste maps onto editable cells, auto-appends rows as
 needed, and flushes as one batch (with a confirm above 500 cells).
+
+## Undo & redo
+
+Editable grids keep a full undo history (100 steps) — **Ctrl+Z** reverts the last change,
+**Ctrl+Y** / **Ctrl+Shift+Z** re-applies it. One gesture is one step: a 200-cell paste, a
+fill-down, a row delete, or a commit together with its declarative side effects (`whenFilled`
+mirrors, formula recomputes, picker labels) each undo as a single unit. Undoing a row delete
+restores the row **at its original position** with its data and labels intact.
+
+Undo never bypasses the server: each undone step replays through the same op protocol as
+typing — the server re-validates, re-runs your `onSelect`/`afterCellChange` hooks and
+recomputes formulas authoritatively, so an undo can never resurrect a value your rules would
+refuse. History is per-mount and clears on any wholesale reseed (`reseedGrid`, a structural
+rollback, save exit paths).
+
+One caveat: non-writable carried values (e.g. a `HiddenColumn` database id that is not
+`->writable()`) are client-painted on restore but re-created server-side — a host whose save()
+diffs lines by id sees a deleted-then-undone row as delete + insert.
 
 ## Theming
 
@@ -652,8 +711,8 @@ fully custom host chrome).
 
 `config/laragrid.php` holds app-wide *defaults* only — density, keymap preset, date display
 pattern, financial-year start month (off by default), toolbar defaults, export defaults
-(format set, row cap, streaming chunk size), asset injection and asset URL. Any grid overrides
-any of them through its chained definition.
+(format set, row cap, streaming chunk size), saved-views defaults (table name, per-grid cap),
+asset injection and asset URL. Any grid overrides any of them through its chained definition.
 
 ## Troubleshooting
 

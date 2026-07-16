@@ -34,6 +34,8 @@ export default class KeyboardManager {
      * @param {object} [hooks.rowOps] row-op handlers {insert, delete, fillDown} (editable grids)
      * @param {(() => boolean)} [hooks.rowActivate] activate the active row (readonly grids); returns
      *        true when it dispatched (Enter handled), false to fall through to the keymap move-down
+     * @param {() => void} [hooks.undo] Ctrl+Z handler (editable grids — the UndoManager)
+     * @param {() => void} [hooks.redo] Ctrl+Y / Ctrl+Shift+Z handler
      */
     constructor(store, selection, refs, hooks = {}) {
         this.store = store;
@@ -77,6 +79,17 @@ export default class KeyboardManager {
             return;
         }
         if (!this.ownsFocus()) {
+            return;
+        }
+
+        // Chrome inputs INSIDE the grid root (the toolbar search box, filter selects, popup
+        // forms like the saved-view name field) own their own keys: hijacking arrows/Home/End/
+        // Ctrl+A there would kill the caret and text selection. The floating cell editor never
+        // reaches this line (the isEditing() early-return above owns EDIT mode).
+        const target = e.target;
+        if (target && target !== this.refs.root
+            && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
+                || target.tagName === 'SELECT' || target.isContentEditable)) {
             return;
         }
 
@@ -167,6 +180,15 @@ export default class KeyboardManager {
                 e.preventDefault();
                 if (this.rowOps && this.rowOps[binding.kind]) {
                     this.rowOps[binding.kind]();
+                }
+                break;
+            case 'undo':
+            case 'redo':
+                // Handled only where GridCore wired an UndoManager (editable grids); elsewhere
+                // the chord stays untouched so the browser default survives.
+                if (this.hooks[binding.action]) {
+                    e.preventDefault();
+                    this.hooks[binding.action]();
                 }
                 break;
             default:

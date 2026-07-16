@@ -179,6 +179,13 @@ class ConfigSerializer
             $layout['export'] = ['formats' => $export['formats']];
         }
 
+        // Saved views (readonly grids): advertises the toolbar Views control; the storage key
+        // stays server-side — the client only ever echoes the grid name back through the
+        // gridViews* RPCs. Emitted only when declared (whenFilled discipline).
+        if ($grid->isServerSide() && $grid->getSavedViews() !== null) {
+            $layout['views'] = true;
+        }
+
         // The fresh-row template (emitted only when the factory sets any default): the client
         // seeds optimistic inserts from it AND uses it as the blank-row reference, mirroring
         // the server's template-aware blank detection.

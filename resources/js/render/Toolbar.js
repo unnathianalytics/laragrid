@@ -21,9 +21,10 @@ export default class Toolbar {
      * @param {{toolbar: HTMLElement}} refs
      * @param {object|null} pageSource server-side driver (null on in-memory grids)
      * @param {Array<object>} filters the grid-level filter configs ({key, label, kind, options})
-     * @param {object|null} popup the shared PopupManager (export format menu)
+     * @param {object|null} popup the shared PopupManager (export format menu / views menu)
+     * @param {import('../views/ViewsManager').default|null} views saved-views service (->savedViews())
      */
-    constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null) {
+    constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null, views = null) {
         this.store = store;
         this.refs = refs;
         this.pageSource = pageSource;
@@ -32,10 +33,13 @@ export default class Toolbar {
         this.runner = runner;
         this.actions = actions || {};
         this.popup = popup;
+        this.views = views;
         this.chooserSlot = null;
         this.searchTimer = null;
         this.offChecked = null;
         this.offExport = [];
+        /** @type {Object<string, HTMLSelectElement>} filter selects by key (view recall sync). */
+        this.filterSelects = {};
     }
 
     /** Build the enabled controls; leaves the container hidden when nothing rendered. */
@@ -82,6 +86,13 @@ export default class Toolbar {
                 button.addEventListener('click', () => this.runner.runToolbar(meta, button));
                 host.appendChild(button);
             }
+            any = true;
+        }
+
+        // Saved views (a readonly grid's ->savedViews()): a popup menu listing the operator's
+        // named views — apply on pick, delete inline, save the current state under a name.
+        if (this.views && this.store.layout.views && this.popup) {
+            host.appendChild(this.buildViews());
             any = true;
         }
 
@@ -182,6 +193,180 @@ export default class Toolbar {
         }
     }
 
+    /** The Views button — opens the saved-views popup menu. */
+    buildViews() {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'lgrid-toolbar-btn lgrid-toolbar-btn--views';
+        button.textContent = '❖ Views';
+        button.setAttribute('aria-haspopup', 'true');
+        button.addEventListener('click', () => this.openViewsMenu(button));
+        return button;
+    }
+
+    /** Open the views popup and load the operator's saved views into it. */
+    openViewsMenu(anchorEl) {
+        const container = this.popup.open({
+            anchorEl,
+            owner: 'views-menu',
+            className: 'lgrid-popup--actions lgrid-popup--views',
+            onRequestClose: () => {},
+        });
+        container.appendChild(el('div', 'lgrid-views-note', 'Loading views…'));
+        this.popup.position();
+
+        this.views.list()
+            .then((views) => {
+                if (this.popup.openFor !== 'views-menu') {
+                    return; // closed (or re-owned) while loading
+                }
+                this.renderViewsMenu(container, views);
+            })
+            .catch(() => {
+                if (this.popup.openFor === 'views-menu') {
+                    container.textContent = '';
+                    container.appendChild(el('div', 'lgrid-views-note', 'Could not load views.'));
+                    this.popup.position();
+                }
+            });
+    }
+
+    /** The menu body: one row per saved view (apply + delete) and the save-current control. */
+    renderViewsMenu(container, views) {
+        container.textContent = '';
+
+        if (!views.length) {
+            container.appendChild(el('div', 'lgrid-views-note', 'No saved views yet.'));
+        }
+
+        for (const view of views) {
+            const row = el('div', 'lgrid-views-item');
+
+            const apply = document.createElement('button');
+            apply.type = 'button';
+            apply.className = 'lgrid-popup-option';
+            apply.textContent = view.name;
+            apply.addEventListener('click', () => {
+                this.popup.close('owner');
+                this.views.apply(view.state || {});
+                this.reflect(view.state || {});
+            });
+            row.appendChild(apply);
+
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'lgrid-views-delete';
+            remove.textContent = '✕';
+            remove.title = 'Delete view';
+            remove.setAttribute('aria-label', 'Delete view ' + view.name);
+            remove.addEventListener('click', () => {
+                remove.disabled = true;
+                this.views.remove(view.id)
+                    .then((rest) => {
+                        if (this.popup.openFor === 'views-menu') {
+                            this.renderViewsMenu(container, rest);
+                        }
+                    })
+                    .catch(() => {
+                        remove.disabled = false;
+                    });
+            });
+            row.appendChild(remove);
+
+            container.appendChild(row);
+        }
+
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'lgrid-popup-option lgrid-views-savebtn';
+        save.textContent = '+ Save current view…';
+        save.addEventListener('click', () => this.renderSaveForm(container, views));
+        container.appendChild(save);
+
+        this.popup.position();
+    }
+
+    /** The inline save form: a name input + Save/Back. Enter saves; Esc returns to the list. */
+    renderSaveForm(container, views) {
+        container.textContent = '';
+
+        const form = el('div', 'lgrid-views-form');
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.maxLength = 60;
+        input.placeholder = 'View name';
+        input.className = 'lgrid-views-name';
+        input.setAttribute('aria-label', 'View name');
+        // The shared popup preventDefaults pointerdown (the editor blur guard), which also
+        // blocks the browser's click-to-focus — restore it explicitly.
+        input.addEventListener('click', () => input.focus());
+        form.appendChild(input);
+
+        const note = el('div', 'lgrid-views-note');
+        note.hidden = true;
+
+        const actions = el('div', 'lgrid-views-actions');
+        const mk = (label, fn) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'lgrid-toolbar-btn';
+            b.textContent = label;
+            b.addEventListener('click', fn);
+            actions.appendChild(b);
+            return b;
+        };
+
+        const submit = () => {
+            const name = input.value.trim();
+            if (!name) {
+                input.focus();
+                return;
+            }
+            ok.disabled = true;
+            this.views.save(name)
+                .then(() => this.popup.close('owner'))
+                .catch(() => {
+                    ok.disabled = false;
+                    note.hidden = false;
+                    note.textContent = 'Could not save the view.';
+                    this.popup.position();
+                });
+        };
+
+        const ok = mk('Save', submit);
+        mk('Back', () => this.renderViewsMenu(container, views));
+
+        // Keys typed in the name field belong to the name field — Enter saves, Esc returns to
+        // the list, and nothing leaks to the grid's NAV dispatcher.
+        input.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                submit();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                this.renderViewsMenu(container, views);
+            }
+        });
+
+        form.appendChild(actions);
+        form.appendChild(note);
+        container.appendChild(form);
+        this.popup.position();
+        input.focus();
+    }
+
+    /** Sync the toolbar controls to a just-applied view state (search box + filter selects). */
+    reflect(state) {
+        if (this.searchInput) {
+            this.searchInput.value = (state && state.search) || '';
+        }
+        for (const [key, select] of Object.entries(this.filterSelects)) {
+            const value = state && state.filters ? state.filters[key] : undefined;
+            select.value = value == null ? '' : String(value);
+        }
+    }
+
     /** Debounced global search → PageSource.search (same channel as `lgrid:toolbar`). */
     buildSearch() {
         const input = document.createElement('input');
@@ -238,6 +423,7 @@ export default class Toolbar {
             this.pageSource.setFilter(filter.key, select.value === '' ? null : select.value);
         });
 
+        this.filterSelects[filter.key] = select;
         wrap.appendChild(select);
         return wrap;
     }

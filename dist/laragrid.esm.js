@@ -8,7 +8,7 @@ var define_import_meta_default = {};
 // <define:import.meta.env>
 var define_import_meta_env_default = {};
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/core/EventBus.js
+// resources/js/core/EventBus.js
 var EventBus = class {
   constructor() {
     this.listeners = /* @__PURE__ */ new Map();
@@ -55,7 +55,7 @@ var EventBus = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/formula/ExprEval.js
+// resources/js/formula/ExprEval.js
 function roundHalfUp(value, scale) {
   if (!Number.isFinite(value)) {
     return 0;
@@ -144,7 +144,7 @@ function call(node, scope) {
   }
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/util/dom.js
+// resources/js/util/dom.js
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) {
@@ -173,7 +173,7 @@ function cellMapKey(rowKey, colKey) {
   return `${rowKey}${colKey}`;
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/core/StateStore.js
+// resources/js/core/StateStore.js
 var StateStore = class {
   /**
    * @param {object} config the declarative config from ConfigSerializer
@@ -220,6 +220,7 @@ var StateStore = class {
     this.pending = /* @__PURE__ */ new Set();
     this.errors = /* @__PURE__ */ new Map();
     this.opLog = [];
+    this.recorder = null;
     this.checked = /* @__PURE__ */ new Set();
     this.formulaColumns = this.columns.filter((c) => c && c.formula && c.formula.ast);
     this.setRows(config.rows || []);
@@ -643,6 +644,9 @@ var StateStore = class {
     if (!hit) {
       return [];
     }
+    if (this.recorder && hit.row[colKey] !== value) {
+      this.recorder.record({ t: "set", rowKey, colKey, before: hit.row[colKey], after: value });
+    }
     hit.row[colKey] = value;
     const changed = [{ rowKey, colKey }];
     this.markDirty(rowKey, colKey);
@@ -677,6 +681,14 @@ var StateStore = class {
       this.rows.splice(at + 1, 0, blank);
     }
     this.reindex();
+    if (this.recorder) {
+      this.recorder.record({
+        t: "insert",
+        rowKey: newKey,
+        index: this.rowIndexOf(newKey),
+        snapshot: { ...blank }
+      });
+    }
     this.bus.emit("rows:changed", { rows: this.rows });
     return blank;
   }
@@ -688,6 +700,15 @@ var StateStore = class {
     const at = this.rowIndexOf(rowKey);
     if (at < 0) {
       return;
+    }
+    if (this.recorder) {
+      const row = this.rows[at];
+      this.recorder.record({
+        t: "remove",
+        rowKey,
+        index: at,
+        snapshot: { ...row, _labels: { ...row._labels || {} } }
+      });
     }
     this.rows.splice(at, 1);
     this.clearRowState(rowKey);
@@ -707,8 +728,31 @@ var StateStore = class {
     const clone = { ...this.rows[at], _k: newKey };
     this.rows.splice(at + 1, 0, clone);
     this.reindex();
+    if (this.recorder) {
+      this.recorder.record({
+        t: "insert",
+        rowKey: newKey,
+        index: at + 1,
+        snapshot: { ...clone, _labels: { ...clone._labels || {} } }
+      });
+    }
     this.bus.emit("rows:changed", { rows: this.rows });
     return clone;
+  }
+  /**
+   * Re-insert a previously removed row snapshot at an index (the UndoManager's restore path —
+   * undo of a remove / redo of an insert). Structural → full body repaint. Deliberately NOT
+   * recorded: only replay calls it, and replay never records itself.
+   *
+   * @param {object} row the full row snapshot (carrying `_k` and `_labels`)
+   * @param {number} index
+   */
+  restoreRow(row, index) {
+    const at = Math.max(0, Math.min(index, this.rows.length));
+    this.rows.splice(at, 0, row);
+    this.reindex();
+    this.bus.emit("rows:changed", { rows: this.rows });
+    return row;
   }
   /**
    * Host-initiated wholesale row replacement (`lgrid:reseed`, Phase 2 reseed seam): the host's
@@ -756,6 +800,9 @@ var StateStore = class {
     this.errors.clear();
     this.opLog = [];
     this.version = 0;
+    if (this.recorder) {
+      this.recorder.clear();
+    }
     this.setRows(rows || []);
     if (this.active && this.rowByKey.has(this.active.rowKey)) {
       this.setActive(this.active);
@@ -788,6 +835,13 @@ var StateStore = class {
     const hit = this.rowByKey.get(rowKey);
     if (!hit) {
       return;
+    }
+    if (this.recorder) {
+      const before = (hit.row._labels || {})[colKey] ?? null;
+      const after = label ?? null;
+      if (before !== after) {
+        this.recorder.record({ t: "label", rowKey, colKey, before, after });
+      }
     }
     const labels = { ...hit.row._labels || {} };
     if (label == null) {
@@ -952,7 +1006,7 @@ var StateStore = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/Layout.js
+// resources/js/render/Layout.js
 var DEFAULT_WIDTH = 120;
 var Layout = class {
   /**
@@ -1121,7 +1175,7 @@ var Layout = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/HeaderRenderer.js
+// resources/js/render/HeaderRenderer.js
 var HeaderRenderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1258,7 +1312,7 @@ var HeaderRenderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/format/formatters.js
+// resources/js/format/formatters.js
 function arg(args, key, fallback) {
   if (args == null) {
     return fallback;
@@ -1351,7 +1405,7 @@ function formatValue(format, value) {
   return fn(value, format.args || {});
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/shared/date.js
+// resources/js/shared/date.js
 function daysInMonth(month, year) {
   return new Date(year, month, 0).getDate();
 }
@@ -1458,7 +1512,7 @@ function formatIso(parts) {
   return formatValue2(parts, "Y-m-d");
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/format/parse.js
+// resources/js/format/parse.js
 function stripGrouping(raw) {
   return String(raw == null ? "" : raw).replace(/[,\s]/g, "");
 }
@@ -1575,7 +1629,7 @@ function editTextFor(column, value) {
   return String(value);
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/CellPainters.js
+// resources/js/render/CellPainters.js
 function paintText(cellEl, ctx) {
   const display = formatValue(ctx.column.format, ctx.value);
   if (ctx.column.html) {
@@ -1655,7 +1709,7 @@ function registerPainter(painterId, fn) {
   PAINTERS[painterId] = fn;
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/BodyRenderer.js
+// resources/js/render/BodyRenderer.js
 var BodyRenderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1792,7 +1846,7 @@ var BodyRenderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/FooterRenderer.js
+// resources/js/render/FooterRenderer.js
 var FooterRenderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1839,7 +1893,7 @@ var FooterRenderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/Renderer.js
+// resources/js/render/Renderer.js
 var Renderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1916,7 +1970,7 @@ var Renderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/util/geometry.js
+// resources/js/util/geometry.js
 function clamp(n, lo, hi) {
   return n < lo ? lo : n > hi ? hi : n;
 }
@@ -2000,7 +2054,7 @@ function resolveMove(p) {
   }
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/selection/SelectionManager.js
+// resources/js/selection/SelectionManager.js
 var _SelectionManager = class _SelectionManager {
   /**
    * @param {import('../core/StateStore').default} store
@@ -2240,7 +2294,7 @@ var _SelectionManager = class _SelectionManager {
 __publicField(_SelectionManager, "LOCK_SKIPPING_INTENTS", /* @__PURE__ */ new Set(["left", "right", "nextWrap", "prevWrap"]));
 var SelectionManager = _SelectionManager;
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/selection/SelectionPainter.js
+// resources/js/selection/SelectionPainter.js
 var SelectionPainter = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -2367,7 +2421,7 @@ var SelectionPainter = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/keys.js
+// resources/js/keyboard/keys.js
 function keyToken(key) {
   if (typeof key === "string" && key.length === 1) {
     return key.toLowerCase();
@@ -2413,6 +2467,11 @@ var SHARED_KEYMAP = {
   "Ctrl+a": { action: "selectAll" },
   "Ctrl+c": { action: "copy" },
   Escape: { action: "clearSelection" },
+  // Undo/redo (editable grids) — recognised everywhere, handled only where GridCore wired
+  // an UndoManager (readonly/display grids leave the keys to the browser).
+  "Ctrl+z": { action: "undo" },
+  "Ctrl+y": { action: "redo" },
+  "Ctrl+Shift+z": { action: "redo" },
   // Row/cell-op chords — recognised, but no-op in readonly (wired to editable handlers).
   // Excel-trained operators expect Delete to CLEAR content, never to remove the row;
   // row removal sits behind the deliberate Shift+Delete (or the classic F7).
@@ -2426,21 +2485,21 @@ var SHARED_KEYMAP = {
   "Shift+F10": { action: "actionsMenu" }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/keymap-entry.js
+// resources/js/keyboard/keymap-entry.js
 var ENTRY_KEYMAP = {
   ...SHARED_KEYMAP,
   Enter: { action: "move", intent: "nextWrap" },
   "Shift+Enter": { action: "move", intent: "prevWrap" }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/keymap-excel.js
+// resources/js/keyboard/keymap-excel.js
 var EXCEL_KEYMAP = {
   ...SHARED_KEYMAP,
   Enter: { action: "move", intent: "down" },
   "Shift+Enter": { action: "move", intent: "up" }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/EditorRegistry.js
+// resources/js/edit/EditorRegistry.js
 var EDITORS = {};
 function registerEditor(id, EditorClass) {
   EDITORS[id] = EditorClass;
@@ -2449,7 +2508,7 @@ function editorFor(id) {
   return EDITORS[id] || null;
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/KeyboardManager.js
+// resources/js/keyboard/KeyboardManager.js
 function keymapFor(name) {
   return name === "excel" ? EXCEL_KEYMAP : ENTRY_KEYMAP;
 }
@@ -2464,6 +2523,8 @@ var KeyboardManager = class {
    * @param {object} [hooks.rowOps] row-op handlers {insert, delete, fillDown} (editable grids)
    * @param {(() => boolean)} [hooks.rowActivate] activate the active row (readonly grids); returns
    *        true when it dispatched (Enter handled), false to fall through to the keymap move-down
+   * @param {() => void} [hooks.undo] Ctrl+Z handler (editable grids — the UndoManager)
+   * @param {() => void} [hooks.redo] Ctrl+Y / Ctrl+Shift+Z handler
    */
   constructor(store, selection, refs, hooks = {}) {
     this.store = store;
@@ -2499,6 +2560,10 @@ var KeyboardManager = class {
       return;
     }
     if (!this.ownsFocus()) {
+      return;
+    }
+    const target = e.target;
+    if (target && target !== this.refs.root && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) {
       return;
     }
     if (this.editor) {
@@ -2566,6 +2631,13 @@ var KeyboardManager = class {
         e.preventDefault();
         if (this.rowOps && this.rowOps[binding.kind]) {
           this.rowOps[binding.kind]();
+        }
+        break;
+      case "undo":
+      case "redo":
+        if (this.hooks[binding.action]) {
+          e.preventDefault();
+          this.hooks[binding.action]();
         }
         break;
       default:
@@ -2696,7 +2768,7 @@ var KeyboardManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/clipboard/ClipboardManager.js
+// resources/js/clipboard/ClipboardManager.js
 function parseTsv(text) {
   const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
   if (lines.length && lines[lines.length - 1] === "") {
@@ -2916,7 +2988,7 @@ var _ClipboardManager = class _ClipboardManager {
 __publicField(_ClipboardManager, "CONFIRM_THRESHOLD", 500);
 var ClipboardManager = _ClipboardManager;
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/statusbar/StatusBar.js
+// resources/js/statusbar/StatusBar.js
 var StatusBar = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -2989,7 +3061,7 @@ var StatusBar = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/a11y/Announcer.js
+// resources/js/a11y/Announcer.js
 var Announcer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3057,7 +3129,7 @@ var Announcer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/util/lru.js
+// resources/js/util/lru.js
 var Lru = class {
   /**
    * @param {number} capacity max entries kept (>=1)
@@ -3111,7 +3183,7 @@ var Lru = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/sync/PageSource.js
+// resources/js/sync/PageSource.js
 var PageSource = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3326,7 +3398,7 @@ var PageSource = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/PaginationBar.js
+// resources/js/render/PaginationBar.js
 var PaginationBar = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3402,7 +3474,7 @@ var PaginationBar = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/sync/SyncManager.js
+// resources/js/sync/SyncManager.js
 var SyncManager = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3555,7 +3627,253 @@ var SyncManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/EditorManager.js
+// resources/js/undo/UndoManager.js
+var UndoManager = class {
+  /**
+   * @param {import('../core/StateStore').default} store
+   * @param {import('../sync/SyncManager').default} sync
+   * @param {{announce?: (msg: string) => void, limit?: number}} [hooks]
+   */
+  constructor(store, sync, hooks = {}) {
+    this.store = store;
+    this.sync = sync;
+    this.announce = hooks.announce || (() => {
+    });
+    this.limit = hooks.limit || 100;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.batch = null;
+    this.applying = false;
+  }
+  /**
+   * Record one store mutation (the StateStore recorder seam). Records arriving within one
+   * synchronous task coalesce into a single undo step; the microtask boundary seals it.
+   *
+   * Record shapes:
+   *   {t:'set',    rowKey, colKey, before, after}
+   *   {t:'label',  rowKey, colKey, before, after}   (picker display labels)
+   *   {t:'insert', rowKey, index, snapshot}         (row created — blank or dup clone)
+   *   {t:'remove', rowKey, index, snapshot}         (row deleted, full copy incl. _labels)
+   *
+   * @param {object} entry
+   */
+  record(entry) {
+    if (this.applying) {
+      return;
+    }
+    if (!this.batch) {
+      this.batch = [];
+      queueMicrotask(() => this.seal());
+    }
+    this.batch.push(entry);
+  }
+  /** Seal the open batch into an undo step; any new user edit invalidates the redo stack. */
+  seal() {
+    if (!this.batch || this.batch.length === 0) {
+      this.batch = null;
+      return;
+    }
+    this.undoStack.push(this.batch);
+    if (this.undoStack.length > this.limit) {
+      this.undoStack.shift();
+    }
+    this.batch = null;
+    this.redoStack = [];
+  }
+  /** Drop all history — a reseed/rollback replaced the rows these records describe. */
+  clear() {
+    this.batch = null;
+    this.undoStack = [];
+    this.redoStack = [];
+  }
+  canUndo() {
+    this.seal();
+    return this.undoStack.length > 0;
+  }
+  canRedo() {
+    return this.redoStack.length > 0;
+  }
+  /** Undo the most recent step. Returns true when a step was applied. */
+  undo() {
+    this.seal();
+    const batch = this.undoStack.pop();
+    if (!batch) {
+      this.announce("Nothing to undo.");
+      return false;
+    }
+    const focus = this.applyBatch(batch, true);
+    this.redoStack.push(batch);
+    this.focusAfter(focus);
+    this.announce("Undid the last change.");
+    return true;
+  }
+  /** Re-apply the most recently undone step. Returns true when a step was applied. */
+  redo() {
+    this.seal();
+    const batch = this.redoStack.pop();
+    if (!batch) {
+      this.announce("Nothing to redo.");
+      return false;
+    }
+    const focus = this.applyBatch(batch, false);
+    this.undoStack.push(batch);
+    this.focusAfter(focus);
+    this.announce("Redid the change.");
+    return true;
+  }
+  /**
+   * Replay a batch against the store + stage the equivalent wire ops, flushed as ONE server
+   * round-trip. `reverse` = undo (records walked backwards, each inverted); forward = redo.
+   *
+   * @param {Array<object>} records
+   * @param {boolean} reverse
+   * @returns {{rowKey: string, colKey: string}|null} the first affected cell (focus target)
+   */
+  applyBatch(records, reverse) {
+    this.applying = true;
+    try {
+      const items = [];
+      const setOps = /* @__PURE__ */ new Map();
+      const labels = [];
+      let focus = null;
+      const list = reverse ? [...records].reverse() : records;
+      for (const rec of list) {
+        switch (rec.t) {
+          case "set": {
+            const hit = this.store.rowByKey.get(rec.rowKey);
+            if (!hit) {
+              break;
+            }
+            const value = reverse ? rec.before : rec.after;
+            this.store.applyLocalSet(rec.rowKey, rec.colKey, value);
+            const op = {
+              seq: this.store.nextSeq(),
+              t: "set",
+              row: rec.rowKey,
+              col: rec.colKey,
+              v: value
+            };
+            items.push({ op, cells: [{ rowKey: rec.rowKey, colKey: rec.colKey }] });
+            setOps.set(cellMapKey(rec.rowKey, rec.colKey), op);
+            focus = focus || { rowKey: rec.rowKey, colKey: rec.colKey };
+            break;
+          }
+          case "label": {
+            if (!this.store.rowByKey.has(rec.rowKey)) {
+              break;
+            }
+            const label = reverse ? rec.before : rec.after;
+            this.store.setRowLabel(rec.rowKey, rec.colKey, label == null ? null : label);
+            labels.push({ key: cellMapKey(rec.rowKey, rec.colKey), label });
+            break;
+          }
+          case "insert":
+            if (reverse) {
+              this.dropRow(rec, items);
+            } else {
+              focus = this.restoreRow(rec, items) || focus;
+            }
+            break;
+          case "remove":
+            if (reverse) {
+              focus = this.restoreRow(rec, items) || focus;
+            } else {
+              this.dropRow(rec, items);
+            }
+            break;
+          default:
+            break;
+        }
+      }
+      for (const { key, label } of labels) {
+        const op = setOps.get(key);
+        if (op && label != null) {
+          op.label = label;
+        }
+      }
+      if (items.length) {
+        this.sync.enqueueBatch(items);
+      }
+      return focus;
+    } finally {
+      this.applying = false;
+    }
+  }
+  /**
+   * Remove a recorded row (undo of an insert / redo of a remove) — optimistic removal plus a
+   * `remove` op. Missing row → already gone, nothing to do (idempotent, like the server side).
+   */
+  dropRow(rec, items) {
+    if (!this.store.rowByKey.has(rec.rowKey)) {
+      return;
+    }
+    this.store.removeRow(rec.rowKey);
+    items.push({ op: { seq: this.store.nextSeq(), t: "remove", row: rec.rowKey }, cells: [] });
+  }
+  /**
+   * Restore a recorded row snapshot at its original index (undo of a remove / redo of an
+   * insert). The client repaints the FULL snapshot; the wire carries an `insert` (positioned
+   * with `before` so a row deleted from the top returns to the top) plus one `set` per
+   * writable column that must converge — so the server re-validates and re-derives exactly
+   * as if the row had been re-entered. Non-writable carriers (formula/readonly/hidden values)
+   * stay client-painted and are re-derived server-side by the hooks those sets fire.
+   *
+   * @returns {{rowKey: string, colKey: string}|null} focus target on the restored row
+   */
+  restoreRow(rec, items) {
+    if (this.store.rowByKey.has(rec.rowKey)) {
+      return null;
+    }
+    const index = Math.max(0, Math.min(rec.index, this.store.rowCount()));
+    const anchor = this.store.rowAt(index);
+    const op = { seq: this.store.nextSeq(), t: "insert", as: rec.rowKey };
+    if (anchor) {
+      op.before = anchor._k;
+    }
+    items.push({ op, cells: [] });
+    const snapshot = { ...rec.snapshot, _labels: { ...rec.snapshot._labels || {} } };
+    this.store.restoreRow(snapshot, index);
+    const template = this.store.layout && this.store.layout.newRow || {};
+    let focus = null;
+    for (const column of this.store.columns) {
+      if (!column || !column.key || column.key.startsWith("_") || !column.writable) {
+        continue;
+      }
+      const value = snapshot[column.key];
+      const preset = template[column.key];
+      const blank = value == null || value === "";
+      if (blank && (preset == null || preset === "")) {
+        continue;
+      }
+      const setOp = {
+        seq: this.store.nextSeq(),
+        t: "set",
+        row: rec.rowKey,
+        col: column.key,
+        v: blank ? null : value
+      };
+      const label = snapshot._labels[column.key];
+      if (!blank && label != null) {
+        setOp.label = label;
+      }
+      items.push({ op: setOp, cells: [{ rowKey: rec.rowKey, colKey: column.key }] });
+      focus = focus || { rowKey: rec.rowKey, colKey: column.key };
+    }
+    return focus || { rowKey: rec.rowKey, colKey: (this.store.visibleColumns()[0] || {}).key };
+  }
+  /** Land the active cell on the (first) affected address, when it still resolves. */
+  focusAfter(addr) {
+    if (!addr || !addr.colKey) {
+      return;
+    }
+    const { row, col } = this.store.indexOf(addr);
+    if (row >= 0 && col >= 0) {
+      this.store.setActive(addr);
+    }
+  }
+};
+
+// resources/js/edit/EditorManager.js
 var EditorManager = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -4197,7 +4515,7 @@ var EditorManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/validate/ClientValidator.js
+// resources/js/validate/ClientValidator.js
 var ClientValidator = class {
   /**
    * Validate a value against a column's compiled `validate.client` rules.
@@ -4257,7 +4575,7 @@ var ClientValidator = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/ErrorPainter.js
+// resources/js/render/ErrorPainter.js
 var ErrorPainter = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -4360,7 +4678,7 @@ var ErrorPainter = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/popup/PopupManager.js
+// resources/js/popup/PopupManager.js
 var PopupManager = class {
   /**
    * @param {{root: HTMLElement, scroll: HTMLElement, popup: HTMLElement}} refs
@@ -4453,7 +4771,7 @@ var PopupManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/persist/LayoutStore.js
+// resources/js/persist/LayoutStore.js
 var SCHEMA_VERSION = 1;
 var LayoutStore = class {
   /**
@@ -4529,7 +4847,7 @@ var LayoutStore = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/resize/ResizeManager.js
+// resources/js/resize/ResizeManager.js
 var HARD_MIN = 36;
 var HARD_MAX = 2e3;
 var AUTOFIT_SAMPLE = 200;
@@ -4707,7 +5025,7 @@ var ResizeManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/ColumnChooser.js
+// resources/js/render/ColumnChooser.js
 var ColumnChooser = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -4868,7 +5186,7 @@ var ColumnChooser = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/HeaderFilters.js
+// resources/js/render/HeaderFilters.js
 var HeaderFilters = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -4955,16 +5273,17 @@ var HeaderFilters = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/Toolbar.js
+// resources/js/render/Toolbar.js
 var Toolbar = class {
   /**
    * @param {import('../core/StateStore').default} store
    * @param {{toolbar: HTMLElement}} refs
    * @param {object|null} pageSource server-side driver (null on in-memory grids)
    * @param {Array<object>} filters the grid-level filter configs ({key, label, kind, options})
-   * @param {object|null} popup the shared PopupManager (export format menu)
+   * @param {object|null} popup the shared PopupManager (export format menu / views menu)
+   * @param {import('../views/ViewsManager').default|null} views saved-views service (->savedViews())
    */
-  constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null) {
+  constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null, views = null) {
     this.store = store;
     this.refs = refs;
     this.pageSource = pageSource;
@@ -4973,10 +5292,12 @@ var Toolbar = class {
     this.runner = runner;
     this.actions = actions || {};
     this.popup = popup;
+    this.views = views;
     this.chooserSlot = null;
     this.searchTimer = null;
     this.offChecked = null;
     this.offExport = [];
+    this.filterSelects = {};
   }
   /** Build the enabled controls; leaves the container hidden when nothing rendered. */
   render() {
@@ -5015,6 +5336,10 @@ var Toolbar = class {
         button.addEventListener("click", () => this.runner.runToolbar(meta, button));
         host.appendChild(button);
       }
+      any = true;
+    }
+    if (this.views && this.store.layout.views && this.popup) {
+      host.appendChild(this.buildViews());
       any = true;
     }
     const exportSpec = this.store.layout.export;
@@ -5098,6 +5423,151 @@ var Toolbar = class {
       first.focus();
     }
   }
+  /** The Views button — opens the saved-views popup menu. */
+  buildViews() {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "lgrid-toolbar-btn lgrid-toolbar-btn--views";
+    button.textContent = "\u2756 Views";
+    button.setAttribute("aria-haspopup", "true");
+    button.addEventListener("click", () => this.openViewsMenu(button));
+    return button;
+  }
+  /** Open the views popup and load the operator's saved views into it. */
+  openViewsMenu(anchorEl) {
+    const container = this.popup.open({
+      anchorEl,
+      owner: "views-menu",
+      className: "lgrid-popup--actions lgrid-popup--views",
+      onRequestClose: () => {
+      }
+    });
+    container.appendChild(el("div", "lgrid-views-note", "Loading views\u2026"));
+    this.popup.position();
+    this.views.list().then((views) => {
+      if (this.popup.openFor !== "views-menu") {
+        return;
+      }
+      this.renderViewsMenu(container, views);
+    }).catch(() => {
+      if (this.popup.openFor === "views-menu") {
+        container.textContent = "";
+        container.appendChild(el("div", "lgrid-views-note", "Could not load views."));
+        this.popup.position();
+      }
+    });
+  }
+  /** The menu body: one row per saved view (apply + delete) and the save-current control. */
+  renderViewsMenu(container, views) {
+    container.textContent = "";
+    if (!views.length) {
+      container.appendChild(el("div", "lgrid-views-note", "No saved views yet."));
+    }
+    for (const view of views) {
+      const row = el("div", "lgrid-views-item");
+      const apply = document.createElement("button");
+      apply.type = "button";
+      apply.className = "lgrid-popup-option";
+      apply.textContent = view.name;
+      apply.addEventListener("click", () => {
+        this.popup.close("owner");
+        this.views.apply(view.state || {});
+        this.reflect(view.state || {});
+      });
+      row.appendChild(apply);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "lgrid-views-delete";
+      remove.textContent = "\u2715";
+      remove.title = "Delete view";
+      remove.setAttribute("aria-label", "Delete view " + view.name);
+      remove.addEventListener("click", () => {
+        remove.disabled = true;
+        this.views.remove(view.id).then((rest) => {
+          if (this.popup.openFor === "views-menu") {
+            this.renderViewsMenu(container, rest);
+          }
+        }).catch(() => {
+          remove.disabled = false;
+        });
+      });
+      row.appendChild(remove);
+      container.appendChild(row);
+    }
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "lgrid-popup-option lgrid-views-savebtn";
+    save.textContent = "+ Save current view\u2026";
+    save.addEventListener("click", () => this.renderSaveForm(container, views));
+    container.appendChild(save);
+    this.popup.position();
+  }
+  /** The inline save form: a name input + Save/Back. Enter saves; Esc returns to the list. */
+  renderSaveForm(container, views) {
+    container.textContent = "";
+    const form = el("div", "lgrid-views-form");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = 60;
+    input.placeholder = "View name";
+    input.className = "lgrid-views-name";
+    input.setAttribute("aria-label", "View name");
+    input.addEventListener("click", () => input.focus());
+    form.appendChild(input);
+    const note = el("div", "lgrid-views-note");
+    note.hidden = true;
+    const actions = el("div", "lgrid-views-actions");
+    const mk = (label, fn) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "lgrid-toolbar-btn";
+      b.textContent = label;
+      b.addEventListener("click", fn);
+      actions.appendChild(b);
+      return b;
+    };
+    const submit = () => {
+      const name = input.value.trim();
+      if (!name) {
+        input.focus();
+        return;
+      }
+      ok.disabled = true;
+      this.views.save(name).then(() => this.popup.close("owner")).catch(() => {
+        ok.disabled = false;
+        note.hidden = false;
+        note.textContent = "Could not save the view.";
+        this.popup.position();
+      });
+    };
+    const ok = mk("Save", submit);
+    mk("Back", () => this.renderViewsMenu(container, views));
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        this.renderViewsMenu(container, views);
+      }
+    });
+    form.appendChild(actions);
+    form.appendChild(note);
+    container.appendChild(form);
+    this.popup.position();
+    input.focus();
+  }
+  /** Sync the toolbar controls to a just-applied view state (search box + filter selects). */
+  reflect(state) {
+    if (this.searchInput) {
+      this.searchInput.value = state && state.search || "";
+    }
+    for (const [key, select] of Object.entries(this.filterSelects)) {
+      const value = state && state.filters ? state.filters[key] : void 0;
+      select.value = value == null ? "" : String(value);
+    }
+  }
   /** Debounced global search → PageSource.search (same channel as `lgrid:toolbar`). */
   buildSearch() {
     const input = document.createElement("input");
@@ -5144,6 +5614,7 @@ var Toolbar = class {
     select.addEventListener("change", () => {
       this.pageSource.setFilter(filter.key, select.value === "" ? null : select.value);
     });
+    this.filterSelects[filter.key] = select;
     wrap.appendChild(select);
     return wrap;
   }
@@ -5191,7 +5662,7 @@ var Toolbar = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/interact/RowActivator.js
+// resources/js/interact/RowActivator.js
 var RowActivator = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -5268,7 +5739,7 @@ var RowActivator = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/interact/ActionRunner.js
+// resources/js/interact/ActionRunner.js
 var ActionRunner = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -5469,7 +5940,85 @@ var ActionRunner = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/TextEditor.js
+// resources/js/views/ViewsManager.js
+var ViewsManager = class {
+  /**
+   * @param {import('../core/StateStore').default} store
+   * @param {object} wire the Livewire facade (gridViews/gridViewSave/gridViewDelete)
+   * @param {import('../sync/PageSource').default} pageSource
+   * @param {import('../persist/LayoutStore').default|null} layoutStore
+   * @param {{onLayoutChanged?: () => void, announce?: (msg: string) => void}} [hooks]
+   */
+  constructor(store, wire, pageSource, layoutStore, hooks = {}) {
+    this.store = store;
+    this.wire = wire;
+    this.pageSource = pageSource;
+    this.layoutStore = layoutStore || null;
+    this.onLayoutChanged = hooks.onLayoutChanged || (() => {
+    });
+    this.announce = hooks.announce || (() => {
+    });
+  }
+  /** The operator's current view state — exactly the whitelisted shape the server stores. */
+  capture() {
+    const query = this.store.query || {};
+    return {
+      search: query.search || "",
+      sort: query.sort || null,
+      dir: query.dir === "desc" ? "desc" : "asc",
+      filters: { ...query.filters || {} },
+      perPage: query.perPage || this.store.serverMeta.perPage,
+      widths: { ...this.store.widthOverrides },
+      hidden: [...this.store.userHidden]
+    };
+  }
+  /**
+   * Apply a saved state: column layout first (widths/hidden adopt wholesale, persisted so a
+   * reload keeps them, then the one relayout path), then the query through PageSource — a
+   * normal page-1 load, so caching, the stale-guard and the loading overlay all behave as
+   * for any filter change.
+   *
+   * @param {object} state the server-sanitized view state
+   */
+  apply(state) {
+    const s = state || {};
+    this.store.widthOverrides = { ...s.widths || {} };
+    this.store.userHidden = new Set(Array.isArray(s.hidden) ? s.hidden : []);
+    if (this.layoutStore && this.layoutStore.enabled()) {
+      this.layoutStore.save(this.store.widthOverrides, [...this.store.userHidden]);
+    }
+    this.onLayoutChanged();
+    const def = this.store.layout && this.store.layout.defaultSort || null;
+    this.pageSource.load({
+      sort: s.sort || (def ? def.col : null),
+      dir: s.sort ? s.dir === "desc" ? "desc" : "asc" : def ? def.dir : "asc",
+      search: s.search || "",
+      filters: { ...s.filters || {} },
+      page: 1,
+      perPage: s.perPage || this.store.query.perPage
+    });
+  }
+  /** @returns {Promise<Array<{id: string, name: string, state: object}>>} */
+  list() {
+    return this.wire.gridViews(this.store.name).then((r) => r && r.views || []);
+  }
+  /**
+   * Save the CURRENT view under a name (same name = overwrite). Resolves to the refreshed list.
+   * @param {string} name
+   */
+  save(name) {
+    return this.wire.gridViewSave(this.store.name, name, this.capture()).then((r) => r && r.views || []);
+  }
+  /**
+   * Delete a view by id. Resolves to the refreshed list.
+   * @param {string} id
+   */
+  remove(id) {
+    return this.wire.gridViewDelete(this.store.name, String(id)).then((r) => r && r.views || []);
+  }
+};
+
+// resources/js/edit/editors/TextEditor.js
 var TextEditor = class {
   /**
    * Build the input into the host element.
@@ -5554,7 +6103,7 @@ var TextEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/NumberEditor.js
+// resources/js/edit/editors/NumberEditor.js
 var NumberEditor = class {
   /**
    * @param {HTMLElement} host
@@ -5620,7 +6169,7 @@ var NumberEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/endOfList.js
+// resources/js/edit/endOfList.js
 var END_OF_LIST_VALUE = "__lgrid_end_of_list__";
 function endOfListOption(label) {
   return { value: END_OF_LIST_VALUE, label, __endOfList: true };
@@ -5629,7 +6178,7 @@ function isEndOfListOption(option) {
   return !!(option && option.__endOfList === true);
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/SelectEditor.js
+// resources/js/edit/editors/SelectEditor.js
 var SelectEditor = class {
   /**
    * @param {HTMLElement} host
@@ -5811,7 +6360,7 @@ var SelectEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/SearchSelectEditor.js
+// resources/js/edit/editors/SearchSelectEditor.js
 var SearchSelectEditor = class {
   /**
    * @param {HTMLElement} host
@@ -6070,7 +6619,7 @@ var SearchSelectEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/DateEditor.js
+// resources/js/edit/editors/DateEditor.js
 var DateEditor = class {
   /**
    * @param {HTMLElement} host
@@ -6137,7 +6686,7 @@ var DateEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/CheckboxInline.js
+// resources/js/edit/editors/CheckboxInline.js
 var CheckboxInline = class {
   /* The class is never instantiated — EditorManager short-circuits on `instant`. The stubs
      document the editor contract for anyone extending from this file. */
@@ -6152,7 +6701,7 @@ var CheckboxInline = class {
 /** Marks the editor as an in-place toggle: open() flips the value instead of mounting. */
 __publicField(CheckboxInline, "instant", true);
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/YesNoInline.js
+// resources/js/edit/editors/YesNoInline.js
 var YesNoInline = class {
   /* The class is never instantiated — EditorManager short-circuits on `instant`. The stubs
      document the editor contract for anyone extending from this file. */
@@ -6169,7 +6718,7 @@ __publicField(YesNoInline, "instant", true);
 /** NAV typed chars (lower-cased) → the value committed + advanced through the shared pipeline. */
 __publicField(YesNoInline, "chars", { y: true, n: false });
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/builtin.js
+// resources/js/edit/builtin.js
 registerEditor("text", TextEditor);
 registerEditor("number", NumberEditor);
 registerEditor("select", SelectEditor);
@@ -6178,7 +6727,7 @@ registerEditor("date", DateEditor);
 registerEditor("checkbox", CheckboxInline);
 registerEditor("yesno", YesNoInline);
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/core/GridCore.js
+// resources/js/core/GridCore.js
 var GridCore = class {
   /**
    * @param {object} config the @js() config from ConfigSerializer
@@ -6224,6 +6773,8 @@ var GridCore = class {
       onCopy: () => this.clipboard.copy(),
       editor: this.editorManager || null,
       rowOps: this.rowOps || null,
+      undo: this.undoManager ? () => this.undoManager.undo() : null,
+      redo: this.undoManager ? () => this.undoManager.redo() : null,
       onRequiredBlock: (addr) => this.flashRequiredCell(addr),
       onComplete: () => this.dispatchComplete(),
       rowActivate: this.rowActivator.isEnabled() ? () => this.rowActivator.activate() : null
@@ -6328,6 +6879,10 @@ var GridCore = class {
     }
     this.sync = new SyncManager(this.store, this.bus, this.refs.wire);
     this.validator = new ClientValidator();
+    this.undoManager = new UndoManager(this.store, this.sync, {
+      announce: (msg) => this.announcer && this.announcer.message(msg)
+    });
+    this.store.recorder = this.undoManager;
     const wire = this.refs.wire;
     const picker = {
       popup: this.popupManager,
@@ -6427,6 +6982,12 @@ var GridCore = class {
       });
       this.actionRunner.init();
     }
+    if (this.store.layout.views && this.pageSource && this.refs.wire) {
+      this.viewsManager = new ViewsManager(this.store, this.refs.wire, this.pageSource, this.layoutStore, {
+        onLayoutChanged: () => this.onColumnLayoutChanged(),
+        announce: (msg) => this.announcer && this.announcer.message(msg)
+      });
+    }
     const spec = this.store.layout.toolbar;
     if (spec && this.refs.toolbar) {
       this.toolbar = new Toolbar(
@@ -6437,7 +6998,8 @@ var GridCore = class {
         this.bus,
         this.actionRunner || null,
         this.config.actions || {},
-        this.popupManager || null
+        this.popupManager || null,
+        this.viewsManager || null
       );
       this.toolbar.render();
     }
@@ -6823,6 +7385,10 @@ var GridCore = class {
     if (this.offPanel) {
       this.offPanel();
     }
+    if (this.undoManager) {
+      this.store.recorder = null;
+      this.undoManager.clear();
+    }
     if (this.editorManager) {
       this.editorManager.destroy();
     }
@@ -6887,7 +7453,7 @@ var GridCore = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/index.js
+// resources/js/index.js
 var cores = /* @__PURE__ */ new Map();
 var observer = null;
 function resolveRefs(root) {
@@ -6955,7 +7521,10 @@ function resolveWire(root) {
     gridOps: call2("gridOps"),
     gridOptions: call2("gridOptions"),
     gridAction: call2("gridAction"),
-    gridExport: call2("gridExport")
+    gridExport: call2("gridExport"),
+    gridViews: call2("gridViews"),
+    gridViewSave: call2("gridViewSave"),
+    gridViewDelete: call2("gridViewDelete")
   };
 }
 function readConfig(root) {

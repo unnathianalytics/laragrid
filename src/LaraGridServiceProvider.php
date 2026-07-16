@@ -39,6 +39,10 @@ class LaraGridServiceProvider extends ServiceProvider
         $this->app->singleton(FormatRegistry::class);
         $this->app->singleton(CastRegistry::class);
         $this->app->singleton(ExporterRegistry::class);
+
+        // Saved-view storage (->savedViews()): swappable — an app rebinds the interface in its
+        // own provider to keep views in Redis / a tenant table / an existing preference store.
+        $this->app->bind(Views\ViewStore::class, Views\DatabaseViewStore::class);
     }
 
     public function boot(): void
@@ -57,6 +61,14 @@ class LaraGridServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../dist' => public_path('vendor/laragrid'),
         ], 'laragrid-assets');
+
+        // Saved-views table: auto-loaded so `composer require` + `migrate` is the whole
+        // install; publishable for apps that customise (the migration's hasTable guard keeps
+        // the two copies from double-creating).
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+        $this->publishes([
+            __DIR__.'/../database/migrations' => database_path('migrations'),
+        ], 'laragrid-migrations');
 
         Blade::component('laragrid', View\DatagridComponent::class);
 

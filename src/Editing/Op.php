@@ -39,6 +39,9 @@ final class Op
      * @param  string  $kind  One of the KINDS constants.
      * @param  string|null  $row  The target row `_k` (set/remove/dup/fill).
      * @param  string|null  $after  The row `_k` to insert after (insert; null = append at end).
+     * @param  string|null  $before  The row `_k` to insert BEFORE (insert; wins over `after`).
+     *                               Used by undo to restore a removed row at its original
+     *                               position — `after` alone cannot express "first row".
      * @param  string|null  $as  The new row's `_k` for insert/dup (client-generated).
      * @param  string|null  $col  The target column key (set/fill).
      * @param  mixed  $value  The raw typed-text value (set/fill), parsed/cast by the applier.
@@ -51,6 +54,7 @@ final class Op
         public readonly string $kind,
         public readonly ?string $row = null,
         public readonly ?string $after = null,
+        public readonly ?string $before = null,
         public readonly ?string $as = null,
         public readonly ?string $col = null,
         public readonly mixed $value = null,
@@ -83,6 +87,7 @@ final class Op
             kind: $kind,
             row: isset($data['row']) ? (string) $data['row'] : null,
             after: isset($data['after']) ? (string) $data['after'] : null,
+            before: isset($data['before']) ? (string) $data['before'] : null,
             as: isset($data['as']) ? (string) $data['as'] : null,
             col: isset($data['col']) ? (string) $data['col'] : null,
             value: $data['v'] ?? null,

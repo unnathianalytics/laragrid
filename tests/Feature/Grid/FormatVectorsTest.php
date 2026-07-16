@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use LaraGrid\Formatting\Formatter;
 use LaraGrid\Formatting\FormatRegistry;
+use LaraGrid\Formatting\Formatter;
 
 /**
  * What: Asserts the PHP FormatRegistry renders every shared vector to its committed

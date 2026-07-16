@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace LaraGrid\Livewire;
 
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -16,6 +17,8 @@ use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Grid;
 use LaraGrid\Query\QueryPipeline;
 use LaraGrid\Support\RowSerializer;
+use LaraGrid\Views\ViewState;
+use LaraGrid\Views\ViewStore;
 use Livewire\Attributes\Renderless;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -162,6 +165,127 @@ trait WithLaraGrid
             $filename,
             ['Content-Type' => $exporter->mimeType()],
         );
+    }
+
+    /**
+     * List the calling operator's saved views for a grid (the toolbar Views menu).
+     *
+     * What: Authorizes (fail-closed, the same gate as every grid RPC), requires the grid to
+     *       declare ->savedViews(), and returns the operator-scoped views from the bound
+     *       ViewStore. The scope is minted server-side from the authenticated user — the
+     *       client can neither choose nor widen it.
+     *
+     * @return array{views: list<array{id: string, name: string, state: array<string, mixed>}>}
+     *
+     * @throws AuthorizationException When the gate denies or no user is authenticated.
+     * @throws InvalidArgumentException When the grid is unknown or declares no savedViews().
+     */
+    #[Renderless]
+    public function gridViews(string $grid): array
+    {
+        $definition = $this->viewableGrid($grid);
+
+        return ['views' => app(ViewStore::class)->list($this->viewScope(), $definition->getSavedViews()['key'])];
+    }
+
+    /**
+     * Save (or overwrite, by name) one view of the grid's current state.
+     *
+     * What: The state payload is untrusted client input — ViewState::sanitize reduces it to
+     *       the whitelisted shape, validating every column/filter reference against the grid's
+     *       declaration (G12). Saving an existing name updates that view (the operator mental
+     *       model); the per-grid cap (config laragrid.views.max_per_grid) bounds runaway
+     *       creation. Returns the saved view plus the refreshed list.
+     *
+     * @param  array<string, mixed>  $state
+     * @return array{view: array{id: string, name: string, state: array<string, mixed>}, views: list<array{id: string, name: string, state: array<string, mixed>}>}
+     *
+     * @throws AuthorizationException When the gate denies or no user is authenticated.
+     * @throws ValidationException When the name is blank/too long or the view cap is reached.
+     * @throws InvalidArgumentException When the grid is unknown or declares no savedViews().
+     */
+    #[Renderless]
+    public function gridViewSave(string $grid, string $name, array $state): array
+    {
+        $definition = $this->viewableGrid($grid);
+
+        $name = trim($name);
+        if ($name === '' || mb_strlen($name) > 60) {
+            throw ValidationException::withMessages(['name' => 'A view name must be 1-60 characters.']);
+        }
+
+        $store = app(ViewStore::class);
+        $scope = $this->viewScope();
+        $key = $definition->getSavedViews()['key'];
+
+        $existing = $store->list($scope, $key);
+        $cap = max(1, (int) config('laragrid.views.max_per_grid', 50));
+        $replaces = array_filter($existing, fn (array $view): bool => $view['name'] === $name) !== [];
+        if (! $replaces && count($existing) >= $cap) {
+            throw ValidationException::withMessages(['name' => "This grid already holds {$cap} saved views."]);
+        }
+
+        $view = $store->save($scope, $key, $name, app(ViewState::class)->sanitize($definition, $state));
+
+        return ['view' => $view, 'views' => $store->list($scope, $key)];
+    }
+
+    /**
+     * Delete one of the calling operator's saved views (scoped — a foreign id is a no-op).
+     *
+     * @return array{views: list<array{id: string, name: string, state: array<string, mixed>}>}
+     *
+     * @throws AuthorizationException When the gate denies or no user is authenticated.
+     * @throws InvalidArgumentException When the grid is unknown or declares no savedViews().
+     */
+    #[Renderless]
+    public function gridViewDelete(string $grid, string $id): array
+    {
+        $definition = $this->viewableGrid($grid);
+
+        $store = app(ViewStore::class);
+        $scope = $this->viewScope();
+        $key = $definition->getSavedViews()['key'];
+
+        $store->delete($scope, $key, $id);
+
+        return ['views' => $store->list($scope, $key)];
+    }
+
+    /**
+     * Resolve + authorize a grid for the saved-views RPCs, requiring the ->savedViews()
+     * declaration — a grid that never declared views must refuse the whole surface.
+     *
+     * @throws AuthorizationException|InvalidArgumentException
+     */
+    protected function viewableGrid(string $grid): Grid
+    {
+        $definition = $this->gridDefinition($grid);
+
+        $this->authorizeGrid($definition);
+
+        if ($definition->getSavedViews() === null) {
+            throw new InvalidArgumentException("Grid [{$grid}] does not declare savedViews().");
+        }
+
+        return $definition;
+    }
+
+    /**
+     * The opaque per-operator scope saved views live under. Minted from the authenticated
+     * user only — guests have no durable identity to key views on, so the surface refuses.
+     *
+     * @throws AuthorizationException When no user is authenticated.
+     */
+    protected function viewScope(): string
+    {
+        $id = Auth::id();
+
+        if ($id === null) {
+            throw new AuthorizationException('Saved views require an authenticated user.');
+        }
+
+        return 'u:'.$id;
     }
 
     /**

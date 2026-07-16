@@ -23,6 +23,7 @@ import Announcer from '../a11y/Announcer.js';
 import PageSource from '../sync/PageSource.js';
 import PaginationBar from '../render/PaginationBar.js';
 import SyncManager from '../sync/SyncManager.js';
+import UndoManager from '../undo/UndoManager.js';
 import EditorManager from '../edit/EditorManager.js';
 import ClientValidator from '../validate/ClientValidator.js';
 import ErrorPainter from '../render/ErrorPainter.js';
@@ -34,6 +35,7 @@ import HeaderFilters from '../render/HeaderFilters.js';
 import Toolbar from '../render/Toolbar.js';
 import RowActivator from '../interact/RowActivator.js';
 import ActionRunner from '../interact/ActionRunner.js';
+import ViewsManager from '../views/ViewsManager.js';
 import '../edit/builtin.js';
 
 export default class GridCore {
@@ -113,6 +115,8 @@ export default class GridCore {
             onCopy: () => this.clipboard.copy(),
             editor: this.editorManager || null,
             rowOps: this.rowOps || null,
+            undo: this.undoManager ? () => this.undoManager.undo() : null,
+            redo: this.undoManager ? () => this.undoManager.redo() : null,
             onRequiredBlock: (addr) => this.flashRequiredCell(addr),
             onComplete: () => this.dispatchComplete(),
             rowActivate: this.rowActivator.isEnabled() ? () => this.rowActivator.activate() : null,
@@ -276,6 +280,14 @@ export default class GridCore {
         this.sync = new SyncManager(this.store, this.bus, this.refs.wire);
         this.validator = new ClientValidator();
 
+        // Undo/redo (Ctrl+Z / Ctrl+Y): the recorder seam on the store feeds the UndoManager,
+        // which replays inverses through the same op queue. Editable grids only — the two
+        // KeyboardManager hooks below stay null everywhere else.
+        this.undoManager = new UndoManager(this.store, this.sync, {
+            announce: (msg) => this.announcer && this.announcer.message(msg),
+        });
+        this.store.recorder = this.undoManager;
+
         // The gridOptions bridge (M5 pickers) over the shared popup built in init(). Absent
         // popup just means picker editors degrade to nothing (never a crash).
         const wire = this.refs.wire;
@@ -402,6 +414,16 @@ export default class GridCore {
             this.actionRunner.init();
         }
 
+        // Saved views (->savedViews() on a readonly grid): the capture/apply/RPC service the
+        // toolbar's Views menu drives. Applying a view rides the SAME relayout callback as the
+        // column chooser and the same PageSource load as every filter change.
+        if (this.store.layout.views && this.pageSource && this.refs.wire) {
+            this.viewsManager = new ViewsManager(this.store, this.refs.wire, this.pageSource, this.layoutStore, {
+                onLayoutChanged: () => this.onColumnLayoutChanged(),
+                announce: (msg) => this.announcer && this.announcer.message(msg),
+            });
+        }
+
         const spec = this.store.layout.toolbar;
         if (spec && this.refs.toolbar) {
             this.toolbar = new Toolbar(
@@ -413,6 +435,7 @@ export default class GridCore {
                 this.actionRunner || null,
                 this.config.actions || {},
                 this.popupManager || null,
+                this.viewsManager || null,
             );
             this.toolbar.render();
         }
@@ -841,6 +864,10 @@ export default class GridCore {
         }
         if (this.offPanel) {
             this.offPanel();
+        }
+        if (this.undoManager) {
+            this.store.recorder = null;
+            this.undoManager.clear();
         }
         if (this.editorManager) {
             this.editorManager.destroy();
