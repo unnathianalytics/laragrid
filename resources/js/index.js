@@ -120,11 +120,16 @@ function resolveWire(root) {
         }
     };
 
+    // Every grid RPC the engine may invoke on the host component. A method used anywhere
+    // as `wire.gridX(...)` MUST be listed here — an absent key is `undefined`, and callers
+    // that feature-detect (PageSource.export) degrade to a SILENT no-op. Pinned by
+    // tests/js/run-facade-surface.mjs.
     return {
         gridFetch: call('gridFetch'),
         gridOps: call('gridOps'),
         gridOptions: call('gridOptions'),
         gridAction: call('gridAction'),
+        gridExport: call('gridExport'),
     };
 }
 
