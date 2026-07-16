@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use LaraGrid\Casting\CastRegistry;
+use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Formatting\FormatRegistry;
 use LaraGrid\Support\Assets;
 
@@ -30,12 +31,14 @@ class LaraGridServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(__DIR__.'/../config/laragrid.php', 'laragrid');
 
-        // The two extension registries, shared per request so app-side registrations
-        // (custom formatters / parse-kind casts, e.g. an accounting app's 'paise') are
-        // visible to every serializer and applier. Core defaults self-register in the
-        // constructors: text/number/date formats; text/int/decimal/select/bool/date casts.
+        // The extension registries, shared per request so app-side registrations
+        // (custom formatters / parse-kind casts / export formats, e.g. an accounting app's
+        // 'paise' cast or a dompdf-backed 'pdf') are visible to every serializer and applier.
+        // Core defaults self-register in the constructors: text/number/date formats;
+        // text/int/decimal/select/bool/date casts; csv/xlsx/pdf exporters.
         $this->app->singleton(FormatRegistry::class);
         $this->app->singleton(CastRegistry::class);
+        $this->app->singleton(ExporterRegistry::class);
     }
 
     public function boot(): void

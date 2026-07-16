@@ -80,6 +80,15 @@ trait HasWidth
     }
 
     /**
+     * The declared fixed pixel width, or null for a grow/default-sized column (export
+     * layout hints; the client reads the serialized fragment instead).
+     */
+    public function getWidth(): ?int
+    {
+        return $this->width;
+    }
+
+    /**
      * The sizing fragment serialized into the column's config. `resizable` is emitted ONLY
      * when a column opts out (the client defaults to resizable), so the committed golden
      * configs of columns that never touch it do not rot — the M6 `whenFilled` discipline.

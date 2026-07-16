@@ -70,6 +70,13 @@ abstract class Column
     protected bool $visible = true;
 
     /**
+     * Whether this column's values ride grid exports (csv/xlsx/pdf). Default yes for every
+     * visible column; ->exportable(false) keeps a painted column out of the file (an inline
+     * chart, a chrome-ish computed cell) without hiding it on screen.
+     */
+    protected bool $exportable = true;
+
+    /**
      * When true the client renders this column's value as HTML (caller-sanitised), not
      * textContent. Off by default: renderers write textContent only unless opted in (G13).
      */
@@ -136,6 +143,29 @@ abstract class Column
         $this->asHtml = $html;
 
         return $this;
+    }
+
+    /**
+     * Whether this column renders as HTML (exports strip such values back to text).
+     */
+    public function isHtml(): bool
+    {
+        return $this->asHtml;
+    }
+
+    /**
+     * Opt this column out of (or back into) grid exports — see $exportable.
+     */
+    public function exportable(bool $exportable = true): static
+    {
+        $this->exportable = $exportable;
+
+        return $this;
+    }
+
+    public function isExportable(): bool
+    {
+        return $this->exportable;
     }
 
     /**

@@ -963,7 +963,13 @@
         outline: none;
     }
 
-    .lgrid-toolbar-bulk {
+    .lgrid-toolbar-btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+    }
+
+    .lgrid-toolbar-bulk,
+    .lgrid-toolbar-export {
         display: inline-flex;
         align-items: center;
         gap: 0.4rem;

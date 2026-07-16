@@ -5,15 +5,19 @@ declare(strict_types=1);
 namespace LaraGrid\Livewire;
 
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use LaraGrid\Columns\SearchSelectColumn;
 use LaraGrid\Editing\OpApplier;
 use LaraGrid\Editing\OpBatch;
+use LaraGrid\Export\ExportBuilder;
+use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Grid;
 use LaraGrid\Query\QueryPipeline;
 use LaraGrid\Support\RowSerializer;
-use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Renderless;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 use function Livewire\store;
 
@@ -108,6 +112,56 @@ trait WithLaraGrid
         }
 
         return app(QueryPipeline::class)->run($definition, $query)->toArray();
+    }
+
+    /**
+     * Download the grid's CURRENT view as a file — the whole filtered set in one of the
+     * formats the grid's ->exportable() enables.
+     *
+     * What: Authorizes (fail-closed, the same gate as gridFetch), verifies the grid declares
+     *       exports AND enables the requested format (the client only ever echoes a format
+     *       NAME — a format the definition doesn't offer is refused even if registered), then
+     *       streams the file through the named Exporter. The query payload carries the
+     *       client's {sort, dir, search, filters} and runs through the SAME whitelisted
+     *       narrowing pipeline as gridFetch — an export can never widen what the operator
+     *       could already see (G12).
+     * Why:  Running on the host component keeps tenancy + policies exactly as every other
+     *       grid RPC; Livewire turns the StreamedResponse into a browser download.
+     *
+     * @param  array{sort?: string|null, dir?: string|null, search?: string|null, filters?: array<string, mixed>}  $query
+     *
+     * @throws AuthorizationException When the grid's ->authorize() gate denies.
+     * @throws InvalidArgumentException When the grid is unknown, not exportable, or the format not enabled.
+     */
+    #[Renderless]
+    public function gridExport(string $grid, string $format, array $query = []): StreamedResponse
+    {
+        $definition = $this->gridDefinition($grid);
+
+        $this->authorizeGrid($definition);
+
+        $export = $definition->isServerSide() ? $definition->getExport() : null;
+        if ($export === null) {
+            throw new InvalidArgumentException("Grid [{$grid}] is not exportable; declare ->exportable() on a query() grid.");
+        }
+
+        if (! in_array($format, $export['formats'], true)) {
+            throw new InvalidArgumentException(
+                "Grid [{$grid}] does not offer the [{$format}] export format; enabled: ".implode(', ', $export['formats']).'.'
+            );
+        }
+
+        $exporter = app(ExporterRegistry::class)->resolve($format);
+        $data = app(ExportBuilder::class)->build($definition, $query);
+
+        $filename = Str::slug($export['fileName'] ?? $definition->name)
+            .'-'.now()->format('Ymd-His').'.'.$exporter->extension();
+
+        return response()->streamDownload(
+            fn () => $exporter->write($data),
+            $filename,
+            ['Content-Type' => $exporter->mimeType()],
+        );
     }
 
     /**

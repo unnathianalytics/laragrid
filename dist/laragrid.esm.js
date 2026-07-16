@@ -3207,6 +3207,30 @@ var PageSource = class {
   setPerPage(perPage) {
     this.load({ ...this.store.query, perPage, page: 1 });
   }
+  /**
+   * Download the CURRENT view (sort/search/filters — the whole filtered set, never the
+   * page window) in one of the grid's enabled export formats. The server re-authorizes
+   * and re-whitelists everything; we only echo the format name + the query intents.
+   * Livewire turns the streamed response into a browser download; bus events let the
+   * toolbar disable its control (and the announcer speak) while one is in flight.
+   */
+  export(format) {
+    if (this.exporting || typeof this.wire.gridExport !== "function") {
+      return Promise.resolve();
+    }
+    const query = { ...this.store.query };
+    delete query.page;
+    delete query.perPage;
+    this.exporting = true;
+    this.bus.emit("export:started", { format });
+    return this.wire.gridExport(this.store.name, format, query).then(() => {
+      this.exporting = false;
+      this.bus.emit("export:done", { format });
+    }).catch((error) => {
+      this.exporting = false;
+      this.bus.emit("export:error", { format, error });
+    });
+  }
   // ---- Fetch + reconcile ----------------------------------------------------------------
   /**
    * Load a query: serve from cache instantly if present, else fetch. A monotonic seq guards
@@ -4938,8 +4962,9 @@ var Toolbar = class {
    * @param {{toolbar: HTMLElement}} refs
    * @param {object|null} pageSource server-side driver (null on in-memory grids)
    * @param {Array<object>} filters the grid-level filter configs ({key, label, kind, options})
+   * @param {object|null} popup the shared PopupManager (export format menu)
    */
-  constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}) {
+  constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null) {
     this.store = store;
     this.refs = refs;
     this.pageSource = pageSource;
@@ -4947,9 +4972,11 @@ var Toolbar = class {
     this.bus = bus;
     this.runner = runner;
     this.actions = actions || {};
+    this.popup = popup;
     this.chooserSlot = null;
     this.searchTimer = null;
     this.offChecked = null;
+    this.offExport = [];
   }
   /** Build the enabled controls; leaves the container hidden when nothing rendered. */
   render() {
@@ -4990,6 +5017,11 @@ var Toolbar = class {
       }
       any = true;
     }
+    const exportSpec = this.store.layout.export;
+    if (this.pageSource && exportSpec && (exportSpec.formats || []).length) {
+      host.appendChild(this.buildExport(exportSpec.formats));
+      any = true;
+    }
     host.appendChild(el("div", "lgrid-toolbar-spacer"));
     if (spec.chooser) {
       this.chooserSlot = el("span", "lgrid-toolbar-chooser");
@@ -4997,6 +5029,74 @@ var Toolbar = class {
       any = true;
     }
     host.hidden = !any;
+  }
+  /** Display names for the shipped formats; an app-registered name falls back to uppercase. */
+  formatLabel(format) {
+    return { csv: "CSV", xlsx: "Excel", pdf: "PDF" }[format] || String(format).toUpperCase();
+  }
+  /**
+   * The Export button. A single enabled format downloads on click; multiple formats open
+   * a popup menu (the actions-menu pattern — keyboard-first, Esc closes). Without a popup
+   * to host the menu, one button per format keeps every format reachable.
+   */
+  buildExport(formats) {
+    const wrap = el("span", "lgrid-toolbar-export");
+    const buttons = [];
+    const make = (label, onClick) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "lgrid-toolbar-btn lgrid-toolbar-btn--export";
+      button.textContent = label;
+      button.addEventListener("click", () => onClick(button));
+      wrap.appendChild(button);
+      buttons.push(button);
+      return button;
+    };
+    if (formats.length === 1) {
+      make("\u2913 " + this.formatLabel(formats[0]), () => this.pageSource.export(formats[0]));
+    } else if (this.popup) {
+      make("\u2913 Export\u2026", (button) => this.openExportMenu(formats, button));
+    } else {
+      for (const format of formats) {
+        make("\u2913 " + this.formatLabel(format), () => this.pageSource.export(format));
+      }
+    }
+    if (this.bus) {
+      const set = (busy) => {
+        for (const button of buttons) {
+          button.disabled = busy;
+          button.setAttribute("aria-busy", busy ? "true" : "false");
+        }
+      };
+      this.offExport.push(this.bus.on("export:started", () => set(true)));
+      this.offExport.push(this.bus.on("export:done", () => set(false)));
+      this.offExport.push(this.bus.on("export:error", () => set(false)));
+    }
+    return wrap;
+  }
+  /** The multi-format popup menu, anchored on the Export button. */
+  openExportMenu(formats, anchorEl) {
+    const container = this.popup.open({
+      anchorEl,
+      owner: "export-menu",
+      className: "lgrid-popup--actions",
+      onRequestClose: () => this.popup.close("owner")
+    });
+    for (const format of formats) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "lgrid-popup-option";
+      item.textContent = this.formatLabel(format);
+      item.addEventListener("click", () => {
+        this.popup.close("owner");
+        this.pageSource.export(format);
+      });
+      container.appendChild(item);
+    }
+    const first = container.querySelector("button");
+    if (first) {
+      first.focus();
+    }
   }
   /** Debounced global search → PageSource.search (same channel as `lgrid:toolbar`). */
   buildSearch() {
@@ -5079,6 +5179,10 @@ var Toolbar = class {
     if (this.offChecked) {
       this.offChecked();
     }
+    for (const off of this.offExport) {
+      off();
+    }
+    this.offExport = [];
     clearTimeout(this.searchTimer);
     if (this.refs.toolbar) {
       this.refs.toolbar.textContent = "";
@@ -6179,6 +6283,22 @@ var GridCore = class {
       }
       console.error("[laragrid:" + this.store.name + "] gridFetch failed:", error);
     });
+    this.bus.on("export:started", () => {
+      if (this.announcer) {
+        this.announcer.message("Preparing download\u2026");
+      }
+    });
+    this.bus.on("export:done", () => {
+      if (this.announcer) {
+        this.announcer.message("Download ready.");
+      }
+    });
+    this.bus.on("export:error", ({ error }) => {
+      if (this.announcer) {
+        this.announcer.message("Export failed.");
+      }
+      console.error("[laragrid:" + this.store.name + "] gridExport failed:", error);
+    });
     this.onToolbar = (e) => {
       const d = e.detail || {};
       if (d.grid !== this.store.name) {
@@ -6190,6 +6310,8 @@ var GridCore = class {
         this.pageSource.setFilter(d.key, d.value);
       } else if (d.kind === "perPage") {
         this.pageSource.setPerPage(Number(d.value));
+      } else if (d.kind === "export") {
+        this.pageSource.export(d.value);
       }
     };
     document.addEventListener("lgrid:toolbar", this.onToolbar);
@@ -6314,7 +6436,8 @@ var GridCore = class {
         this.config.filters || [],
         this.bus,
         this.actionRunner || null,
-        this.config.actions || {}
+        this.config.actions || {},
+        this.popupManager || null
       );
       this.toolbar.render();
     }

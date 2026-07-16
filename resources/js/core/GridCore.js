@@ -219,6 +219,26 @@ export default class GridCore {
             console.error('[laragrid:' + this.store.name + '] gridFetch failed:', error);
         });
 
+        // Export lifecycle (PageSource.export): a download can take a few seconds on a big
+        // register — say so, and make a failure as loud as a failed fetch.
+        this.bus.on('export:started', () => {
+            if (this.announcer) {
+                this.announcer.message('Preparing download…');
+            }
+        });
+        this.bus.on('export:done', () => {
+            if (this.announcer) {
+                this.announcer.message('Download ready.');
+            }
+        });
+        this.bus.on('export:error', ({ error }) => {
+            if (this.announcer) {
+                this.announcer.message('Export failed.');
+            }
+            // eslint-disable-next-line no-console
+            console.error('[laragrid:' + this.store.name + '] gridExport failed:', error);
+        });
+
         // Host-toolbar bridge: a host renders its own search/filter inputs (outside wire:ignore)
         // and dispatches `lgrid:toolbar` DOM events; we route the matching grid's ones to PageSource
         // so the host stays Livewire-free and never morphs the body. {grid, kind, key?, value}.
@@ -233,6 +253,10 @@ export default class GridCore {
                 this.pageSource.setFilter(d.key, d.value);
             } else if (d.kind === 'perPage') {
                 this.pageSource.setPerPage(Number(d.value));
+            } else if (d.kind === 'export') {
+                // Custom host chrome triggers a download the same way: {kind: 'export',
+                // value: 'csv'}. The server still enforces the grid's enabled-format list.
+                this.pageSource.export(d.value);
             }
         };
         document.addEventListener('lgrid:toolbar', this.onToolbar);
@@ -388,6 +412,7 @@ export default class GridCore {
                 this.bus,
                 this.actionRunner || null,
                 this.config.actions || {},
+                this.popupManager || null,
             );
             this.toolbar.render();
         }

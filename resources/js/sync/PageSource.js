@@ -130,6 +130,35 @@ export default class PageSource {
         this.load({ ...this.store.query, perPage, page: 1 });
     }
 
+    /**
+     * Download the CURRENT view (sort/search/filters — the whole filtered set, never the
+     * page window) in one of the grid's enabled export formats. The server re-authorizes
+     * and re-whitelists everything; we only echo the format name + the query intents.
+     * Livewire turns the streamed response into a browser download; bus events let the
+     * toolbar disable its control (and the announcer speak) while one is in flight.
+     */
+    export(format) {
+        if (this.exporting || typeof this.wire.gridExport !== 'function') {
+            return Promise.resolve();
+        }
+        const query = { ...this.store.query };
+        delete query.page;
+        delete query.perPage;
+
+        this.exporting = true;
+        this.bus.emit('export:started', { format });
+        return this.wire
+            .gridExport(this.store.name, format, query)
+            .then(() => {
+                this.exporting = false;
+                this.bus.emit('export:done', { format });
+            })
+            .catch((error) => {
+                this.exporting = false;
+                this.bus.emit('export:error', { format, error });
+            });
+    }
+
     // ---- Fetch + reconcile ----------------------------------------------------------------
 
     /**

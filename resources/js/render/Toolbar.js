@@ -21,8 +21,9 @@ export default class Toolbar {
      * @param {{toolbar: HTMLElement}} refs
      * @param {object|null} pageSource server-side driver (null on in-memory grids)
      * @param {Array<object>} filters the grid-level filter configs ({key, label, kind, options})
+     * @param {object|null} popup the shared PopupManager (export format menu)
      */
-    constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}) {
+    constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null) {
         this.store = store;
         this.refs = refs;
         this.pageSource = pageSource;
@@ -30,9 +31,11 @@ export default class Toolbar {
         this.bus = bus;
         this.runner = runner;
         this.actions = actions || {};
+        this.popup = popup;
         this.chooserSlot = null;
         this.searchTimer = null;
         this.offChecked = null;
+        this.offExport = [];
     }
 
     /** Build the enabled controls; leaves the container hidden when nothing rendered. */
@@ -82,6 +85,15 @@ export default class Toolbar {
             any = true;
         }
 
+        // Export control (a readonly grid's ->exportable()): one format downloads directly;
+        // several open the shared popup as a format menu. The button disables while a
+        // download builds (export:* bus events from PageSource.export).
+        const exportSpec = this.store.layout.export;
+        if (this.pageSource && exportSpec && (exportSpec.formats || []).length) {
+            host.appendChild(this.buildExport(exportSpec.formats));
+            any = true;
+        }
+
         host.appendChild(el('div', 'lgrid-toolbar-spacer'));
 
         if (spec.chooser) {
@@ -92,6 +104,82 @@ export default class Toolbar {
         }
 
         host.hidden = !any;
+    }
+
+    /** Display names for the shipped formats; an app-registered name falls back to uppercase. */
+    formatLabel(format) {
+        return { csv: 'CSV', xlsx: 'Excel', pdf: 'PDF' }[format] || String(format).toUpperCase();
+    }
+
+    /**
+     * The Export button. A single enabled format downloads on click; multiple formats open
+     * a popup menu (the actions-menu pattern — keyboard-first, Esc closes). Without a popup
+     * to host the menu, one button per format keeps every format reachable.
+     */
+    buildExport(formats) {
+        const wrap = el('span', 'lgrid-toolbar-export');
+        const buttons = [];
+
+        const make = (label, onClick) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'lgrid-toolbar-btn lgrid-toolbar-btn--export';
+            button.textContent = label;
+            button.addEventListener('click', () => onClick(button));
+            wrap.appendChild(button);
+            buttons.push(button);
+            return button;
+        };
+
+        if (formats.length === 1) {
+            make('⤓ ' + this.formatLabel(formats[0]), () => this.pageSource.export(formats[0]));
+        } else if (this.popup) {
+            make('⤓ Export…', (button) => this.openExportMenu(formats, button));
+        } else {
+            for (const format of formats) {
+                make('⤓ ' + this.formatLabel(format), () => this.pageSource.export(format));
+            }
+        }
+
+        // One download at a time: the whole control disables while a file builds.
+        if (this.bus) {
+            const set = (busy) => {
+                for (const button of buttons) {
+                    button.disabled = busy;
+                    button.setAttribute('aria-busy', busy ? 'true' : 'false');
+                }
+            };
+            this.offExport.push(this.bus.on('export:started', () => set(true)));
+            this.offExport.push(this.bus.on('export:done', () => set(false)));
+            this.offExport.push(this.bus.on('export:error', () => set(false)));
+        }
+
+        return wrap;
+    }
+
+    /** The multi-format popup menu, anchored on the Export button. */
+    openExportMenu(formats, anchorEl) {
+        const container = this.popup.open({
+            anchorEl,
+            owner: 'export-menu',
+            className: 'lgrid-popup--actions',
+            onRequestClose: () => this.popup.close('owner'),
+        });
+        for (const format of formats) {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'lgrid-popup-option';
+            item.textContent = this.formatLabel(format);
+            item.addEventListener('click', () => {
+                this.popup.close('owner');
+                this.pageSource.export(format);
+            });
+            container.appendChild(item);
+        }
+        const first = container.querySelector('button');
+        if (first) {
+            first.focus();
+        }
     }
 
     /** Debounced global search → PageSource.search (same channel as `lgrid:toolbar`). */
@@ -188,6 +276,10 @@ export default class Toolbar {
         if (this.offChecked) {
             this.offChecked();
         }
+        for (const off of this.offExport) {
+            off();
+        }
+        this.offExport = [];
         clearTimeout(this.searchTimer);
         if (this.refs.toolbar) {
             this.refs.toolbar.textContent = '';

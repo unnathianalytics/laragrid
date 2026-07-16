@@ -11,6 +11,7 @@ use InvalidArgumentException;
 use LaraGrid\Actions\Action;
 use LaraGrid\Columns\Column;
 use LaraGrid\Editing\RowContext;
+use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Filters\Filter;
 
 /**
@@ -152,6 +153,15 @@ class Grid
 
     /** The primary-key attribute used as each model row's stable client `_k`. */
     protected string $rowKey = 'id';
+
+    /**
+     * The export declaration (readonly grids only), or null when the grid does not export.
+     * ['formats' => list<string>|null, 'fileName' => string|null, 'limit' => int|null] —
+     * null members fall back to config('laragrid.export') at resolve time (getExport).
+     *
+     * @var array{formats: list<string>|null, fileName: string|null, limit: int|null}|null
+     */
+    protected ?array $export = null;
 
     // ---- Editable (in-memory) mode — M4 --------------------------------------------------
 
@@ -543,6 +553,45 @@ class Grid
     public function rowKey(string $primaryKey): static
     {
         $this->rowKey = $primaryKey;
+
+        return $this;
+    }
+
+    /**
+     * Offer downloads of the grid's CURRENT view (sort + search + filters, the whole filtered
+     * set — never one page) in the given formats. Readonly ->query() grids only.
+     *
+     * What: Adds an Export control to the package toolbar and enables the gridExport RPC.
+     *       Formats default to config('laragrid.export.formats') — csv, xlsx and pdf ship
+     *       dependency-free; apps add/override formats on the ExporterRegistry. Columns
+     *       export what they paint (picker labels, Y/N, date display pattern, stripped html);
+     *       summable numerics stay raw in csv/xlsx so spreadsheets can compute, and the pdf
+     *       formats them. A column opts out with ->exportable(false).
+     * Why:  Opt-in and fail-closed like every other data surface: the RPC re-runs the grid's
+     *       ->authorize() gate and only serves formats this declaration enables. The row cap
+     *       (default config laragrid.export.max_rows) bounds a runaway register download; the
+     *       totals row always sums the rows actually in the file.
+     * When: Readonly master lists / registers: ->query(...)->exportable(['csv', 'xlsx']).
+     *
+     * @param  array<int, string>|bool  $formats  true = the config default set; a list = exactly
+     *                                            these formats; false = disable (the default state).
+     * @param  string|null  $fileName  Download base name (defaults to the grid name); the
+     *                                 timestamp + extension are appended.
+     * @param  int|null  $limit  Per-grid row cap overriding config('laragrid.export.max_rows').
+     */
+    public function exportable(array|bool $formats = true, ?string $fileName = null, ?int $limit = null): static
+    {
+        if ($formats === false) {
+            $this->export = null;
+
+            return $this;
+        }
+
+        $this->export = [
+            'formats' => $formats === true ? null : array_values(array_map('strval', $formats)),
+            'fileName' => $fileName,
+            'limit' => $limit,
+        ];
 
         return $this;
     }
@@ -1193,6 +1242,38 @@ class Grid
         return $this->rowKey;
     }
 
+    /**
+     * The RESOLVED export declaration — config defaults overlaid by the per-grid call — or
+     * null when the grid does not export. The single source the serializer (toolbar control),
+     * the gridExport RPC (format whitelist + cap) and the ExportBuilder all read.
+     *
+     * @return array{formats: list<string>, fileName: string|null, limit: int}|null
+     */
+    public function getExport(): ?array
+    {
+        if ($this->export === null) {
+            return null;
+        }
+
+        $defaults = (array) config('laragrid.export', []);
+
+        /** @var list<string> $formats */
+        $formats = $this->export['formats']
+            ?? array_values(array_map('strval', (array) ($defaults['formats'] ?? ['csv', 'xlsx', 'pdf'])));
+
+        return [
+            'formats' => $formats,
+            'fileName' => $this->export['fileName'],
+            'limit' => max(1, (int) ($this->export['limit'] ?? $defaults['max_rows'] ?? 50000)),
+        ];
+    }
+
+    /** Whether this grid declares exports (drives the toolbar control + RPC gate). */
+    public function isExportable(): bool
+    {
+        return $this->export !== null;
+    }
+
     // ---- Accessors used by the serializer -------------------------------------------
 
     /**
@@ -1392,6 +1473,12 @@ class Grid
     protected function assertReadonlyValid(array $keySet): void
     {
         if (! $this->isServerSide()) {
+            if ($this->export !== null) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] declares exportable() but no query(); exports need a server-side readonly grid."
+                );
+            }
+
             return;
         }
 
@@ -1400,6 +1487,8 @@ class Grid
                 "Grid [{$this->name}] is server-side but declares no authorize(); readonly grids must be gated (fail-closed)."
             );
         }
+
+        $this->assertExportValid();
 
         foreach ($this->searchable as $column) {
             // A dot-qualified target (e.g. 'items.name') is an explicit DB column — used to
@@ -1426,6 +1515,35 @@ class Grid
             throw new InvalidArgumentException(
                 "Grid [{$this->name}] has duplicate filter keys: ".implode(', ', $dupes).'.'
             );
+        }
+    }
+
+    /**
+     * Export invariants: at least one format, and every format registered on the
+     * ExporterRegistry — a typo (or a format the app never registered) must fail at build
+     * time, not as a dead toolbar button.
+     */
+    protected function assertExportValid(): void
+    {
+        $export = $this->getExport();
+        if ($export === null) {
+            return;
+        }
+
+        if ($export['formats'] === []) {
+            throw new InvalidArgumentException(
+                "Grid [{$this->name}] exportable() declares an empty format list."
+            );
+        }
+
+        $registry = app(ExporterRegistry::class);
+        foreach ($export['formats'] as $format) {
+            if (! $registry->has($format)) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] exportable() names unknown format [{$format}]; registered: "
+                    .implode(', ', $registry->names()).'.'
+                );
+            }
         }
     }
 

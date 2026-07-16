@@ -172,6 +172,13 @@ class ConfigSerializer
             $layout['rowActivate'] = true;
         }
 
+        // Exports (readonly grids): the enabled format list drives the toolbar's Export
+        // control; the client echoes a format name back through gridExport, nothing more.
+        // Emitted only when declared (whenFilled discipline).
+        if ($grid->isServerSide() && ($export = $grid->getExport()) !== null) {
+            $layout['export'] = ['formats' => $export['formats']];
+        }
+
         // The fresh-row template (emitted only when the factory sets any default): the client
         // seeds optimistic inserts from it AND uses it as the blank-row reference, mirroring
         // the server's template-aware blank detection.

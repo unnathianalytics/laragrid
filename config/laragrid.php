@@ -73,6 +73,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Exports
+    |--------------------------------------------------------------------------
+    | Defaults for readonly grids that chain ->exportable(). `formats` is the
+    | set offered when ->exportable() is called with no arguments — any subset
+    | (or app-registered format) can be chosen per grid: ->exportable(['csv']).
+    | `max_rows` caps how many rows a single download may carry (a per-grid
+    | ->exportable(limit:) overrides it); `chunk` is the streaming page size
+    | used while building the file.
+    */
+    'export' => [
+        'formats' => ['csv', 'xlsx', 'pdf'],
+        'max_rows' => 50000,
+        'chunk' => 500,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Asset injection
     |--------------------------------------------------------------------------
     | When true the service provider auto-injects the prebuilt dist/ script and

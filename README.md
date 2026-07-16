@@ -46,6 +46,7 @@ live formula columns, auto-append and a running footer:
 - [Grid definition reference](#grid-definition-reference)
 - [Actions](#actions)
 - [Toolbar, search & filters](#toolbar-search--filters)
+- [Exports (CSV / XLSX / PDF)](#exports-csv--xlsx--pdf)
 - [Keyboard](#keyboard)
 - [Theming](#theming)
   - [Shipped color schemes](#shipped-color-schemes)
@@ -62,7 +63,7 @@ live formula columns, auto-append and a running footer:
 | Mode | Declare with | What you get |
 |---|---|---|
 | **Display** | rows passed to the tag | Paints in-memory rows. Works on plain Blade pages without any Livewire component. |
-| **Readonly server-side** | `->query(fn () => Model::query())` | Sort, global search, filters, pagination through a whitelisted fail-closed pipeline. Page 1 ships in the initial payload (zero-round-trip first paint); later pages stream over an RPC with an LRU cache and idle prefetch of the next page. |
+| **Readonly server-side** | `->query(fn () => Model::query())` | Sort, global search, filters, pagination through a whitelisted fail-closed pipeline. Page 1 ships in the initial payload (zero-round-trip first paint); later pages stream over an RPC with an LRU cache and idle prefetch of the next page. Opt-in CSV/XLSX/PDF downloads of the current view (`->exportable()`). |
 | **Editable** | `->editable()->rowsFrom('lines')` | The full spreadsheet: optimistic client, authoritative server, typed op protocol, validation on both sides, formula columns, async pickers with row enrichment, auto-append, live footer totals. |
 
 Both interactive modes share one keyboard model, one selection engine, one theming system.
@@ -137,6 +138,7 @@ class ResortsIndex extends Component
                 DateColumn::make('created_at')->label('Added')->sortable()->width(110),
             ])
             ->footer([Aggregate::sum('hits')->format('number')])
+            ->exportable(['csv', 'xlsx', 'pdf'])     // toolbar Export control — see Exports
             ->actions([
                 Action::make('edit')->icon('✎')->url(fn ($row) => route('resorts.edit', $row['id'])),
                 Action::make('delete')->icon('✕')->confirm('Delete this resort?')
@@ -421,12 +423,14 @@ Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `alig
 `frozen`, `sortable(bool|'db.column')`, `searchable`, `filterable(Filter)`, `required` /
 `required(fn)`, `readonly` / `readonly(fn)`, `rules([...])`, `lockedWhen('col', value)`,
 `requiredWhen('col', value)`, `whenFilled(sets: [...], clears: [...])`,
-`endOfListOption()` (see *Ending entry*), `opensPanel('name')`, `html()`.
+`endOfListOption()` (see *Ending entry*), `opensPanel('name')`, `html()`,
+`exportable(false)` (keep a painted column out of downloads).
 
 ## Grid definition reference
 
 **Data** — `query(fn)` · `authorize(ability|fn)` · `paginate(per, [options])` ·
 `defaultSort(col, dir)` · `searchable([...])` · `filters([...])` · `rowKey('id')` ·
+`exportable([formats], fileName:, limit:)` (see [Exports](#exports-csv--xlsx--pdf)) ·
 `rowActivate(fn ($row) => ?url)` — Enter/double-click opens a row, permission-gated per row.
 
 **Editable** — `editable()` · `rowsFrom('prop')` · `defaultRows(n)` · `newRowUsing(fn)` ·
@@ -472,11 +476,65 @@ their current page and editable grids receive a reseed payload automatically. Th
 ## Toolbar, search & filters
 
 The toolbar renders itself from the definition: a debounced search box (when the grid declares
-`->searchable()`), one control per grid-level filter, the bulk bar, toolbar action buttons, and
-the column chooser. Suppress or tune it: `->toolbar(false)`, `->toolbar(search: false)`. Filter
-options accept a `{value => label}` map (the `pluck()` idiom), a list of `['value' => , 'label' => ]`
+`->searchable()`), one control per grid-level filter, the bulk bar, toolbar action buttons, the
+Export control (when the grid declares `->exportable()`), and the column chooser. Suppress or
+tune it: `->toolbar(false)`, `->toolbar(search: false)`. Filter options accept a
+`{value => label}` map (the `pluck()` idiom), a list of `['value' => , 'label' => ]`
 rows, or plain scalars. `SelectFilter` and `TernaryFilter` (All / Yes / No) ship in core; column
 header funnels via `->filterable()` run through the same whitelisted pipeline.
+
+## Exports (CSV / XLSX / PDF)
+
+Readonly `->query()` grids can offer file downloads of the register — opt-in, per grid:
+
+```php
+Grid::make('resorts')
+    ->query(fn () => Resort::query())
+    ->authorize('resort.viewAny')
+    ->exportable()                                    // csv + xlsx + pdf (the config default set)
+    // ->exportable(['csv', 'xlsx'])                  // or exactly these formats
+    // ->exportable(['csv'], fileName: 'resorts', limit: 10000)
+```
+
+An **⤓ Export** control appears in the toolbar (a single format downloads directly; several
+open a menu). The download is always the operator's **current view**: the active sort, global
+search and filters apply — the whole filtered set, never just the visible page — through the
+same whitelisted, fail-closed pipeline as every fetch. The `gridExport` RPC re-runs the grid's
+`->authorize()` gate and refuses any format the definition doesn't enable.
+
+**What lands in the file** is what the grid paints: picker columns export their **labels** (not
+ids), `YesNoColumn` exports `Y`/`N` (blank while unanswered), `CheckboxColumn` exports
+`Yes`/`No`, dates use the configured display pattern, and `->html()` cells are stripped back to
+plain text. Summable numeric columns stay **raw** in CSV/XLSX — real number cells a spreadsheet
+can total — while the PDF (a visual document) formats them through each column's format tag.
+Footer sums append as a totals row that always equals the rows actually in the file, and every
+file is capped at `laragrid.export.max_rows` (default 50,000; override per grid with `limit:`).
+Hidden columns never export; keep a painted column out of the file with `->exportable(false)`
+on the column.
+
+All three writers are **dependency-free** — CSV (BOM'd UTF-8), XLSX (native SpreadsheetML,
+typed number cells, needs only `ext-zip`), and PDF (native A4 writer: auto-landscape, repeated
+header row, page numbers; base-14 Helvetica, so Latin-1 text — characters outside it
+transliterate). Need branded PDFs, full Unicode fonts, or another format? Register your own
+writer under any name and grids enable it like a shipped one:
+
+```php
+// A service provider:
+app(\LaraGrid\Export\ExporterRegistry::class)->register('pdf', new BrandedDompdfExporter);
+app(\LaraGrid\Export\ExporterRegistry::class)->register('ods', new OdsExporter);
+
+// A grid:
+->exportable(['csv', 'ods'])     // unknown names still fail loudly at build time
+```
+
+Hosts rendering fully custom chrome (`->toolbar(false)`) trigger downloads over the same
+event bridge as search/filters:
+
+```js
+el.dispatchEvent(new CustomEvent('lgrid:toolbar', {
+    bubbles: true, detail: { grid: 'resorts', kind: 'export', value: 'xlsx' },
+}));
+```
 
 ## Keyboard
 
@@ -593,8 +651,9 @@ fully custom host chrome).
 ## Configuration
 
 `config/laragrid.php` holds app-wide *defaults* only — density, keymap preset, date display
-pattern, financial-year start month (off by default), toolbar defaults, asset injection and
-asset URL. Any grid overrides any of them through its chained definition.
+pattern, financial-year start month (off by default), toolbar defaults, export defaults
+(format set, row cap, streaming chunk size), asset injection and asset URL. Any grid overrides
+any of them through its chained definition.
 
 ## Troubleshooting
 
