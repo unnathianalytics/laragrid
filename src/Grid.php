@@ -1490,6 +1490,37 @@ class Grid
      */
     protected function assertSortableValid(): void
     {
+        // ->defaultSort() must name a DECLARED, ->sortable() column. Server-side,
+        // AppliesSort silently ignores a non-sortable default (no ORDER BY — while the
+        // client caret would still claim one); in-memory, the client would have to skip
+        // it just as silently. Two silent ignores on one definition is an author trap —
+        // refuse at build time instead. EDITABLE grids are exempt: defaultSort is inert
+        // by mode there (canSort=false, the client clears the seeded state), and their
+        // sortable columns are refused below anyway.
+        if ($this->defaultSort !== null && ! $this->editable) {
+            $defaultColumn = null;
+            foreach ($this->columns as $column) {
+                if ($column->key === $this->defaultSort['col']) {
+                    $defaultColumn = $column;
+                    break;
+                }
+            }
+
+            if ($defaultColumn === null) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] defaultSort column [{$this->defaultSort['col']}] is not a declared column."
+                );
+            }
+
+            if (! $defaultColumn->isSortable()) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] defaultSort column [{$this->defaultSort['col']}] is not ->sortable(); "
+                    .'a default sort on an unsortable column is silently ignored by the SQL path and cannot be '
+                    .'applied by the in-memory path — declare ->sortable() on it.'
+                );
+            }
+        }
+
         $sortable = array_values(array_filter($this->columns, fn (Column $c): bool => $c->isSortable()));
 
         if ($sortable === []) {

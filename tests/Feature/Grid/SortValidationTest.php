@@ -55,3 +55,35 @@ it('still accepts a DB sort target on a server-side query() grid (SQL path uncha
 
     expect($grid->column('name')->toArray())->toHaveKey('sortable', true);
 });
+
+it('accepts defaultSort on a sortable column of a display grid', function () {
+    Grid::make('report')
+        ->columns([TextColumn::make('account')->sortable()])
+        ->defaultSort('account')
+        ->assertValid();
+
+    expect(true)->toBeTrue();
+});
+
+it('rejects defaultSort on a NON-sortable column — no silent ignore in either mode', function () {
+    Grid::make('report')
+        ->columns([TextColumn::make('account')->sortable(), TextColumn::make('group')])
+        ->defaultSort('group')
+        ->assertValid();
+})->throws(InvalidArgumentException::class, 'is not ->sortable()');
+
+it('rejects defaultSort on an undeclared column of a display grid', function () {
+    Grid::make('report')
+        ->columns([TextColumn::make('account')->sortable()])
+        ->defaultSort('phantom')
+        ->assertValid();
+})->throws(InvalidArgumentException::class, 'is not a declared column');
+
+it('rejects a non-sortable defaultSort on a server-side grid too (was a silent no-ORDER-BY)', function () {
+    Grid::make('list')
+        ->query(fn () => null)
+        ->authorize(fn (): bool => true)
+        ->columns([TextColumn::make('name')->sortable(), TextColumn::make('code')])
+        ->defaultSort('code')
+        ->assertValid();
+})->throws(InvalidArgumentException::class, 'is not ->sortable()');

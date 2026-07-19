@@ -237,6 +237,15 @@ var StateStore = class {
     this.checked = /* @__PURE__ */ new Set();
     this.formulaColumns = this.columns.filter((c) => c && c.formula && c.formula.ast);
     this.setRows(config.rows || []);
+    if (!this.serverSide) {
+      const defaultCol = defaultSort && defaultSort.col ? this.columns.find((c) => c && c.key === defaultSort.col) : null;
+      if (this.canSort && defaultCol && defaultCol.sortable) {
+        this.sortRowsLocally(defaultSort.col, defaultSort.dir === "desc" ? "desc" : "asc");
+      } else if (this.query.sort !== null) {
+        this.query.sort = null;
+        this.query.dir = "asc";
+      }
+    }
   }
   /** The next monotonic op sequence number. */
   nextSeq() {

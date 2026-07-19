@@ -157,6 +157,58 @@ const footerBefore = JSON.stringify(s5.footer);
 s5.cycleSort('debit');
 check('footer configuration untouched by sorting', JSON.stringify(s5.footer) === footerBefore);
 
+/* ----------------------------------------------- defaultSort at construction */
+
+console.log('defaultSort at init (in-memory grids):');
+const sortableCols = [
+    { key: 'account', sortable: true },
+    { key: 'debit', sortable: true },
+    { key: 'group' }, // deliberately NOT sortable
+];
+const withDefault = (layout) => new StateStore({
+    name: 'ds', columns: sortableCols, layout, rows: rows(),
+}, new EventBus());
+
+// 1. asc applied to the ROWS at construction — not just to query.sort.
+const d1 = withDefault({ defaultSort: { col: 'account', dir: 'asc' } });
+check('defaultSort asc: rows sorted at construction', keys(d1) === 'd,c,a,e,b', keys(d1));
+check('defaultSort asc: query describes the applied order',
+    d1.query.sort === 'account' && d1.query.dir === 'asc');
+
+// 2. desc variant.
+const d2 = withDefault({ defaultSort: { col: 'account', dir: 'desc' } });
+check('defaultSort desc: rows sorted at construction', keys(d2) === 'b,e,a,c,d', keys(d2));
+
+// 3+4. Cycle from the applied default: desc → restore HOST seed (NOT the defaultSort) → asc.
+d1.cycleSort('account');
+check('first click after default-asc lands on DESC (no double-asc)', keys(d1) === 'b,e,a,c,d', keys(d1));
+d1.cycleSort('account');
+check('second click restores the HOST seed order, not the defaultSort order',
+    keys(d1) === 'a,b,c,d,e', keys(d1));
+check('second click clears query.sort', d1.query.sort === null);
+d1.cycleSort('account');
+check('third click reaches ascending', keys(d1) === 'd,c,a,e,b', keys(d1));
+
+// 5. Non-sortable defaultSort column: rows untouched AND no lying indicator state
+//    (assertValid refuses this server-side; the client skip is the defensive twin).
+const d5 = withDefault({ defaultSort: { col: 'group', dir: 'asc' } });
+check('non-sortable defaultSort: rows untouched', keys(d5) === 'a,b,c,d,e', keys(d5));
+check('non-sortable defaultSort: query.sort cleared (caret cannot lie)', d5.query.sort === null);
+
+// 6. Editable grid: defaultSort is inert by mode — no reorder, no claimed state.
+const d6 = withDefault({ editable: true, defaultSort: { col: 'account', dir: 'asc' } });
+check('editable + defaultSort: rows untouched', keys(d6) === 'a,b,c,d,e', keys(d6));
+check('editable + defaultSort: query.sort cleared', d6.query.sort === null);
+
+// 7. Regression: server-side construction is untouched — SQL carries the order, the
+//    seeded query merely DESCRIBES it, and no local sort runs.
+const d7 = withDefault({ serverSide: true, defaultSort: { col: 'account', dir: 'asc' } });
+check('server-side: rows stay in payload order (no local sort at init)',
+    keys(d7) === 'a,b,c,d,e', keys(d7));
+check('server-side: query.sort still seeded from defaultSort (describes the SQL order)',
+    d7.query.sort === 'account' && d7.query.dir === 'asc');
+check('server-side: no seed copy captured', d7.localSeedRows === null);
+
 /* ------------------------------------------------------------------ summary */
 
 if (failures > 0) {

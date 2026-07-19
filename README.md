@@ -64,7 +64,7 @@ live formula columns, auto-append and a running footer:
 
 | Mode | Declare with | What you get |
 |---|---|---|
-| **Display** | rows passed to the tag | Paints in-memory rows. Works on plain Blade pages without any Livewire component. `->sortable()` columns sort **client-side** (stable, type-aware, empties last; click cycles asc → desc → original order) — built for computed report grids (trial balance, ageing) that can never be `query()`-backed. |
+| **Display** | rows passed to the tag | Paints in-memory rows. Works on plain Blade pages without any Livewire component. `->sortable()` columns sort **client-side** (stable, type-aware, empties last; click cycles asc → desc → original order; `->defaultSort()` is applied at load) — built for computed report grids (trial balance, ageing) that can never be `query()`-backed. |
 | **Readonly server-side** | `->query(fn () => Model::query())` | Sort, global search, filters, pagination through a whitelisted fail-closed pipeline. Page 1 ships in the initial payload (zero-round-trip first paint); later pages stream over an RPC with an LRU cache and idle prefetch of the next page. Opt-in CSV/XLSX/PDF downloads of the current view (`->exportable()`) and named per-user saved views (`->savedViews()`). |
 | **Editable** | `->editable()->rowsFrom('lines')` | The full spreadsheet: optimistic client, authoritative server, typed op protocol, validation on both sides, formula columns, async pickers with row enrichment, auto-append, undo/redo, live footer totals. |
 

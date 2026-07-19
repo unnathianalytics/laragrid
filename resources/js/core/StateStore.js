@@ -156,6 +156,36 @@ export default class StateStore {
         this.formulaColumns = this.columns.filter((c) => c && c.formula && c.formula.ast);
 
         this.setRows(config.rows || []);
+
+        // ->defaultSort() on an IN-MEMORY grid: there is no SQL to carry it, so apply it
+        // once right here — otherwise query.sort (and the header caret) would claim an
+        // order the rows don't have, and cycleSort's first click would land on 'desc'
+        // (query.dir pre-seeded 'asc' matches its opening branch). Restricted to a
+        // sortable column exactly like the server path (AppliesSort.resolveSortColumn),
+        // so the two modes never diverge on one definition — Grid::assertValid() makes
+        // that misdeclaration loud at build time anyway. The rows:changed /
+        // selection:changed emits inside sortRowsLocally fire with NO subscribers here
+        // (GridCore wires them after construction) — deliberate, not a bug: the initial
+        // paint reads store.rows directly, so the very first frame is already sorted with
+        // no visible reflow. localSeedRows captures the HOST'S original order, so the
+        // third click of the cycle restores it, NOT the defaultSort (pinned by
+        // run-sort-vectors — do not "helpfully" change that contract).
+        if (!this.serverSide) {
+            const defaultCol = defaultSort && defaultSort.col
+                ? this.columns.find((c) => c && c.key === defaultSort.col)
+                : null;
+
+            if (this.canSort && defaultCol && defaultCol.sortable) {
+                this.sortRowsLocally(defaultSort.col, defaultSort.dir === 'desc' ? 'desc' : 'asc');
+            } else if (this.query.sort !== null) {
+                // The constructor pre-seeded query from defaultSort; an in-memory grid
+                // that cannot honour it (editable mode / non-sortable column) must not
+                // let the state — or the header caret painted from it — claim an order
+                // that was never applied.
+                this.query.sort = null;
+                this.query.dir = 'asc';
+            }
+        }
     }
 
     /** The next monotonic op sequence number. */
