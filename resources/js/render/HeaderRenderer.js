@@ -107,12 +107,17 @@ export default class HeaderRenderer {
         toggleClass(cell, 'lgrid-cell--center', column.align === 'center');
         this.layout.applyFrozenTo(cell, index);
 
-        // Sortable columns (M3): a dedicated sort control so a click on IT re-sorts, while a click
-        // on the rest of the header cell still selects the whole column (M2) — the two coexist.
+        // Sortable columns (M3): the WHOLE header cell is the sort hit target (consumer
+        // feedback — the caret alone was a fiddly ~10px press), carrying the key via
+        // data-sort-key; the dedicated button stays for keyboard/AT activation. M2
+        // whole-column selection remains reachable on a sortable column with a
+        // Ctrl/Cmd/Shift-modified click (GridCore.sortTargetFrom falls through), and on
+        // non-sortable columns a plain click column-selects exactly as before.
         // Gated on store.canSort, the SAME predicate GridCore binds the handler from: an
         // affordance must imply a capability (an editable grid never gets an inert button).
         if (column.sortable && this.store.canSort) {
             cell.classList.add('lgrid-headcell--sortable');
+            cell.dataset.sortKey = column.key;
             const sort = el('button', 'lgrid-sort');
             sort.type = 'button';
             sort.dataset.sort = column.key;

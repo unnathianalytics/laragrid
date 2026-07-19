@@ -69,6 +69,8 @@ live formula columns, auto-append and a running footer:
 | **Editable** | `->editable()->rowsFrom('lines')` | The full spreadsheet: optimistic client, authoritative server, typed op protocol, validation on both sides, formula columns, async pickers with row enrichment, auto-append, undo/redo, live footer totals. |
 
 Both interactive modes share one keyboard model, one selection engine, one theming system.
+On sortable columns the **whole header cell** is the sort click target (the caret doubles as
+the keyboard control); hold Ctrl/Cmd/Shift while clicking to column-select instead.
 
 ## Requirements
 

@@ -176,30 +176,83 @@ export default class GridCore {
     }
 
     /**
-     * Local sort for an in-memory DISPLAY grid: the same capture-phase sort-click listener
-     * installServerData binds, routed to StateStore.cycleSort instead of PageSource — so a
-     * ->sortable() column works without a query() backend (computed report grids: Trial
-     * Balance, Day Book, ageing). Gated by store.canSort, the same predicate HeaderRenderer
-     * draws the control from (affordance implies capability); server-side grids skip this
+     * Resolve the column key a header pointerdown should SORT, or null to fall through
+     * to the other header behaviours untouched.
+     *
+     * The WHOLE header cell of a sortable column is the sort target (consumer feedback:
+     * the caret alone was a fiddly hit) — with three deliberate escapes: a
+     * Ctrl/Cmd/Shift-modified click keeps M2 whole-column selection reachable on sortable
+     * columns, the M7 filter funnel keeps its menu, and the resize grip keeps dragging.
+     */
+    sortTargetFrom(e) {
+        if (e.ctrlKey || e.metaKey || e.shiftKey) {
+            return null;
+        }
+        if (e.target.closest('.lgrid-filter, .lgrid-resize')) {
+            return null;
+        }
+        const btn = e.target.closest('.lgrid-sort');
+        if (btn && this.refs.head.contains(btn)) {
+            return btn.dataset.sort || null;
+        }
+        const cell = e.target.closest('.lgrid-headcell--sortable');
+        if (cell && this.refs.head.contains(cell)) {
+            return cell.dataset.sortKey || null;
+        }
+        return null;
+    }
+
+    /**
+     * Bind the two sort listeners on the header for a given sort executor: the
+     * capture-phase pointerdown (mouse — whole-cell target via sortTargetFrom, and
+     * stopPropagation so a sort never ALSO column-selects), plus a keyboard-activation
+     * click listener for the dedicated button (Enter/Space on the focused control fires a
+     * click with detail 0; mouse clicks are e.detail > 0 and already handled at
+     * pointerdown, so they are ignored here — no double sort).
+     */
+    installSortHandlers(run) {
+        this.onSortClick = (e) => {
+            const colKey = this.sortTargetFrom(e);
+            if (colKey) {
+                e.preventDefault();
+                e.stopPropagation();
+                run(colKey);
+            }
+        };
+        // Capture phase so stopPropagation beats SelectionManager's pointerdown.
+        this.refs.head.addEventListener('pointerdown', this.onSortClick, true);
+
+        this.onSortKeyClick = (e) => {
+            if (e.detail !== 0) {
+                return; // mouse — handled at pointerdown
+            }
+            const btn = e.target.closest('.lgrid-sort');
+            if (btn && this.refs.head.contains(btn)) {
+                e.preventDefault();
+                e.stopPropagation();
+                run(btn.dataset.sort);
+            }
+        };
+        this.refs.head.addEventListener('click', this.onSortKeyClick, true);
+    }
+
+    /**
+     * Local sort for an in-memory DISPLAY grid: the same sort listeners installServerData
+     * binds, routed to StateStore.cycleSort instead of PageSource — so a ->sortable()
+     * column works without a query() backend (computed report grids: Trial Balance,
+     * Day Book, ageing). Gated by store.canSort, the same predicate HeaderRenderer draws
+     * the control from (affordance implies capability); server-side grids skip this
      * entirely (PageSource owns their sort), editable grids have canSort=false.
      */
     installLocalSort() {
         if (this.store.serverSide || !this.store.canSort || !this.refs.head) {
             return;
         }
-        this.onSortClick = (e) => {
-            const sortBtn = e.target.closest('.lgrid-sort');
-            if (sortBtn && this.refs.head.contains(sortBtn)) {
-                e.preventDefault();
-                // Keep the M2 contract: a sort click must not ALSO column-select.
-                e.stopPropagation();
-                this.store.cycleSort(sortBtn.dataset.sort);
-                // In-memory grids have no page:changed to ride — refresh indicators here.
-                this.renderer.header.updateSortIndicators();
-            }
-        };
-        // Capture phase so stopPropagation beats SelectionManager's pointerdown.
-        this.refs.head.addEventListener('pointerdown', this.onSortClick, true);
+        this.installSortHandlers((colKey) => {
+            this.store.cycleSort(colKey);
+            // In-memory grids have no page:changed to ride — refresh indicators here.
+            this.renderer.header.updateSortIndicators();
+        });
     }
 
     /**
@@ -214,18 +267,10 @@ export default class GridCore {
 
         this.pageSource = new PageSource(this.store, this.bus, this.refs.wire);
 
-        // Sort control clicks: a click on a header sort button re-sorts via PageSource, and stops
-        // propagation so it does NOT also trigger M2 whole-column selection on the same header cell.
-        this.onSortClick = (e) => {
-            const sortBtn = e.target.closest('.lgrid-sort');
-            if (sortBtn && this.refs.head.contains(sortBtn)) {
-                e.preventDefault();
-                e.stopPropagation();
-                this.pageSource.sort(sortBtn.dataset.sort);
-            }
-        };
-        // Capture phase so stopPropagation beats SelectionManager's pointerdown (column select).
-        this.refs.head.addEventListener('pointerdown', this.onSortClick, true);
+        // Sort clicks (whole-cell target + keyboard button activation) re-sort via
+        // PageSource; stopPropagation keeps M2 column selection off a sorting click
+        // (modified clicks fall through — see sortTargetFrom).
+        this.installSortHandlers((colKey) => this.pageSource.sort(colKey));
 
         if (this.refs.pagination) {
             this.pagination = new PaginationBar(this.store, this.bus, this.pageSource, this.refs.pagination);
@@ -908,6 +953,9 @@ export default class GridCore {
         }
         if (this.onSortClick) {
             this.refs.head.removeEventListener('pointerdown', this.onSortClick, true);
+        }
+        if (this.onSortKeyClick) {
+            this.refs.head.removeEventListener('click', this.onSortKeyClick, true);
         }
         if (this.onToolbar) {
             document.removeEventListener('lgrid:toolbar', this.onToolbar);

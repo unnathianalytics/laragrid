@@ -470,10 +470,13 @@
 
     /* ---- Sort affordance (M3 — server-side) --------------------------------------- */
 
-    /* A sortable header cell hosts a dedicated sort button so a click on IT re-sorts while a
-       click on the rest of the cell still selects the whole column (M2 coexistence). */
+    /* A sortable header cell is ONE whole-cell sort target (label + caret — the caret
+       alone was a fiddly hit); the dedicated button remains for keyboard/AT activation.
+       M2 column selection stays reachable via Ctrl/Cmd/Shift+click on sortable columns,
+       and via plain click on non-sortable ones. */
     .lgrid-headcell--sortable {
         cursor: pointer;
+        user-select: none;
     }
 
     .lgrid-sort {
