@@ -1,0 +1,17 @@
+{
+    "_comment": "Sign vectors for compareCellValues (local sort, in-memory display grids). expect = Math.sign of the comparison. Locale-safe strings only — collation order for these pairs is identical across ICU builds. Emptiness ranking is NOT the comparator's job (sortRowsLocally ranks empties last in both directions before comparing), so no ''/null vectors here.",
+    "comparator": [
+        { "a": 2, "b": 10, "expect": -1, "note": "numbers compare numerically, never lexically" },
+        { "a": 125000, "b": 99900, "expect": 1, "note": "raw paise integers" },
+        { "a": -500, "b": 0, "expect": -1, "note": "negatives below zero" },
+        { "a": 100, "b": 100, "expect": 0 },
+        { "a": "20", "b": "9", "expect": 1, "note": "cleanly numeric strings compare numerically" },
+        { "a": "2.000", "b": "10.000", "expect": -1, "note": "qty-style decimal strings" },
+        { "a": "0100", "b": "100", "expect": 0, "note": "numeric equality beats lexical difference" },
+        { "a": "Alpha", "b": "Beta", "expect": -1 },
+        { "a": "Sales", "b": "Sales", "expect": 0 },
+        { "a": "Freight", "b": "Bank", "expect": 1 },
+        { "a": "10A", "b": "9", "expect": -1, "note": "mixed alphanumeric falls back to localeCompare ('10A' < '9' lexically)" },
+        { "a": 100, "b": "Alpha", "expect": -1, "note": "number vs non-numeric string → localeCompare of stringified values" }
+    ]
+}

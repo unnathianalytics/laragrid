@@ -1469,6 +1469,53 @@ class Grid
         $this->assertReadonlyValid($keySet);
         $this->assertEditableValid($keySet);
         $this->assertActionsValid();
+        $this->assertSortableValid();
+    }
+
+    /**
+     * Sortable invariants — the build-time half of the in-memory sort feature.
+     *
+     * What: An EDITABLE grid may not declare ->sortable() at all: row order is domain
+     *       state (line sequence), so a header resort would corrupt what the operator
+     *       entered — and the client renders no control (store.canSort=false), which
+     *       without this assert would be a silently dead declaration. A DISPLAY grid
+     *       (no query()) sorts IN THE CLIENT by the column's own row key, so
+     *       ->sortable('db_column') — a DB sort target — is meaningless there and is
+     *       refused loudly rather than silently ignored.
+     * Why: The client draws the sort control and binds its handler from one predicate
+     *      (store.canSort); this is the server-side mirror that reports the
+     *      misdeclaration at build time, per the package's fail-loud philosophy.
+     * Ref: Called by assertValid(); client counterpart in StateStore (canSort/cycleSort)
+     *      and HeaderRenderer.
+     */
+    protected function assertSortableValid(): void
+    {
+        $sortable = array_values(array_filter($this->columns, fn (Column $c): bool => $c->isSortable()));
+
+        if ($sortable === []) {
+            return;
+        }
+
+        if ($this->editable) {
+            $keys = implode(', ', array_map(fn (Column $c): string => $c->key, $sortable));
+
+            throw new InvalidArgumentException(
+                "Grid [{$this->name}] is editable but declares sortable columns [{$keys}]; "
+                .'an entry grid\'s row order is domain-meaningful and cannot be resorted.'
+            );
+        }
+
+        if (! $this->isServerSide()) {
+            foreach ($sortable as $column) {
+                if ($column->sortColumn() !== $column->key) {
+                    throw new InvalidArgumentException(
+                        "Grid [{$this->name}] column [{$column->key}] declares sortable('{$column->sortColumn()}') — "
+                        .'a DB sort target — but this grid has no query(); an in-memory grid sorts by the column key. '
+                        .'Use ->sortable() without an argument.'
+                    );
+                }
+            }
+        }
     }
 
     /**

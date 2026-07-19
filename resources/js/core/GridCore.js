@@ -155,6 +155,7 @@ export default class GridCore {
         // (sort/search/filter/paginate over gridFetch) + pagination chrome. In-memory grids skip it
         // entirely — identical behaviour to M1/M2.
         this.installServerData();
+        this.installLocalSort();
 
         // Package toolbar (P6) + the column chooser (M7): the chooser mounts into the toolbar's
         // slot when one renders, else floats at the grid's top-right exactly as before.
@@ -172,6 +173,33 @@ export default class GridCore {
 
         /** Total init script time in ms (store build excluded — it runs in the constructor). */
         this.initMs = typeof performance !== 'undefined' ? performance.now() - initT0 : 0;
+    }
+
+    /**
+     * Local sort for an in-memory DISPLAY grid: the same capture-phase sort-click listener
+     * installServerData binds, routed to StateStore.cycleSort instead of PageSource — so a
+     * ->sortable() column works without a query() backend (computed report grids: Trial
+     * Balance, Day Book, ageing). Gated by store.canSort, the same predicate HeaderRenderer
+     * draws the control from (affordance implies capability); server-side grids skip this
+     * entirely (PageSource owns their sort), editable grids have canSort=false.
+     */
+    installLocalSort() {
+        if (this.store.serverSide || !this.store.canSort || !this.refs.head) {
+            return;
+        }
+        this.onSortClick = (e) => {
+            const sortBtn = e.target.closest('.lgrid-sort');
+            if (sortBtn && this.refs.head.contains(sortBtn)) {
+                e.preventDefault();
+                // Keep the M2 contract: a sort click must not ALSO column-select.
+                e.stopPropagation();
+                this.store.cycleSort(sortBtn.dataset.sort);
+                // In-memory grids have no page:changed to ride — refresh indicators here.
+                this.renderer.header.updateSortIndicators();
+            }
+        };
+        // Capture phase so stopPropagation beats SelectionManager's pointerdown.
+        this.refs.head.addEventListener('pointerdown', this.onSortClick, true);
     }
 
     /**

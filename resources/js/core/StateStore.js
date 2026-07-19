@@ -15,6 +15,30 @@
 import { evaluate as evalExpr } from '../formula/ExprEval.js';
 import { cellMapKey } from '../util/dom.js';
 
+/**
+ * Type-aware cell comparison for the LOCAL sort path (in-memory display grids).
+ *
+ * Contract (pinned by tests/js/run-sort-vectors.mjs): numbers — and strings that are
+ * cleanly numeric — compare numerically (consumers ship raw integer paise for money and
+ * '2.000'-style quantity strings); everything else via localeCompare. Emptiness
+ * (null/undefined/'') is NOT handled here — sortRowsLocally ranks empties last in BOTH
+ * directions before this comparator ever runs, so they never sort as 0 or as a lexical "".
+ *
+ * @returns {number} negative / zero / positive
+ */
+export function compareCellValues(a, b) {
+    if (typeof a === 'number' && typeof b === 'number') {
+        return a < b ? -1 : (a > b ? 1 : 0);
+    }
+    const an = Number(a);
+    const bn = Number(b);
+    if (!Number.isNaN(an) && !Number.isNaN(bn)
+        && String(a).trim() !== '' && String(b).trim() !== '') {
+        return an < bn ? -1 : (an > bn ? 1 : 0);
+    }
+    return String(a).localeCompare(String(b));
+}
+
 export default class StateStore {
     /**
      * @param {object} config the declarative config from ConfigSerializer
@@ -90,6 +114,24 @@ export default class StateStore {
 
         // ---- Editable (M4) state ---------------------------------------------------------
         this.editable = !!(this.layout && this.layout.editable);
+
+        /**
+         * Whether this grid can sort at all — the ONE predicate both the header renderer
+         * (draws the control) and GridCore (binds the handler) read, so an affordance
+         * always implies a capability. Server-side grids sort in SQL via PageSource;
+         * in-memory DISPLAY grids sort locally via cycleSort(); editable grids never
+         * sort — their row order is domain-meaningful (line sequence).
+         */
+        this.canSort = this.serverSide || !this.editable;
+
+        /**
+         * The seed row order captured before the FIRST local sort — what the third click
+         * of the asc → desc → clear cycle restores. Null until a local sort happens; any
+         * EXTERNAL setRows() (a reseed handing in fresh data) drops it and clears the
+         * sort state, because the new payload's order is the new truth.
+         * @type {object[]|null}
+         */
+        this.localSeedRows = null;
         /** Monotonic op sequence + the last server-acknowledged grid version. */
         this.seqCounter = 0;
         this.version = 0;
@@ -126,8 +168,18 @@ export default class StateStore {
      * and (M3+) server pages / draft-store rows tomorrow, so callers never mutate rows directly.
      *
      * @param {object[]} rows
+     * @param {{localSort?: boolean}} [opts] internal flag — a local-sort reorder must NOT
+     *     reset the local sort state it is itself maintaining
      */
-    setRows(rows) {
+    setRows(rows, opts = {}) {
+        if (!opts.localSort && this.localSeedRows !== null) {
+            // External data replacement while a local sort is active: the new payload's
+            // order is authoritative — drop the stale seed copy and clear the sort state
+            // so the header indicators never claim an order the data no longer has.
+            this.localSeedRows = null;
+            this.query.sort = null;
+            this.query.dir = 'asc';
+        }
         this.rows = rows;
         this.rowByKey.clear();
         for (let i = 0; i < rows.length; i++) {
@@ -159,6 +211,75 @@ export default class StateStore {
         }
         this.setRows(page.rows || []);
         this.bus.emit('page:changed', { meta: this.serverMeta, query: this.query });
+    }
+
+    /**
+     * Cycle a column's LOCAL sort — asc → desc → restore seed order — for an in-memory
+     * DISPLAY grid. The client-side counterpart of PageSource.sort() with the same
+     * three-click contract. No-ops on server-side grids (PageSource owns those) and on
+     * editable grids (row order is domain state).
+     */
+    cycleSort(colKey) {
+        if (this.serverSide || this.editable) {
+            return;
+        }
+        if (this.query.sort === colKey && this.query.dir === 'asc') {
+            this.sortRowsLocally(colKey, 'desc');
+            return;
+        }
+        if (this.query.sort === colKey && this.query.dir === 'desc') {
+            // Third click: restore the untouched seed order and clear the sort state.
+            const seed = this.localSeedRows || this.rows;
+            this.localSeedRows = null;
+            this.query.sort = null;
+            this.query.dir = 'asc';
+            this.selection = null;
+            this.setRows(seed, { localSort: true });
+            this.bus.emit('selection:changed', { selection: null });
+            return;
+        }
+        this.sortRowsLocally(colKey, 'asc');
+    }
+
+    /**
+     * Reorder the rows by one column's values and repaint (setRows → rows:changed drives
+     * the full body render — no parallel paint path, so the SerialColumn gutter renumbers
+     * and the footer stays untouched exactly as on a server sort).
+     *
+     * Guarantees (pinned by tests/js/run-sort-vectors.mjs): explicitly STABLE (index
+     * tiebreak — equal keys keep their current order, so asc ↔ desc round trips are
+     * lossless); empties (null/undefined/'') rank LAST in BOTH directions (a Trial
+     * Balance ships '' for a zero side so the cell paints blank — that must never sort
+     * as 0 or as a lexical ""); values compare via compareCellValues (numeric-aware).
+     * The index-space selection rectangle is cleared — a rectangle over rows that just
+     * moved is meaningless — while active/anchor survive by design (stable rowKey).
+     */
+    sortRowsLocally(colKey, dir) {
+        if (this.serverSide || this.editable) {
+            return;
+        }
+        if (this.localSeedRows === null) {
+            this.localSeedRows = this.rows.slice();
+        }
+        const mul = dir === 'desc' ? -1 : 1;
+        const isEmpty = (v) => v === null || v === undefined || v === '';
+        const decorated = this.rows.map((row, index) => ({ row, index }));
+        decorated.sort((a, b) => {
+            const va = a.row[colKey];
+            const vb = b.row[colKey];
+            const ea = isEmpty(va);
+            const eb = isEmpty(vb);
+            if (ea || eb) {
+                return ea && eb ? a.index - b.index : (ea ? 1 : -1);
+            }
+            const cmp = compareCellValues(va, vb);
+            return cmp !== 0 ? mul * cmp : a.index - b.index;
+        });
+        this.query.sort = colKey;
+        this.query.dir = dir;
+        this.selection = null;
+        this.setRows(decorated.map((d) => d.row), { localSort: true });
+        this.bus.emit('selection:changed', { selection: null });
     }
 
     /** @returns {number} */

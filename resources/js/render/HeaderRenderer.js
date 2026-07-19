@@ -109,7 +109,9 @@ export default class HeaderRenderer {
 
         // Sortable columns (M3): a dedicated sort control so a click on IT re-sorts, while a click
         // on the rest of the header cell still selects the whole column (M2) — the two coexist.
-        if (column.sortable) {
+        // Gated on store.canSort, the SAME predicate GridCore binds the handler from: an
+        // affordance must imply a capability (an editable grid never gets an inert button).
+        if (column.sortable && this.store.canSort) {
             cell.classList.add('lgrid-headcell--sortable');
             const sort = el('button', 'lgrid-sort');
             sort.type = 'button';
@@ -172,7 +174,7 @@ export default class HeaderRenderer {
         const columns = this.store.visibleColumns();
         cells.forEach((cell, i) => {
             const column = columns[i];
-            if (!column || !column.sortable) {
+            if (!column || !column.sortable || !this.store.canSort) {
                 return;
             }
             const active = query.sort === column.key;
