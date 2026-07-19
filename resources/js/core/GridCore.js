@@ -120,6 +120,11 @@ export default class GridCore {
             onRequiredBlock: (addr) => this.flashRequiredCell(addr),
             onComplete: () => this.dispatchComplete(),
             rowActivate: this.rowActivator.isEnabled() ? () => this.rowActivator.activate() : null,
+            // F9 / Shift+F9 (display grids only): temporary row hide + restore-all.
+            rowHide: (!this.store.serverSide && !this.store.editable)
+                ? () => this.hideActiveRow() : null,
+            rowRestore: (!this.store.serverSide && !this.store.editable)
+                ? () => this.restoreHiddenRowsView() : null,
         });
 
         // The complete-guard signal (layout.complete satisfied at the entry flow's end):
@@ -253,6 +258,42 @@ export default class GridCore {
             // In-memory grids have no page:changed to ride — refresh indicators here.
             this.renderer.header.updateSortIndicators();
         });
+    }
+
+    /**
+     * F9 — temporarily hide the active row from a DISPLAY grid's view (what-if totals).
+     * Focus survives: the active cell moves to the same column on the next row (or the
+     * previous one at the bottom) BEFORE the repaint, so the operator can keep pressing
+     * F9 to peel rows off. The announcer keeps the running count audible; Shift+F9
+     * restores everything.
+     */
+    hideActiveRow() {
+        const active = this.store.active;
+        if (!active) {
+            return;
+        }
+        const hit = this.store.rowByKey.get(active.rowKey);
+        const neighbour = hit
+            ? (this.store.rows[hit.index + 1] || this.store.rows[hit.index - 1] || null)
+            : null;
+
+        if (!this.store.hideRowLocally(active.rowKey)) {
+            return;
+        }
+        if (neighbour) {
+            this.store.setActive({ rowKey: neighbour._k, colKey: active.colKey });
+        }
+        if (this.announcer) {
+            const n = this.store.hiddenStash.size;
+            this.announcer.message(`Row hidden — ${n} hidden. Shift+F9 restores all.`);
+        }
+    }
+
+    /** Shift+F9 — restore every F9-hidden row (order per the store's contract). */
+    restoreHiddenRowsView() {
+        if (this.store.restoreHiddenRows() && this.announcer) {
+            this.announcer.message('Hidden rows restored.');
+        }
     }
 
     /**
@@ -739,7 +780,7 @@ export default class GridCore {
         );
     }
 
-    /** Delete the active row (Shift+Delete / F7) — pre-checked against minRows (P6). */
+    /** Delete the active row (Shift+Delete / F8) — pre-checked against minRows (P6). */
     rowDelete() {
         const active = this.store.active;
         if (!active) {

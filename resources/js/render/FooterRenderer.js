@@ -54,6 +54,12 @@ export default class FooterRenderer {
                 let value;
                 if (this.store.serverSide) {
                     value = this.store.grandTotals[column.key] ?? 0;
+                } else if (this.store.hiddenStash && this.store.hiddenStash.size > 0
+                    && (agg.op === 'sum' || agg.op === 'count')) {
+                    // Rows are temporarily hidden (F9): baked/live totals describe the
+                    // FULL set — recompute over the visible rows so the footer matches
+                    // the operator's what-if view (the whole point of the hide).
+                    value = this.store.localAggregate(agg);
                 } else if (column.key in (this.store.pageTotals || {})) {
                     // Any in-memory grid: live totals from op responses (editable) or a
                     // host reseed (display) win over the initial config value.

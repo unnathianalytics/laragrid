@@ -182,6 +182,15 @@ export default class KeyboardManager {
                     this.rowOps[binding.kind]();
                 }
                 break;
+            case 'rowHide':
+            case 'rowRestore':
+                // Wired only for DISPLAY grids (GridCore leaves the hooks null elsewhere);
+                // where absent the chord falls through untouched.
+                if (this.hooks[binding.action]) {
+                    e.preventDefault();
+                    this.hooks[binding.action]();
+                }
+                break;
             case 'undo':
             case 'redo':
                 // Handled only where GridCore wired an UndoManager (editable grids); elsewhere

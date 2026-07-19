@@ -132,6 +132,16 @@ export default class StateStore {
          * @type {object[]|null}
          */
         this.localSeedRows = null;
+
+        /**
+         * Temporarily hidden rows (F9, display grids): `_k` → the row object. Strictly
+         * VIEW state — Shift+F9 restores all at once, any external setRows() clears it,
+         * and while the stash is non-empty the footer recomputes its aggregates over the
+         * remaining visible rows (localAggregate) so the totals match what the operator
+         * sees.
+         * @type {Map<string, object>}
+         */
+        this.hiddenStash = new Map();
         /** Monotonic op sequence + the last server-acknowledged grid version. */
         this.seqCounter = 0;
         this.version = 0;
@@ -202,13 +212,19 @@ export default class StateStore {
      *     reset the local sort state it is itself maintaining
      */
     setRows(rows, opts = {}) {
-        if (!opts.localSort && this.localSeedRows !== null) {
-            // External data replacement while a local sort is active: the new payload's
-            // order is authoritative — drop the stale seed copy and clear the sort state
-            // so the header indicators never claim an order the data no longer has.
+        if (!opts.localSort && (this.localSeedRows !== null
+            || (this.hiddenStash && this.hiddenStash.size > 0))) {
+            // External data replacement while local VIEW state (a local sort and/or
+            // F9-hidden rows) is active: the new payload is authoritative — drop the
+            // stale seed copy, clear the sort state, and un-hide everything so neither
+            // the caret nor the totals claim a view the data no longer has.
             this.localSeedRows = null;
             this.query.sort = null;
             this.query.dir = 'asc';
+            if (this.hiddenStash && this.hiddenStash.size > 0) {
+                this.hiddenStash.clear();
+                this.bus.emit('rows:hidden', { count: 0 });
+            }
         }
         this.rows = rows;
         this.rowByKey.clear();
@@ -258,9 +274,15 @@ export default class StateStore {
             return;
         }
         if (this.query.sort === colKey && this.query.dir === 'desc') {
-            // Third click: restore the untouched seed order and clear the sort state.
-            const seed = this.localSeedRows || this.rows;
-            this.localSeedRows = null;
+            // Third click: restore the untouched seed order and clear the sort state —
+            // MINUS any F9-hidden rows: a sort-clear must never resurrect them (Shift+F9
+            // is the only restore). While rows stay hidden the seed copy is KEPT, because
+            // restoreHiddenRows() still needs it for the no-sort insertion order.
+            const seedAll = this.localSeedRows || this.rows;
+            const seed = this.hiddenStash.size > 0
+                ? seedAll.filter((row) => !this.hiddenStash.has(row._k))
+                : seedAll;
+            this.localSeedRows = this.hiddenStash.size > 0 ? seedAll : null;
             this.query.sort = null;
             this.query.dir = 'asc';
             this.selection = null;
@@ -310,6 +332,85 @@ export default class StateStore {
         this.selection = null;
         this.setRows(decorated.map((d) => d.row), { localSort: true });
         this.bus.emit('selection:changed', { selection: null });
+    }
+
+    /**
+     * Temporarily hide one row from a DISPLAY grid's view (F9) — the accountant's
+     * what-if. Strictly view state: the row moves to hiddenStash, the seed order is
+     * captured (shared with the local sort's third-click contract), and the footer's
+     * aggregates recompute over what remains (localAggregate via FooterRenderer). No-op
+     * on server-side and editable grids.
+     *
+     * @returns {boolean} whether a row was hidden
+     */
+    hideRowLocally(rowKey) {
+        if (this.serverSide || this.editable) {
+            return false;
+        }
+        const hit = this.rowByKey.get(rowKey);
+        if (!hit) {
+            return false;
+        }
+        if (this.localSeedRows === null) {
+            this.localSeedRows = this.rows.slice();
+        }
+        this.hiddenStash.set(rowKey, hit.row);
+        this.selection = null;
+        this.setRows(this.rows.filter((row) => row._k !== rowKey), { localSort: true });
+        this.bus.emit('rows:hidden', { count: this.hiddenStash.size });
+        this.bus.emit('selection:changed', { selection: null });
+        return true;
+    }
+
+    /**
+     * Restore ALL F9-hidden rows (Shift+F9). With a local sort active the restored set is
+     * re-sorted under the current sort; otherwise rows return to the captured seed order.
+     *
+     * @returns {boolean} whether anything was restored
+     */
+    restoreHiddenRows() {
+        if (this.serverSide || this.editable || this.hiddenStash.size === 0) {
+            return false;
+        }
+        const all = this.rows.concat(Array.from(this.hiddenStash.values()));
+        this.hiddenStash.clear();
+
+        if (this.query.sort) {
+            this.rows = all;
+            this.sortRowsLocally(this.query.sort, this.query.dir);
+        } else {
+            const seed = this.localSeedRows || all;
+            const present = new Set(all.map((row) => row._k));
+            this.localSeedRows = null; // nothing hidden + no sort → fresh view state
+            this.setRows(seed.filter((row) => present.has(row._k)), { localSort: true });
+        }
+
+        this.bus.emit('rows:hidden', { count: 0 });
+        return true;
+    }
+
+    /**
+     * One footer aggregate computed over the VISIBLE rows — used by FooterRenderer while
+     * hiddenStash is non-empty, so the totals track the what-if view instead of the baked
+     * full-set values. sum skips empties (null/'' — the blank-cell convention), count is
+     * the visible row count; any other op falls back to the baked value upstream.
+     */
+    localAggregate(agg) {
+        if (agg.op === 'count') {
+            return this.rows.length;
+        }
+        let sum = 0;
+        for (const row of this.rows) {
+            const value = row[agg.column];
+            if (value === null || value === undefined || value === '') {
+                continue;
+            }
+            const n = Number(value);
+            if (!Number.isNaN(n)) {
+                sum += n;
+            }
+        }
+        return sum;
     }
 
     /** @returns {number} */

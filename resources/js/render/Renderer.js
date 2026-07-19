@@ -49,6 +49,11 @@ export default class Renderer {
             this.header.updateSortIndicators();
             this.header.updateFilterIndicators();
         });
+
+        // F9 hide / Shift+F9 restore (display grids): the body repaint rides rows:changed
+        // as usual; the footer must ALSO repaint, because its aggregates switch between
+        // the baked full-set values and the visible-rows recompute.
+        this.unsubscribeHidden = bus.on('rows:hidden', () => this.footer.render());
     }
 
     paint() {
@@ -95,6 +100,9 @@ export default class Renderer {
         }
         if (this.unsubscribeCells) {
             this.unsubscribeCells();
+        }
+        if (this.unsubscribeHidden) {
+            this.unsubscribeHidden();
         }
         if (this.unsubscribePage) {
             this.unsubscribePage();

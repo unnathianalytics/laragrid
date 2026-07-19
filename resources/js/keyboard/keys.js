@@ -98,12 +98,21 @@ export const SHARED_KEYMAP = {
 
     // Row/cell-op chords — recognised, but no-op in readonly (wired to editable handlers).
     // Excel-trained operators expect Delete to CLEAR content, never to remove the row;
-    // row removal sits behind the deliberate Shift+Delete (or the classic F7).
+    // row removal sits behind the deliberate Shift+Delete (or F8 — moved off F7 by
+    // consumer request, 2026-07-19; F7 is free again for host apps).
     Insert: { action: 'rowop', kind: 'insert' },
     Delete: { action: 'rowop', kind: 'clear' },
     'Shift+Delete': { action: 'rowop', kind: 'delete' },
-    F7: { action: 'rowop', kind: 'delete' },
+    F8: { action: 'rowop', kind: 'delete' },
     'Ctrl+d': { action: 'rowop', kind: 'fillDown' },
+
+    // Temporary row hide (F9, DISPLAY grids only) — the accountant's what-if: a Trial
+    // Balance minus one row, footer sums recomputed over what remains. Strictly VIEW
+    // state: Shift+F9 restores everything, an external reseed clears it, and a
+    // sort-clear never resurrects hidden rows. No-op on server-side grids (grand totals
+    // span pages the client cannot see) and editable grids (row content is domain state).
+    F9: { action: 'rowHide' },
+    'Shift+F9': { action: 'rowRestore' },
 
     // The row-actions menu (P7) — works in every mode that declares row actions.
     ContextMenu: { action: 'actionsMenu' },

@@ -8,7 +8,7 @@ var define_import_meta_default = {};
 // <define:import.meta.env>
 var define_import_meta_env_default = {};
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/core/EventBus.js
+// resources/js/core/EventBus.js
 var EventBus = class {
   constructor() {
     this.listeners = /* @__PURE__ */ new Map();
@@ -55,7 +55,7 @@ var EventBus = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/formula/ExprEval.js
+// resources/js/formula/ExprEval.js
 function roundHalfUp(value, scale) {
   if (!Number.isFinite(value)) {
     return 0;
@@ -144,7 +144,7 @@ function call(node, scope) {
   }
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/util/dom.js
+// resources/js/util/dom.js
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) {
@@ -173,7 +173,7 @@ function cellMapKey(rowKey, colKey) {
   return `${rowKey}${colKey}`;
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/core/StateStore.js
+// resources/js/core/StateStore.js
 function compareCellValues(a, b) {
   if (typeof a === "number" && typeof b === "number") {
     return a < b ? -1 : a > b ? 1 : 0;
@@ -227,6 +227,7 @@ var StateStore = class {
     this.editable = !!(this.layout && this.layout.editable);
     this.canSort = this.serverSide || !this.editable;
     this.localSeedRows = null;
+    this.hiddenStash = /* @__PURE__ */ new Map();
     this.seqCounter = 0;
     this.version = 0;
     this.dirty = /* @__PURE__ */ new Set();
@@ -260,10 +261,14 @@ var StateStore = class {
    *     reset the local sort state it is itself maintaining
    */
   setRows(rows, opts = {}) {
-    if (!opts.localSort && this.localSeedRows !== null) {
+    if (!opts.localSort && (this.localSeedRows !== null || this.hiddenStash && this.hiddenStash.size > 0)) {
       this.localSeedRows = null;
       this.query.sort = null;
       this.query.dir = "asc";
+      if (this.hiddenStash && this.hiddenStash.size > 0) {
+        this.hiddenStash.clear();
+        this.bus.emit("rows:hidden", { count: 0 });
+      }
     }
     this.rows = rows;
     this.rowByKey.clear();
@@ -311,8 +316,9 @@ var StateStore = class {
       return;
     }
     if (this.query.sort === colKey && this.query.dir === "desc") {
-      const seed = this.localSeedRows || this.rows;
-      this.localSeedRows = null;
+      const seedAll = this.localSeedRows || this.rows;
+      const seed = this.hiddenStash.size > 0 ? seedAll.filter((row) => !this.hiddenStash.has(row._k)) : seedAll;
+      this.localSeedRows = this.hiddenStash.size > 0 ? seedAll : null;
       this.query.sort = null;
       this.query.dir = "asc";
       this.selection = null;
@@ -361,6 +367,80 @@ var StateStore = class {
     this.selection = null;
     this.setRows(decorated.map((d) => d.row), { localSort: true });
     this.bus.emit("selection:changed", { selection: null });
+  }
+  /**
+   * Temporarily hide one row from a DISPLAY grid's view (F9) — the accountant's
+   * what-if. Strictly view state: the row moves to hiddenStash, the seed order is
+   * captured (shared with the local sort's third-click contract), and the footer's
+   * aggregates recompute over what remains (localAggregate via FooterRenderer). No-op
+   * on server-side and editable grids.
+   *
+   * @returns {boolean} whether a row was hidden
+   */
+  hideRowLocally(rowKey) {
+    if (this.serverSide || this.editable) {
+      return false;
+    }
+    const hit = this.rowByKey.get(rowKey);
+    if (!hit) {
+      return false;
+    }
+    if (this.localSeedRows === null) {
+      this.localSeedRows = this.rows.slice();
+    }
+    this.hiddenStash.set(rowKey, hit.row);
+    this.selection = null;
+    this.setRows(this.rows.filter((row) => row._k !== rowKey), { localSort: true });
+    this.bus.emit("rows:hidden", { count: this.hiddenStash.size });
+    this.bus.emit("selection:changed", { selection: null });
+    return true;
+  }
+  /**
+   * Restore ALL F9-hidden rows (Shift+F9). With a local sort active the restored set is
+   * re-sorted under the current sort; otherwise rows return to the captured seed order.
+   *
+   * @returns {boolean} whether anything was restored
+   */
+  restoreHiddenRows() {
+    if (this.serverSide || this.editable || this.hiddenStash.size === 0) {
+      return false;
+    }
+    const all = this.rows.concat(Array.from(this.hiddenStash.values()));
+    this.hiddenStash.clear();
+    if (this.query.sort) {
+      this.rows = all;
+      this.sortRowsLocally(this.query.sort, this.query.dir);
+    } else {
+      const seed = this.localSeedRows || all;
+      const present = new Set(all.map((row) => row._k));
+      this.localSeedRows = null;
+      this.setRows(seed.filter((row) => present.has(row._k)), { localSort: true });
+    }
+    this.bus.emit("rows:hidden", { count: 0 });
+    return true;
+  }
+  /**
+   * One footer aggregate computed over the VISIBLE rows — used by FooterRenderer while
+   * hiddenStash is non-empty, so the totals track the what-if view instead of the baked
+   * full-set values. sum skips empties (null/'' — the blank-cell convention), count is
+   * the visible row count; any other op falls back to the baked value upstream.
+   */
+  localAggregate(agg) {
+    if (agg.op === "count") {
+      return this.rows.length;
+    }
+    let sum = 0;
+    for (const row of this.rows) {
+      const value = row[agg.column];
+      if (value === null || value === void 0 || value === "") {
+        continue;
+      }
+      const n = Number(value);
+      if (!Number.isNaN(n)) {
+        sum += n;
+      }
+    }
+    return sum;
   }
   /** @returns {number} */
   rowCount() {
@@ -1101,7 +1181,7 @@ var StateStore = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/Layout.js
+// resources/js/render/Layout.js
 var DEFAULT_WIDTH = 120;
 var Layout = class {
   /**
@@ -1270,7 +1350,7 @@ var Layout = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/HeaderRenderer.js
+// resources/js/render/HeaderRenderer.js
 var HeaderRenderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1408,7 +1488,7 @@ var HeaderRenderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/format/formatters.js
+// resources/js/format/formatters.js
 function arg(args, key, fallback) {
   if (args == null) {
     return fallback;
@@ -1501,7 +1581,7 @@ function formatValue(format, value) {
   return fn(value, format.args || {});
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/shared/date.js
+// resources/js/shared/date.js
 function daysInMonth(month, year) {
   return new Date(year, month, 0).getDate();
 }
@@ -1608,7 +1688,7 @@ function formatIso(parts) {
   return formatValue2(parts, "Y-m-d");
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/format/parse.js
+// resources/js/format/parse.js
 function stripGrouping(raw) {
   return String(raw == null ? "" : raw).replace(/[,\s]/g, "");
 }
@@ -1725,7 +1805,7 @@ function editTextFor(column, value) {
   return String(value);
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/CellPainters.js
+// resources/js/render/CellPainters.js
 function paintText(cellEl, ctx) {
   const display = formatValue(ctx.column.format, ctx.value);
   if (ctx.column.html) {
@@ -1805,7 +1885,7 @@ function registerPainter(painterId, fn) {
   PAINTERS[painterId] = fn;
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/BodyRenderer.js
+// resources/js/render/BodyRenderer.js
 var BodyRenderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1942,7 +2022,7 @@ var BodyRenderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/FooterRenderer.js
+// resources/js/render/FooterRenderer.js
 var FooterRenderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -1976,6 +2056,8 @@ var FooterRenderer = class {
         let value;
         if (this.store.serverSide) {
           value = this.store.grandTotals[column.key] ?? 0;
+        } else if (this.store.hiddenStash && this.store.hiddenStash.size > 0 && (agg.op === "sum" || agg.op === "count")) {
+          value = this.store.localAggregate(agg);
         } else if (column.key in (this.store.pageTotals || {})) {
           value = this.store.pageTotals[column.key];
         } else {
@@ -1989,7 +2071,7 @@ var FooterRenderer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/Renderer.js
+// resources/js/render/Renderer.js
 var Renderer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -2018,6 +2100,7 @@ var Renderer = class {
       this.header.updateSortIndicators();
       this.header.updateFilterIndicators();
     });
+    this.unsubscribeHidden = bus.on("rows:hidden", () => this.footer.render());
   }
   paint() {
     this.header.render();
@@ -2060,13 +2143,16 @@ var Renderer = class {
     if (this.unsubscribeCells) {
       this.unsubscribeCells();
     }
+    if (this.unsubscribeHidden) {
+      this.unsubscribeHidden();
+    }
     if (this.unsubscribePage) {
       this.unsubscribePage();
     }
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/util/geometry.js
+// resources/js/util/geometry.js
 function clamp(n, lo, hi) {
   return n < lo ? lo : n > hi ? hi : n;
 }
@@ -2150,7 +2236,7 @@ function resolveMove(p) {
   }
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/selection/SelectionManager.js
+// resources/js/selection/SelectionManager.js
 var _SelectionManager = class _SelectionManager {
   /**
    * @param {import('../core/StateStore').default} store
@@ -2390,7 +2476,7 @@ var _SelectionManager = class _SelectionManager {
 __publicField(_SelectionManager, "LOCK_SKIPPING_INTENTS", /* @__PURE__ */ new Set(["left", "right", "nextWrap", "prevWrap"]));
 var SelectionManager = _SelectionManager;
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/selection/SelectionPainter.js
+// resources/js/selection/SelectionPainter.js
 var SelectionPainter = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -2517,7 +2603,7 @@ var SelectionPainter = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/keys.js
+// resources/js/keyboard/keys.js
 function keyToken(key) {
   if (typeof key === "string" && key.length === 1) {
     return key.toLowerCase();
@@ -2570,32 +2656,40 @@ var SHARED_KEYMAP = {
   "Ctrl+Shift+z": { action: "redo" },
   // Row/cell-op chords — recognised, but no-op in readonly (wired to editable handlers).
   // Excel-trained operators expect Delete to CLEAR content, never to remove the row;
-  // row removal sits behind the deliberate Shift+Delete (or the classic F7).
+  // row removal sits behind the deliberate Shift+Delete (or F8 — moved off F7 by
+  // consumer request, 2026-07-19; F7 is free again for host apps).
   Insert: { action: "rowop", kind: "insert" },
   Delete: { action: "rowop", kind: "clear" },
   "Shift+Delete": { action: "rowop", kind: "delete" },
-  F7: { action: "rowop", kind: "delete" },
+  F8: { action: "rowop", kind: "delete" },
   "Ctrl+d": { action: "rowop", kind: "fillDown" },
+  // Temporary row hide (F9, DISPLAY grids only) — the accountant's what-if: a Trial
+  // Balance minus one row, footer sums recomputed over what remains. Strictly VIEW
+  // state: Shift+F9 restores everything, an external reseed clears it, and a
+  // sort-clear never resurrects hidden rows. No-op on server-side grids (grand totals
+  // span pages the client cannot see) and editable grids (row content is domain state).
+  F9: { action: "rowHide" },
+  "Shift+F9": { action: "rowRestore" },
   // The row-actions menu (P7) — works in every mode that declares row actions.
   ContextMenu: { action: "actionsMenu" },
   "Shift+F10": { action: "actionsMenu" }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/keymap-entry.js
+// resources/js/keyboard/keymap-entry.js
 var ENTRY_KEYMAP = {
   ...SHARED_KEYMAP,
   Enter: { action: "move", intent: "nextWrap" },
   "Shift+Enter": { action: "move", intent: "prevWrap" }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/keymap-excel.js
+// resources/js/keyboard/keymap-excel.js
 var EXCEL_KEYMAP = {
   ...SHARED_KEYMAP,
   Enter: { action: "move", intent: "down" },
   "Shift+Enter": { action: "move", intent: "up" }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/EditorRegistry.js
+// resources/js/edit/EditorRegistry.js
 var EDITORS = {};
 function registerEditor(id, EditorClass) {
   EDITORS[id] = EditorClass;
@@ -2604,7 +2698,7 @@ function editorFor(id) {
   return EDITORS[id] || null;
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/keyboard/KeyboardManager.js
+// resources/js/keyboard/KeyboardManager.js
 function keymapFor(name) {
   return name === "excel" ? EXCEL_KEYMAP : ENTRY_KEYMAP;
 }
@@ -2727,6 +2821,13 @@ var KeyboardManager = class {
         e.preventDefault();
         if (this.rowOps && this.rowOps[binding.kind]) {
           this.rowOps[binding.kind]();
+        }
+        break;
+      case "rowHide":
+      case "rowRestore":
+        if (this.hooks[binding.action]) {
+          e.preventDefault();
+          this.hooks[binding.action]();
         }
         break;
       case "undo":
@@ -2864,7 +2965,7 @@ var KeyboardManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/clipboard/ClipboardManager.js
+// resources/js/clipboard/ClipboardManager.js
 function parseTsv(text) {
   const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
   if (lines.length && lines[lines.length - 1] === "") {
@@ -3084,7 +3185,7 @@ var _ClipboardManager = class _ClipboardManager {
 __publicField(_ClipboardManager, "CONFIRM_THRESHOLD", 500);
 var ClipboardManager = _ClipboardManager;
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/statusbar/StatusBar.js
+// resources/js/statusbar/StatusBar.js
 var StatusBar = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3157,7 +3258,7 @@ var StatusBar = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/a11y/Announcer.js
+// resources/js/a11y/Announcer.js
 var Announcer = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3225,7 +3326,7 @@ var Announcer = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/util/lru.js
+// resources/js/util/lru.js
 var Lru = class {
   /**
    * @param {number} capacity max entries kept (>=1)
@@ -3279,7 +3380,7 @@ var Lru = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/sync/PageSource.js
+// resources/js/sync/PageSource.js
 var PageSource = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3494,7 +3595,7 @@ var PageSource = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/PaginationBar.js
+// resources/js/render/PaginationBar.js
 var PaginationBar = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3570,7 +3671,7 @@ var PaginationBar = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/sync/SyncManager.js
+// resources/js/sync/SyncManager.js
 var SyncManager = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3723,7 +3824,7 @@ var SyncManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/undo/UndoManager.js
+// resources/js/undo/UndoManager.js
 var UndoManager = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3969,7 +4070,7 @@ var UndoManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/EditorManager.js
+// resources/js/edit/EditorManager.js
 var EditorManager = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -4611,7 +4712,7 @@ var EditorManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/validate/ClientValidator.js
+// resources/js/validate/ClientValidator.js
 var ClientValidator = class {
   /**
    * Validate a value against a column's compiled `validate.client` rules.
@@ -4671,7 +4772,7 @@ var ClientValidator = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/ErrorPainter.js
+// resources/js/render/ErrorPainter.js
 var ErrorPainter = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -4774,7 +4875,7 @@ var ErrorPainter = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/popup/PopupManager.js
+// resources/js/popup/PopupManager.js
 var PopupManager = class {
   /**
    * @param {{root: HTMLElement, scroll: HTMLElement, popup: HTMLElement}} refs
@@ -4867,7 +4968,7 @@ var PopupManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/persist/LayoutStore.js
+// resources/js/persist/LayoutStore.js
 var SCHEMA_VERSION = 1;
 var LayoutStore = class {
   /**
@@ -4943,7 +5044,7 @@ var LayoutStore = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/resize/ResizeManager.js
+// resources/js/resize/ResizeManager.js
 var HARD_MIN = 36;
 var HARD_MAX = 2e3;
 var AUTOFIT_SAMPLE = 200;
@@ -5121,7 +5222,7 @@ var ResizeManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/ColumnChooser.js
+// resources/js/render/ColumnChooser.js
 var ColumnChooser = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -5282,7 +5383,7 @@ var ColumnChooser = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/HeaderFilters.js
+// resources/js/render/HeaderFilters.js
 var HeaderFilters = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -5369,7 +5470,7 @@ var HeaderFilters = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/render/Toolbar.js
+// resources/js/render/Toolbar.js
 var Toolbar = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -5758,7 +5859,7 @@ var Toolbar = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/interact/RowActivator.js
+// resources/js/interact/RowActivator.js
 var RowActivator = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -5835,7 +5936,7 @@ var RowActivator = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/interact/ActionRunner.js
+// resources/js/interact/ActionRunner.js
 var ActionRunner = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -6036,7 +6137,7 @@ var ActionRunner = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/views/ViewsManager.js
+// resources/js/views/ViewsManager.js
 var ViewsManager = class {
   /**
    * @param {import('../core/StateStore').default} store
@@ -6114,7 +6215,7 @@ var ViewsManager = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/TextEditor.js
+// resources/js/edit/editors/TextEditor.js
 var TextEditor = class {
   /**
    * Build the input into the host element.
@@ -6199,7 +6300,7 @@ var TextEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/NumberEditor.js
+// resources/js/edit/editors/NumberEditor.js
 var NumberEditor = class {
   /**
    * @param {HTMLElement} host
@@ -6265,7 +6366,7 @@ var NumberEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/endOfList.js
+// resources/js/edit/endOfList.js
 var END_OF_LIST_VALUE = "__lgrid_end_of_list__";
 function endOfListOption(label) {
   return { value: END_OF_LIST_VALUE, label, __endOfList: true };
@@ -6274,7 +6375,7 @@ function isEndOfListOption(option) {
   return !!(option && option.__endOfList === true);
 }
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/SelectEditor.js
+// resources/js/edit/editors/SelectEditor.js
 var SelectEditor = class {
   /**
    * @param {HTMLElement} host
@@ -6456,7 +6557,7 @@ var SelectEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/SearchSelectEditor.js
+// resources/js/edit/editors/SearchSelectEditor.js
 var SearchSelectEditor = class {
   /**
    * @param {HTMLElement} host
@@ -6715,7 +6816,7 @@ var SearchSelectEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/DateEditor.js
+// resources/js/edit/editors/DateEditor.js
 var DateEditor = class {
   /**
    * @param {HTMLElement} host
@@ -6782,7 +6883,7 @@ var DateEditor = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/CheckboxInline.js
+// resources/js/edit/editors/CheckboxInline.js
 var CheckboxInline = class {
   /* The class is never instantiated — EditorManager short-circuits on `instant`. The stubs
      document the editor contract for anyone extending from this file. */
@@ -6797,7 +6898,7 @@ var CheckboxInline = class {
 /** Marks the editor as an in-place toggle: open() flips the value instead of mounting. */
 __publicField(CheckboxInline, "instant", true);
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/editors/YesNoInline.js
+// resources/js/edit/editors/YesNoInline.js
 var YesNoInline = class {
   /* The class is never instantiated — EditorManager short-circuits on `instant`. The stubs
      document the editor contract for anyone extending from this file. */
@@ -6814,7 +6915,7 @@ __publicField(YesNoInline, "instant", true);
 /** NAV typed chars (lower-cased) → the value committed + advanced through the shared pipeline. */
 __publicField(YesNoInline, "chars", { y: true, n: false });
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/edit/builtin.js
+// resources/js/edit/builtin.js
 registerEditor("text", TextEditor);
 registerEditor("number", NumberEditor);
 registerEditor("select", SelectEditor);
@@ -6823,7 +6924,7 @@ registerEditor("date", DateEditor);
 registerEditor("checkbox", CheckboxInline);
 registerEditor("yesno", YesNoInline);
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/core/GridCore.js
+// resources/js/core/GridCore.js
 var GridCore = class {
   /**
    * @param {object} config the @js() config from ConfigSerializer
@@ -6873,7 +6974,10 @@ var GridCore = class {
       redo: this.undoManager ? () => this.undoManager.redo() : null,
       onRequiredBlock: (addr) => this.flashRequiredCell(addr),
       onComplete: () => this.dispatchComplete(),
-      rowActivate: this.rowActivator.isEnabled() ? () => this.rowActivator.activate() : null
+      rowActivate: this.rowActivator.isEnabled() ? () => this.rowActivator.activate() : null,
+      // F9 / Shift+F9 (display grids only): temporary row hide + restore-all.
+      rowHide: !this.store.serverSide && !this.store.editable ? () => this.hideActiveRow() : null,
+      rowRestore: !this.store.serverSide && !this.store.editable ? () => this.restoreHiddenRowsView() : null
     });
     this.offComplete = this.bus.on("grid:complete", () => this.dispatchComplete());
     this.pendingPanelAdvance = null;
@@ -6970,6 +7074,37 @@ var GridCore = class {
       this.store.cycleSort(colKey);
       this.renderer.header.updateSortIndicators();
     });
+  }
+  /**
+   * F9 — temporarily hide the active row from a DISPLAY grid's view (what-if totals).
+   * Focus survives: the active cell moves to the same column on the next row (or the
+   * previous one at the bottom) BEFORE the repaint, so the operator can keep pressing
+   * F9 to peel rows off. The announcer keeps the running count audible; Shift+F9
+   * restores everything.
+   */
+  hideActiveRow() {
+    const active = this.store.active;
+    if (!active) {
+      return;
+    }
+    const hit = this.store.rowByKey.get(active.rowKey);
+    const neighbour = hit ? this.store.rows[hit.index + 1] || this.store.rows[hit.index - 1] || null : null;
+    if (!this.store.hideRowLocally(active.rowKey)) {
+      return;
+    }
+    if (neighbour) {
+      this.store.setActive({ rowKey: neighbour._k, colKey: active.colKey });
+    }
+    if (this.announcer) {
+      const n = this.store.hiddenStash.size;
+      this.announcer.message(`Row hidden \u2014 ${n} hidden. Shift+F9 restores all.`);
+    }
+  }
+  /** Shift+F9 — restore every F9-hidden row (order per the store's contract). */
+  restoreHiddenRowsView() {
+    if (this.store.restoreHiddenRows() && this.announcer) {
+      this.announcer.message("Hidden rows restored.");
+    }
   }
   /**
    * Build the readonly server-data layer for a server-side grid: PageSource (the RPC/cache/stale
@@ -7370,7 +7505,7 @@ var GridCore = class {
       { flush: true }
     );
   }
-  /** Delete the active row (Shift+Delete / F7) — pre-checked against minRows (P6). */
+  /** Delete the active row (Shift+Delete / F8) — pre-checked against minRows (P6). */
   rowDelete() {
     const active = this.store.active;
     if (!active) {
@@ -7619,7 +7754,7 @@ var GridCore = class {
   }
 };
 
-// ../sessions/affectionate-cool-bell/mnt/laragrid/resources/js/index.js
+// resources/js/index.js
 var cores = /* @__PURE__ */ new Map();
 var observer = null;
 function resolveRefs(root) {

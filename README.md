@@ -599,7 +599,9 @@ compose: recalling a view also updates the persisted layout.
 | `Y` / `N` | answer a `YesNoColumn` cell **and advance** — one keystroke per row |
 | Enter | commit + advance — serpentine in `entry`, down in `excel` |
 | **Delete** | **clear** selected cells |
-| **Shift+Delete or F7** | delete the row (minRows-guarded) |
+| **Shift+Delete or F8** | delete the row (minRows-guarded) |
+| **F9** | display grids: temporarily hide the active row — footer sums recompute over the remaining rows (what-if view) |
+| **Shift+F9** | display grids: restore all hidden rows |
 | Insert / Ctrl+D | insert row / fill down |
 | **Ctrl+Z** | **undo** the last change (editable grids) |
 | **Ctrl+Y or Ctrl+Shift+Z** | **redo** |
