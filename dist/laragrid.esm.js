@@ -6712,7 +6712,14 @@ var SearchSelectEditor = class {
         }
         const row = el("div", cls);
         row.dataset.index = String(index);
-        setText(row, option.label);
+        const label = el("span", "lgrid-popup-option-label");
+        setText(label, option.label);
+        row.appendChild(label);
+        if (option.meta) {
+          const meta = el("span", "lgrid-popup-option-meta");
+          setText(meta, String(option.meta));
+          row.appendChild(meta);
+        }
         this.popupEl.appendChild(row);
       });
     }

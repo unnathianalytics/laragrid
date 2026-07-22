@@ -204,7 +204,17 @@ export default class SearchSelectEditor {
                 }
                 const row = el('div', cls);
                 row.dataset.index = String(index);
-                setText(row, option.label);
+                // Label + optional right-aligned meta (e.g. stock on hand) as separate spans —
+                // setText only (no HTML), so option content can never inject markup. Clicks
+                // still route through closest('.lgrid-popup-option'), spans included.
+                const label = el('span', 'lgrid-popup-option-label');
+                setText(label, option.label);
+                row.appendChild(label);
+                if (option.meta) {
+                    const meta = el('span', 'lgrid-popup-option-meta');
+                    setText(meta, String(option.meta));
+                    row.appendChild(meta);
+                }
                 this.popupEl.appendChild(row);
             });
         }

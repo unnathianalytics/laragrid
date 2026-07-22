@@ -123,11 +123,13 @@ final class SearchSelectColumn extends Column
 
     /**
      * Run the server option search for a term + row context, normalising the closure's rows to
-     * the canonical {value, label} shape, sorting alphabetically by label, and clamping to the
-     * column's limit — the cap is enforced HERE, not left to the closure (G12).
+     * the canonical {value, label(, meta)} shape, sorting alphabetically by label, and clamping
+     * to the column's limit — the cap is enforced HERE, not left to the closure (G12). `meta` is
+     * an optional display-only annotation (e.g. stock on hand) the editor renders right-aligned
+     * after the label; it is never part of the committed value.
      *
      * @param  array<string, mixed>  $row
-     * @return list<array{value: string, label: string}>
+     * @return list<array{value: string, label: string, meta?: string}>
      */
     public function resolveOptions(string $term, array $row = []): array
     {
@@ -141,7 +143,14 @@ final class SearchSelectColumn extends Column
                 continue;
             }
             $value = (string) ($option['value'] ?? '');
-            $options[] = ['value' => $value, 'label' => (string) ($option['label'] ?? $value)];
+            $normalized = ['value' => $value, 'label' => (string) ($option['label'] ?? $value)];
+
+            $meta = (string) ($option['meta'] ?? '');
+            if ($meta !== '') {
+                $normalized['meta'] = $meta;
+            }
+
+            $options[] = $normalized;
         }
 
         usort($options, fn (array $a, array $b): int => strcasecmp($a['label'], $b['label']));

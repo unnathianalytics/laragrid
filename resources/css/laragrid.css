@@ -783,6 +783,22 @@
         background: var(--lgrid-selected-bg);
     }
 
+    /* Option label + optional right-aligned meta (e.g. stock on hand). The row is flex, so the
+       label absorbs the overflow and the meta pins to the right edge, muted and unwrapped. */
+    .lgrid-popup-option-label {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .lgrid-popup-option-meta {
+        flex: none;
+        margin-left: auto;
+        color: var(--lgrid-header-text);
+        font-variant-numeric: tabular-nums;
+    }
+
     /* The Busy "End of List" exit control: a pinned, accented row that reads as an action, not a
        data option (bold, accent-coloured, separated from the matches below it). */
     .lgrid-popup-option--end-of-list {
