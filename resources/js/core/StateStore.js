@@ -85,6 +85,14 @@ export default class StateStore {
             perPage: server.perPage || paginate.perPage || 50,
             lastPage: server.lastPage || 1,
         };
+        /**
+         * Deferred initial payload (adaptive single-page): the mount shipped ZERO rows so
+         * its HTML stayed small; GridCore fetches page 1 right after boot. Cleared by the
+         * first setPage() — and read by the empty-state guard so "no rows" never flashes
+         * while page 1 is in flight.
+         */
+        this.deferredInitial = !!server.deferred;
+
         /** The query signature currently displayed (sort/dir/search/filters/page/perPage). */
         this.query = {
             sort: defaultSort ? defaultSort.col : null,
@@ -244,6 +252,7 @@ export default class StateStore {
      * @param {object} query the request that produced this page
      */
     setPage(page, query) {
+        this.deferredInitial = false; // page 1 (or any page) arrived — the deferral is over
         this.serverMeta = {
             total: page.total || 0,
             page: page.page || 1,

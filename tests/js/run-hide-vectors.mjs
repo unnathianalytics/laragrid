@@ -137,6 +137,22 @@ const server = new StateStore({
 }, new EventBus());
 check('server-side refuses hide', server.hideRowLocally('x') === false);
 
+/* --------------------------------------------- deferred initial (store flag) */
+
+console.log('deferred initial payload (adaptive single-page):');
+const dstore = new StateStore({
+    name: 'd', columns: [{ key: 'n' }], layout: { serverSide: true }, rows: [],
+    server: { deferred: true, total: 7300, page: 1, perPage: 7300, lastPage: 1 },
+}, new EventBus());
+check('server.deferred → deferredInitial true', dstore.deferredInitial === true);
+check('deferred mount ships zero rows', dstore.rows.length === 0);
+dstore.setPage(
+    { rows: [{ _k: 'x', n: 1 }], total: 7300, page: 1, perPage: 100, lastPage: 73 },
+    { ...dstore.query },
+);
+check('first page clears the deferral', dstore.deferredInitial === false && dstore.rows.length === 1);
+check('inline stores default to deferredInitial=false', displayStore().deferredInitial === false);
+
 /* ------------------------------------------------------------------ summary */
 
 if (failures > 0) {

@@ -58,6 +58,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Mount payload ceiling
+    |--------------------------------------------------------------------------
+    | The most rows a server-side grid may INLINE into its mount HTML (page 1).
+    | Above it the initial payload is DEFERRED to a post-boot gridFetch — rows
+    | travel as JSON, which Livewire never regex-processes as HTML. paginate()
+    | sizes above this without ->singlePageUpTo() fail at build time.
+    */
+    'max_per_page' => 1000,
+
+    /*
+    |--------------------------------------------------------------------------
     | Toolbar defaults
     |--------------------------------------------------------------------------
     | Which package-rendered toolbar controls appear when a grid declares the

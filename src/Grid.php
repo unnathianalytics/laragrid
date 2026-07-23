@@ -138,6 +138,9 @@ class Grid
      */
     protected ?array $defaultSort = null;
 
+    /** Whole-filtered-set-as-one-page threshold (adaptive), or null = always paginate. */
+    protected ?int $singlePageUpTo = null;
+
     /** Rows per page for a paginated readonly grid. */
     protected int $perPage = 50;
 
@@ -543,6 +546,34 @@ class Grid
         $this->perPageOptions = array_values(array_unique(array_map('intval', $options)));
 
         return $this;
+    }
+
+    /**
+     * Serve the WHOLE filtered set as one page whenever it fits within $threshold rows
+     * (pagination chrome self-hides), falling back to the declared ->paginate() size above it.
+     *
+     * What: Decided PER REQUEST against the filtered total — searching a 73k-row register
+     *       down to 200 flips into the comfortable single-page view automatically. When the
+     *       resulting page 1 would exceed config('laragrid.max_per_page'), the MOUNT payload
+     *       ships ZERO rows and the client fetches page 1 over gridFetch right after boot:
+     *       rows travel as JSON through Livewire's update endpoint, which never
+     *       regex-processes them as HTML.
+     * Why: "One scrollable page, no chrome" is the right feel for small and medium sets, but
+     *      inlining thousands of rows into the mount HTML breaks Livewire's pipeline (PCRE
+     *      truncation → empty component → DOMDocument::loadHTML ValueError — the /items 73k
+     *      failure). This keeps the feel and removes the failure class at any table size.
+     * When: Server-side grids: ->paginate(100, [100, 500])->singlePageUpTo(5000).
+     */
+    public function singlePageUpTo(int $threshold): static
+    {
+        $this->singlePageUpTo = max(1, $threshold);
+
+        return $this;
+    }
+
+    public function getSinglePageUpTo(): ?int
+    {
+        return $this->singlePageUpTo;
     }
 
     /**
@@ -1470,6 +1501,35 @@ class Grid
         $this->assertEditableValid($keySet);
         $this->assertActionsValid();
         $this->assertSortableValid();
+        $this->assertPaginationValid();
+    }
+
+    /**
+     * Pagination invariants (adaptive single-page).
+     *
+     * What: ->singlePageUpTo() needs a query() (the adaptive decision is a COUNT over the
+     *       filtered set). A declared page size above config('laragrid.max_per_page')
+     *       WITHOUT the threshold chain is refused: page 1 that size rides the mount HTML
+     *       through Livewire's regex pipeline and dies the way the 73k /items screen did.
+     *       WITH the chain, oversized pages are safe — the serializer defers them to a
+     *       post-boot JSON fetch instead of inlining.
+     */
+    protected function assertPaginationValid(): void
+    {
+        if ($this->singlePageUpTo !== null && ! $this->isServerSide()) {
+            throw new InvalidArgumentException(
+                "Grid [{$this->name}] declares singlePageUpTo() but no query(); the adaptive page decision needs a server-side grid."
+            );
+        }
+
+        $cap = max(1, (int) config('laragrid.max_per_page', 1000));
+        if ($this->isServerSide() && $this->singlePageUpTo === null && $this->perPage > $cap) {
+            throw new InvalidArgumentException(
+                "Grid [{$this->name}] paginates at {$this->perPage} rows/page, above laragrid.max_per_page ({$cap}): "
+                .'a mount page that size breaks Livewire\'s HTML pipeline. Paginate smaller, or declare '
+                .'->singlePageUpTo() so oversized pages defer to a post-boot fetch.'
+            );
+        }
     }
 
     /**

@@ -99,6 +99,42 @@ class ConfigSerializer
     protected function serializeServerSide(Grid $grid): array
     {
         $default = $grid->getDefaultSort();
+
+        // Deferred initial load (adaptive single-page): when page 1 would exceed
+        // laragrid.max_per_page rows, DO NOT inline it — Livewire regex-processes the
+        // mount HTML, and multi-thousand-row payloads come back PCRE-truncated (empty →
+        // DOMDocument::loadHTML ValueError, the /items 73k failure). Ship zero rows +
+        // server.deferred instead; the client fetches page 1 as JSON right after boot.
+        // One cheap COUNT decides; the footer fills from that first fetch's grand totals.
+        $cap = max(1, (int) config('laragrid.max_per_page', 1000));
+        $threshold = $grid->getSinglePageUpTo();
+
+        if ($threshold !== null || $grid->getPerPage() > $cap) {
+            $total = (int) $grid->resolveQuery()->toBase()->getCountForPagination();
+            $effective = ($threshold !== null && $total <= $threshold)
+                ? max(1, $total)
+                : $grid->getPerPage();
+
+            if ($effective > $cap) {
+                return [
+                    'name' => $grid->name,
+                    'columns' => $this->serializeColumns($grid),
+                    'groups' => $this->serializeGroups($grid),
+                    'filters' => array_map(fn ($filter): array => $filter->toArray(), $grid->getFilters()),
+                    'footer' => $this->serializeServerFooter($grid, []),
+                    'layout' => $this->serializeLayout($grid),
+                    'rows' => [],
+                    'server' => [
+                        'deferred' => true,
+                        'total' => $total,
+                        'page' => 1,
+                        'perPage' => $effective,
+                        'lastPage' => 1,
+                    ],
+                ];
+            }
+        }
+
         $page = $this->queryPipeline->run($grid, [
             'sort' => $default['col'] ?? null,
             'dir' => $default['dir'] ?? 'asc',

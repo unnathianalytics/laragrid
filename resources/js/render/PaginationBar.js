@@ -30,6 +30,13 @@ export default class PaginationBar {
     render() {
         const meta = this.store.serverMeta;
         this.rootEl.textContent = '';
+
+        // Adaptive single-page: everything fit on one page — chrome-free by design
+        // (->singlePageUpTo). Also covers the deferred-mount placeholder meta.
+        if (meta.lastPage <= 1) {
+            this.rootEl.hidden = true;
+            return;
+        }
         this.rootEl.hidden = false;
 
         // Left: row count + page position.

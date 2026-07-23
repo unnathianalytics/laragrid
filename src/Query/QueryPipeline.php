@@ -53,6 +53,17 @@ final class QueryPipeline
         $total = (clone $query)->toBase()->getCountForPagination();
 
         $perPage = $this->resolvePerPage($grid, $request);
+
+        // Adaptive single-page (->singlePageUpTo): when the FILTERED set fits the
+        // threshold, serve everything as ONE page — lastPage becomes 1 and the pagination
+        // chrome self-hides client-side. Decided per request, so a narrowing search flips
+        // a 73k register into the chrome-free view automatically; above the threshold the
+        // declared page size applies unchanged.
+        $threshold = $grid->getSinglePageUpTo();
+        if ($threshold !== null && $total <= $threshold) {
+            $perPage = max(1, $total);
+        }
+
         $page = $this->resolvePage($request, $total, $perPage);
 
         $models = $query

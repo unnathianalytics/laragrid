@@ -327,6 +327,14 @@ export default class GridCore {
         // Loading overlay reacts to fetches (empty state is wired mode-agnostically in init).
         this.bus.on('loading:changed', ({ loading }) => this.setLoading(loading));
 
+        // Deferred initial payload (adaptive single-page): the mount shipped ZERO rows so
+        // Livewire's HTML pipeline stayed small — fetch page 1 now. Rows arrive as JSON
+        // over the RPC, which is never regex-processed as HTML (the 73k /items failure
+        // class); the loading overlay covers the beat until page:changed paints.
+        if (this.store.deferredInitial) {
+            this.pageSource.load({ ...this.store.query });
+        }
+
         // A failed fetch must be VISIBLE: announce for AT and log the underlying error —
         // a silently-stuck grid is undebuggable in the field.
         this.bus.on('fetch:error', ({ error }) => {
@@ -880,6 +888,9 @@ export default class GridCore {
 
     /** Show/hide the empty-state message from the mount's <template> when there are zero rows. */
     renderEmptyState() {
+        if (this.store.deferredInitial) {
+            return; // deferred mount: page 1 is in flight — no "no rows" flash before it lands
+        }
         const tpl = this.refs.emptyTemplate;
         const hasRows = this.store.rowCount() > 0;
         this.refs.root.classList.toggle('lgrid--empty', !hasRows);
