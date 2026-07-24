@@ -49,6 +49,9 @@ live formula columns, auto-append and a running footer:
 - [Exports (CSV / XLSX / PDF)](#exports-csv--xlsx--pdf)
 - [Saved views](#saved-views)
 - [Keyboard](#keyboard)
+  - [The magic of Enter Key](#the-magic-of-enter-key)
+  - [Mouse — the same selection engine](#mouse--the-same-selection-engine)
+  - [Key reference](#key-reference)
 - [Undo & redo](#undo--redo)
 - [Theming](#theming)
   - [Shipped color schemes](#shipped-color-schemes)
@@ -427,7 +430,7 @@ To refresh a display grid's data later, call `$this->reseedGrid('name', $freshRo
 | `DecimalColumn` | number | fixed-scale string | `->scale(n)`; precision never rides a float |
 | `DateColumn` | date | ISO `Y-m-d` | fuzzy typed input (`31/12`, `311226`); display pattern configurable; financial-year inference opt-in |
 | `SelectColumn` | dropdown | option id | `->options([...])` embedded whitelist |
-| `SearchSelectColumn` | async picker | option id | `->optionsUsing(fn ($term, $row))`, `->onSelect()` enrichment, `->minChars()`, `->debounce()`, `->limit()` |
+| `SearchSelectColumn` | async picker | option id | `->optionsUsing(fn ($term, $row))`, `->onSelect()` enrichment, `->minChars()`, `->debounce()`, `->limit()`; an option row may carry `'meta' => …` — painted right-aligned and muted (e.g. stock on hand) |
 | `CheckboxColumn` | instant toggle | bool | Space/double-click toggle in place; Enter just advances |
 | `YesNoColumn` | typed Y/N | bool | painted `Y`/`N` (blank until answered); typing `Y`/`N` commits and advances like Enter — the Tally Yes/No flow; Space still toggles in place |
 | `FormulaColumn` | — | computed | `->formula('qty * rate')` — evaluated live client-side, authoritatively server-side |
@@ -460,7 +463,7 @@ Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `alig
 [the comparison](#-focusoutto-vs--oncompletefocus)) · `emptyState(text)` · `statusBar(bool)` ·
 `persistWidths()` (column layout survives reloads).
 
-**Layout** — `stickyHeader()` · `freezeColumns(n)` · `striped()` ·
+**Layout** — `columnGroups([ColumnGroup::make('GST', ['cgst', 'sgst'])])` (two-tier grouped headers) · `stickyHeader()` · `freezeColumns(n)` · `striped()` ·
 `density(GridDensity::Compact|Normal|Comfortable)` · `height('420px')` · `maxHeight('60vh')` ·
 `fillParent()` · `themeClass('my-theme')` · `rowClass(fn)` · `cellClass(fn)`.
 
@@ -588,6 +591,71 @@ Note `->savedViews()` persists views **server-side by name, on demand**, while
 compose: recalling a view also updates the persisted layout.
 
 ## Keyboard
+
+The keyboard is not a bolt-on — it is the primary interface, engineered the way Excel,
+Tally and Busy trained a generation of operators. One navigation engine drives all three
+modes: the grid is a single tab stop with a roving active cell (`aria-activedescendant`,
+no per-cell tabindex), every movement resolves against the same navigability mask, and
+what a key *does* simply deepens with the mode:
+
+| | Display | Readonly `query()` | Editable |
+|---|---|---|---|
+| Navigate · select · copy TSV | ✓ | ✓ | ✓ |
+| Sort from the header (whole cell is the click target) | ✓ client-side | ✓ SQL | — row order is domain state |
+| F9 / Shift+F9 temporary row hide (what-if totals) | ✓ | — | — |
+| Enter / double-click activates a row (`->rowActivate()`) | ✓ | ✓ | — |
+| Edit · row ops · paste · undo | — | — | ✓ |
+
+Two presets, one switch: `->keymap('entry')` (default — the serpentine data-entry rhythm
+below) or `->keymap('excel')` (Enter moves down, Tab moves right, nothing ever blocks).
+App-wide default via `config('laragrid.keymap')`.
+
+### The magic of Enter Key
+
+Enter Key is the drive shaft of the entry flow — one key, context-aware, and no keystroke is
+ever thrown away. On an editable grid under the `entry` keymap, a single press walks this
+decision ladder:
+
+1. **Voucher done?** On a grid whose completion condition holds (`->completeWhenBalanced()`
+   satisfied) with the cursor on a fully blank row, Enter doesn't open anything — it fires
+   `lgrid:complete` and `->onCompleteFocus()` carries focus straight to your Save button.
+   The operator's final Enter *is* the handoff.
+2. **Empty picker cell** — Enter summons the lookup list (the Tally "list pops at you"
+   feel). An `->endOfListOption()` picker shows *— End of list —* as its first entry, so
+   Enter → Enter finishes entry from an empty row.
+3. **Blank required cell on a row that has data** — Enter refuses to move (the cell
+   flashes). But it sails over template-blank trailing rows the operator never touched, so
+   nobody gets trapped behind `newRowUsing()` defaults.
+4. **A column tagged `->opensPanel('name')`** — Enter hands off to YOUR modal (item
+   description, serial capture) instead of advancing; the advance is stashed and resumes
+   the instant the host fires `lgrid:panel-done`. This fires on the nav-mode Enter too, so
+   re-entering a filled cell and pressing Enter re-opens the panel with its saved values.
+5. **Otherwise: advance.** Serpentine — rightward through the row's *editable, unlocked*
+   cells (readonly, `lockedWhen`, and hidden columns are never visited), wrapping to the
+   first editable cell of the next row. Inside an open editor the same Enter first
+   commits: optimistic cast client-side, authoritative cast + validation + hooks +
+   formula recompute server-side, then the advance runs.
+6. **Last cell of the last row** with `->autoAppend()` — the grid grows a fresh row from
+   the `newRowUsing()` template and lands in it. Enter literally builds the voucher as
+   fast as the operator can type.
+
+`YesNoColumn` compresses the loop further — typing `Y`/`N` **is** the Enter (answer +
+advance in one keystroke). On readonly and display grids the same key activates a
+`->rowActivate()` row, exactly like double-click; under the `excel` preset Enter is a
+plain move-down and never blocks. Net effect: item → qty → serials (panel) → rate →
+balancing entry → Save — an entire voucher keyed without touching the mouse.
+
+### Mouse — the same selection engine
+
+Click sets the active cell; **dragging extends the range live** (the Excel marquee —
+native text selection is disabled in head + body, because Ctrl+C copies the *cell
+selection* as TSV, not blue text). Shift+click extends to a far cell in one shot. A
+header click sorts — the **whole header cell** is the target, not just the caret — while
+Ctrl/Cmd/Shift+click on a header **column-selects** instead; a serial-gutter click
+selects the row. Column edges drag-resize (double-click autofits) and `->persistWidths()`
+remembers the layout per grid.
+
+### Key reference
 
 | Keys | Action |
 |---|---|
