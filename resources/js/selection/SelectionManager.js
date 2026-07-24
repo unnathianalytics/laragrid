@@ -22,6 +22,14 @@ export default class SelectionManager {
         this.store = store;
         this.refs = refs;
         this.onPointerDown = this.handlePointerDown.bind(this);
+
+        // Drag-to-extend session state (Excel parity): window listeners exist only while
+        // a main-button press that started on a body cell is being dragged.
+        this.onDragMove = this.handleDragMove.bind(this);
+        this.onDragEnd = this.endDrag.bind(this);
+        this.dragActive = false;
+        this.dragRaf = null;
+        this.dragPoint = null;
     }
 
     /** Install the delegated mouse-selection listener. */
@@ -31,6 +39,7 @@ export default class SelectionManager {
 
     destroy() {
         this.refs.root.removeEventListener('pointerdown', this.onPointerDown);
+        this.endDrag();
     }
 
     // ---- Active-cell bootstrap -----------------------------------------------------------
@@ -240,6 +249,71 @@ export default class SelectionManager {
         } else {
             this.store.setActive(addr);
         }
+
+        // Drag-to-extend (Excel parity): from this press, moving the pointer over other
+        // body cells grows the range live — head+rows are user-select:none so the native
+        // text selection that used to win this gesture never engages. Main button only;
+        // a Shift+click keeps its one-shot extend AND can continue as a drag from the
+        // same anchor.
+        if (e.button === 0) {
+            this.beginDrag();
+        }
+    }
+
+    /** Arm the window-level drag listeners for the duration of one press. */
+    beginDrag() {
+        if (this.dragActive) {
+            return;
+        }
+        this.dragActive = true;
+        window.addEventListener('pointermove', this.onDragMove);
+        window.addEventListener('pointerup', this.onDragEnd);
+    }
+
+    /**
+     * rAF-throttled drag step: extend the range to the body cell under the pointer.
+     * elementFromPoint (not e.target) so the gesture survives leaving the grid and
+     * re-entering; gutter/serial (non-navigable) cells are ignored rather than clamped.
+     */
+    handleDragMove(e) {
+        this.dragPoint = { x: e.clientX, y: e.clientY };
+        if (this.dragRaf !== null) {
+            return;
+        }
+        this.dragRaf = requestAnimationFrame(() => {
+            this.dragRaf = null;
+            if (!this.dragActive || !this.dragPoint) {
+                return;
+            }
+            const at = document.elementFromPoint(this.dragPoint.x, this.dragPoint.y);
+            const cell = at && at.closest ? at.closest('.lgrid-cell') : null;
+            if (!cell || !this.refs.body.contains(cell)) {
+                return;
+            }
+            const rowEl = cell.closest('.lgrid-row');
+            const rowKey = rowEl ? rowEl.dataset.k : null;
+            const colKey = cell.dataset.c;
+            const column = this.store.visibleColumns().find((c) => c.key === colKey);
+            if (!rowKey || !column || column.navigable === false) {
+                return;
+            }
+            const active = this.store.active;
+            if (active && active.rowKey === rowKey && active.colKey === colKey) {
+                return;
+            }
+            this.store.setActive({ rowKey, colKey }, { keepAnchor: true, kind: 'range' });
+        });
+    }
+
+    /** Disarm the drag session (pointerup / destroy). */
+    endDrag() {
+        this.dragActive = false;
+        if (this.dragRaf !== null) {
+            cancelAnimationFrame(this.dragRaf);
+            this.dragRaf = null;
+        }
+        window.removeEventListener('pointermove', this.onDragMove);
+        window.removeEventListener('pointerup', this.onDragEnd);
     }
 
     /** The column key a header cell represents (by its position among header cells). */

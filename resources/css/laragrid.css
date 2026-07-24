@@ -479,6 +479,19 @@
         user-select: none;
     }
 
+    /* Native text selection is NOT the grid's copy path (Ctrl+C copies the cell SELECTION
+       as TSV): suppress it across head + body so a mouse drag reads as range selection,
+       never as blue text. The floating editor's input stays text-selectable, and the
+       footer is deliberately left selectable (totals have no cell-selection path). */
+    .lgrid-head,
+    .lgrid-rows {
+        user-select: none;
+    }
+
+    .lgrid-cell-editor-input {
+        user-select: text;
+    }
+
     .lgrid-sort {
         display: inline-flex;
         align-items: center;
@@ -642,8 +655,18 @@
         width: 100%;
         height: 100%;
         box-sizing: border-box;
-        padding: var(--lgrid-cell-pad-y) var(--lgrid-cell-pad-x);
-        border: 2px solid var(--lgrid-active-ring);
+        /* Pixel parity with the painted cell BY CONSTRUCTION, not arithmetic: the input
+           carries NO border (a real border on a fractionally-positioned overlay shifts
+           text rendering by a device pixel) — the ring is an inset box-shadow, pure paint,
+           zero layout. Padding mirrors the cell exactly: top/left as-is; right/bottom get
+           +1px because the CELL's own 1px border-right/bottom inset its content there and
+           a borderless input must reproduce that inset with padding. Order: T R B L. */
+        padding: var(--lgrid-cell-pad-y)
+            calc(var(--lgrid-cell-pad-x) + 1px)
+            calc(var(--lgrid-cell-pad-y) + 1px)
+            var(--lgrid-cell-pad-x);
+        border: 0;
+        box-shadow: inset 0 0 0 2px var(--lgrid-active-ring);
         border-radius: 0;
         background: var(--lgrid-cell-bg);
         color: var(--lgrid-text);
