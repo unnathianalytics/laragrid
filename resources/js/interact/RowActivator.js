@@ -85,10 +85,24 @@ export default class RowActivator {
         if (!url) {
             return false;
         }
-        this.refs.root.dispatchEvent(new CustomEvent('lgrid:activate', {
+        const proceed = this.refs.root.dispatchEvent(new CustomEvent('lgrid:activate', {
             bubbles: true,
+            cancelable: true,
             detail: { grid: this.store.name, row, url },
         }));
+
+        // Opt-in built-in navigation (->rowActivate(..., navigate: true), issue #6):
+        // SPA-style through Livewire Navigate when the app runs it, a full load
+        // otherwise. Default stays event-only (the host decides — modal, drill, custom
+        // action), and even when opted in a listener can take over via preventDefault().
+        const spec = this.store.layout && this.store.layout.rowActivate;
+        if (proceed && spec && spec.navigate) {
+            if (window.Livewire && typeof window.Livewire.navigate === 'function') {
+                window.Livewire.navigate(url);
+            } else {
+                window.location.assign(url);
+            }
+        }
         return true;
     }
 }

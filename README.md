@@ -450,7 +450,7 @@ Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `alig
 `defaultSort(col, dir)` · `searchable([...])` · `filters([...])` · `rowKey('id')` ·
 `exportable([formats], fileName:, limit:)` (see [Exports](#exports-csv--xlsx--pdf)) ·
 `savedViews(key?)` (see [Saved views](#saved-views)) ·
-`rowActivate(fn ($row) => ?url)` — Enter/double-click opens a row, permission-gated per row.
+`rowActivate(fn ($row) => ?url, navigate: true)` — Enter/double-click opens a row, permission-gated per row; with `navigate: true` the grid itself follows the URL (Livewire Navigate when available, full load otherwise — a `lgrid:activate` listener can cancel via `preventDefault()`); without it, activation only fires the event and the host decides (modal, drill, custom action).
 
 **Editable** — `editable()` · `rowsFrom('prop')` · `defaultRows(n)` · `newRowUsing(fn)` ·
 `minRows(n)` · `autoAppend()` · `padRows(n)` · `sync(SyncPolicy::PerCell|PerRow|Deferred)` ·
@@ -787,7 +787,9 @@ Grid → host (bubbling DOM events): `lgrid:complete` (entry finished), `lgrid:a
 (row opened), `lgrid:panel` (cell hands off to a host modal), `lgrid:column-resized`,
 `lgrid:column-visibility`. Host → grid: `lgrid:reseed` (use `$this->reseedGrid(...)`),
 `lgrid:panel-done` (use `$this->gridPanelDone(...)`), `lgrid:toolbar` (drive the grid from
-fully custom host chrome).
+fully custom host chrome), `lgrid:refresh` (use `$this->refreshGrid('name')` — a server-side
+grid re-fetches its current view cache-busted; the CRUD companion after a modal create/edit,
+no remount or `wire:key` tricks needed).
 
 ## Configuration
 

@@ -230,6 +230,9 @@ class Grid
      */
     protected ?Closure $rowActivate = null;
 
+    /** Whether the CLIENT navigates to the activated row's URL itself (issue #6 opt-in). */
+    protected bool $rowActivateNavigate = false;
+
     /**
      * Optional server hook fired after a cell change is applied: fn(RowContext $row, string $col).
      *
@@ -785,11 +788,24 @@ class Grid
      *
      * @param  Closure(array<string, mixed>): (string|null)  $resolver
      */
-    public function rowActivate(Closure $resolver): static
+    public function rowActivate(Closure $resolver, bool $navigate = false): static
     {
         $this->rowActivate = $resolver;
+        $this->rowActivateNavigate = $navigate;
 
         return $this;
+    }
+
+    /**
+     * Whether the client should navigate to the activated URL itself (issue #6): via
+     * Livewire Navigate when the app runs it, a full load otherwise. Default false —
+     * activation only dispatches `lgrid:activate` and the HOST decides (modal, drill,
+     * custom action); a listener can also cancel the built-in navigation with
+     * event.preventDefault().
+     */
+    public function rowActivateNavigates(): bool
+    {
+        return $this->rowActivateNavigate;
     }
 
     /**

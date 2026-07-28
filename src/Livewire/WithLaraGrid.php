@@ -12,6 +12,7 @@ use InvalidArgumentException;
 use LaraGrid\Columns\SearchSelectColumn;
 use LaraGrid\Editing\OpApplier;
 use LaraGrid\Editing\OpBatch;
+use Illuminate\Support\Facades\Gate;
 use LaraGrid\Export\ExportBuilder;
 use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Grid;
@@ -637,11 +638,45 @@ trait WithLaraGrid
         }
 
         if (is_string($gate)) {
-            $this->authorize($gate);
+            // Through the Gate facade, NOT $this->authorize(): the trait method only
+            // exists on hosts using AuthorizesRequests, and Livewire 4 anonymous
+            // components 403'd every update request through it (issue #4). Semantics are
+            // identical on classic components — AuthorizesRequests::authorize() is itself
+            // a Gate::authorize() wrapper — and the check stays fail-closed everywhere.
+            Gate::authorize($gate);
 
             return;
         }
 
         $gate();
+    }
+
+    /**
+     * Ask a SERVER-SIDE grid to re-fetch its CURRENT view — page, sort, search and
+     * filters kept — with the client's page cache dropped (issue #5).
+     *
+     * What: The CRUD companion: create/update/delete a record (a modal, another
+     *       component, a queued import), then `$this->refreshGrid('hotels')` — the grid
+     *       reloads in place. No remount, no wire:key tricks; the client's PageSource
+     *       clears its LRU cache and re-runs the current query through gridFetch, which
+     *       re-authorizes as always.
+     * Why: Dispatched as `lgrid:refresh` (a window DOM event via Livewire), the same
+     *      host→client seam as `lgrid:reseed` — and like every fetch, the server stays
+     *      the authority; this only asks the client to come back for fresh pages.
+     * When: Server-side ->query() grids only. In-memory and editable grids don't fetch —
+     *       hand them fresh rows via reseedGrid() instead (thrown loudly here).
+     */
+    protected function refreshGrid(string $grid): void
+    {
+        $definition = $this->gridDefinition($grid);
+
+        if (! $definition->isServerSide()) {
+            throw new InvalidArgumentException(
+                "Grid [{$grid}] is not server-side; refreshGrid() re-fetches a query() grid — "
+                .'hand an in-memory or editable grid fresh rows via reseedGrid() instead.'
+            );
+        }
+
+        $this->dispatch('lgrid:refresh', grid: $grid);
     }
 }

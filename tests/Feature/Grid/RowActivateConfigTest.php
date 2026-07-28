@@ -31,7 +31,16 @@ it('emits layout.rowActivate only when a resolver is declared (whenFilled discip
 
     // Absent unless declared so committed golden configs never rot.
     expect($plain['layout'])->not->toHaveKey('rowActivate')
-        ->and($active['layout']['rowActivate'])->toBeTrue();
+        ->and($active['layout']['rowActivate'])->toBe(['navigate' => false]);
+
+    // Opt-in built-in navigation (issue #6): the flag rides the layout so the client
+    // knows to navigate (Livewire Navigate when present) unless a listener cancels.
+    $navigating = app(ConfigSerializer::class)->serialize(
+        Grid::make('n')->columns([TextColumn::make('a')])
+            ->rowActivate(fn (array $row): string => '/x/'.$row['a'], navigate: true),
+        [['a' => 1]],
+    );
+    expect($navigating['layout']['rowActivate'])->toBe(['navigate' => true]);
 });
 
 it('bakes each row _activateUrl from the resolver', function () {

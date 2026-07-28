@@ -335,6 +335,17 @@ export default class GridCore {
             this.pageSource.load({ ...this.store.query });
         }
 
+        // Host-driven refresh (issue #5): $this->refreshGrid('name') dispatches
+        // `lgrid:refresh` (a window DOM event via Livewire, like lgrid:reseed). Re-fetch
+        // the CURRENT view cache-busted — the CRUD companion for modal create/edit flows.
+        this.onRefresh = (e) => {
+            const d = e.detail || {};
+            if (d.grid === this.store.name && this.pageSource) {
+                this.pageSource.refresh();
+            }
+        };
+        window.addEventListener('lgrid:refresh', this.onRefresh);
+
         // A failed fetch must be VISIBLE: announce for AT and log the underlying error —
         // a silently-stuck grid is undebuggable in the field.
         this.bus.on('fetch:error', ({ error }) => {
@@ -1014,6 +1025,9 @@ export default class GridCore {
         }
         if (this.onReseed) {
             window.removeEventListener('lgrid:reseed', this.onReseed);
+        }
+        if (this.onRefresh) {
+            window.removeEventListener('lgrid:refresh', this.onRefresh);
         }
         if (this.onPanelDone) {
             window.removeEventListener('lgrid:panel-done', this.onPanelDone);

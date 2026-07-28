@@ -205,7 +205,7 @@ class ConfigSerializer
         // an `_activateUrl` should dispatch `lgrid:activate`. Emitted only when declared (whenFilled),
         // so grids that never activate keep their committed golden layout unchanged.
         if ($grid->hasRowActivate()) {
-            $layout['rowActivate'] = true;
+            $layout['rowActivate'] = ['navigate' => $grid->rowActivateNavigates()];
         }
 
         // Exports (readonly grids): the enabled format list drives the toolbar's Export

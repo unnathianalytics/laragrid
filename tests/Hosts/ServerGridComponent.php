@@ -47,6 +47,15 @@ class ServerGridComponent extends Component
     /** Drops the ->exportable() declaration entirely (the not-exportable RPC gate). */
     public bool $exportOff = false;
 
+    /** Authorize via a STRING ability through the Gate instead of the closure (issue #4). */
+    public ?string $gateAbility = null;
+
+    /** Public wrapper so tests can exercise the protected refreshGrid() seam (issue #5). */
+    public function refreshItems(): void
+    {
+        $this->refreshGrid('items');
+    }
+
     /**
      * @return array<string, Grid>
      */
@@ -55,7 +64,7 @@ class ServerGridComponent extends Component
         return [
             'items' => Grid::make('items')
                 ->query(fn () => ExportItem::query())
-                ->authorize(function (): bool {
+                ->authorize($this->gateAbility ?? function (): bool {
                     if ($this->deny) {
                         throw new AuthorizationException('Denied.');
                     }
