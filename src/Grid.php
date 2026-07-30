@@ -88,6 +88,14 @@ class Grid
     protected ?array $persist = null;
 
     /**
+     * Live query persistence declaration (v1.11): ['mode' => 'session', 'key' => string], or
+     * null when the grid does not remember the operator's search/filters/sort/per-page.
+     *
+     * @var array{mode: string, key: string}|null
+     */
+    protected ?array $persistQuery = null;
+
+    /**
      * Optional per-row extra class resolver (runs server-side over the host row in M1).
      *
      * @var (Closure(array<string, mixed>): (string|null))|null
@@ -462,6 +470,46 @@ class Grid
         }
 
         $this->persist = ['mode' => 'local', 'key' => $key ?? $this->name];
+
+        return $this;
+    }
+
+    /**
+     * Remember the operator's CURRENT query — search, filters, sort/direction and per-page — for
+     * the rest of their session, so leaving a filtered register and coming back lands on the same
+     * narrowed list. The page number is never persisted (a return always lands on page 1).
+     *
+     * What: Enables the bound QueryStore (the shipped SessionQueryStore keeps state in the
+     *       Laravel session under `laragrid.query.{key}`). ConfigSerializer reads it when it
+     *       builds page 1 — so first paint is ALREADY narrowed, with no unfiltered flash — and
+     *       WithLaraGrid::gridFetch writes it back after every successful query change.
+     * Why:  Opt-in per grid, and session-lifetime by design: this is working state, not a saved
+     *       preference. ->savedViews() is the answer for named snapshots that follow an operator
+     *       across machines; ->persistWidths() persists column layout in localStorage. The three
+     *       compose. 'local', 'url' and 'server' are RESERVED mode names — declaring one is a hard
+     *       error, never a silent no-op, so a host can never believe a lifetime it isn't getting.
+     * When: Declared on a readonly ->query() definition (the state IS the query pipeline's input,
+     *       so declaring it elsewhere fails at build time, as with ->savedViews()).
+     *
+     * @param  string  $mode  'session' (v1.11). 'local' / 'url' / 'server' are reserved and throw.
+     * @param  string|null  $key  Storage key override; defaults to the grid name. Pass a scoped
+     *                            key (e.g. "items:{$companyId}") when one session can switch
+     *                            between tenants and you want hard isolation on top of the
+     *                            automatic stale-value guard (Filter::accepts()).
+     *
+     * @throws InvalidArgumentException On a reserved or unknown mode.
+     */
+    public function persistQuery(string $mode = 'session', ?string $key = null): static
+    {
+        if ($mode !== 'session') {
+            throw new InvalidArgumentException(
+                in_array($mode, ['local', 'url', 'server'], true)
+                    ? "Grid [{$this->name}]: persistQuery('{$mode}') is reserved and not implemented — use 'session'."
+                    : "Grid [{$this->name}]: unknown persistQuery mode [{$mode}] — use 'session'."
+            );
+        }
+
+        $this->persistQuery = ['mode' => 'session', 'key' => $key ?? $this->name];
 
         return $this;
     }
@@ -1452,6 +1500,34 @@ class Grid
     }
 
     /**
+     * @return array{mode: string, key: string}|null
+     */
+    public function getPersistQuery(): ?array
+    {
+        return $this->persistQuery;
+    }
+
+    /**
+     * The query state this grid shows when nothing is persisted or restored — the baseline both
+     * the config seed merges over and the write path compares against (a state equal to this is
+     * FORGOTTEN rather than stored, so an operator who never filters leaves no session entry).
+     *
+     * @return array{search: string, sort: string|null, dir: string, filters: array<string, string>, perPage: int}
+     */
+    public function defaultQuery(): array
+    {
+        $default = $this->getDefaultSort();
+
+        return [
+            'search' => '',
+            'sort' => $default['col'] ?? null,
+            'dir' => $default['dir'] ?? 'asc',
+            'filters' => [],
+            'perPage' => $this->getPerPage(),
+        ];
+    }
+
+    /**
      * @return (Closure(array<string, mixed>): (string|null))|null
      */
     public function getRowClassResolver(): ?Closure
@@ -1680,6 +1756,12 @@ class Grid
             if ($this->savedViews !== null) {
                 throw new InvalidArgumentException(
                     "Grid [{$this->name}] declares savedViews() but no query(); saved views need a server-side readonly grid."
+                );
+            }
+
+            if ($this->persistQuery !== null) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] declares persistQuery() but no query(); query persistence needs a server-side readonly grid."
                 );
             }
 

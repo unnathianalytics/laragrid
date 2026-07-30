@@ -50,6 +50,12 @@ class ServerGridComponent extends Component
     /** Authorize via a STRING ability through the Gate instead of the closure (issue #4). */
     public ?string $gateAbility = null;
 
+    /** Declares ->persistQuery() on the grid (session-lifetime query persistence). */
+    public bool $persist = false;
+
+    /** Storage key override handed to ->persistQuery() (null = the grid name). */
+    public ?string $persistKey = null;
+
     /** Public wrapper so tests can exercise the protected refreshGrid() seam (issue #5). */
     public function refreshItems(): void
     {
@@ -61,43 +67,47 @@ class ServerGridComponent extends Component
      */
     protected function grids(): array
     {
-        return [
-            'items' => Grid::make('items')
-                ->query(fn () => ExportItem::query())
-                ->authorize($this->gateAbility ?? function (): bool {
-                    if ($this->deny) {
-                        throw new AuthorizationException('Denied.');
-                    }
+        $grid = Grid::make('items')
+            ->query(fn () => ExportItem::query())
+            ->authorize($this->gateAbility ?? function (): bool {
+                if ($this->deny) {
+                    throw new AuthorizationException('Denied.');
+                }
 
-                    return true;
-                })
-                ->paginate(2, [2, 5])
-                ->defaultSort('name')
-                ->searchable(['name'])
-                ->filters([
-                    SelectFilter::make('type')->label('Type')
-                        ->options(['goods' => 'Goods', 'service' => 'Service']),
-                ])
-                ->exportable($this->exportOff ? false : $this->formats, fileName: 'item-register', limit: $this->limit)
-                ->columns([
-                    SerialColumn::make(),
-                    TextColumn::make('name')->label('Item')->sortable()->searchable()->grow(),
-                    TextColumn::make('code')->width(80),
-                    SelectColumn::make('type')->options(['goods' => 'Goods', 'service' => 'Service'])->width(90),
-                    IntegerColumn::make('qty')->sortable()->width(70),
-                    DecimalColumn::make('rate')->scale(2)->width(90),
-                    CheckboxColumn::make('active')->width(60),
-                    DateColumn::make('booked_on')->label('Booked')->width(100),
-                    ComputedColumn::make('status')->html()
-                        ->state(fn (array $row): string => '<span class="badge">'.($row['active'] ? 'Live' : 'Off').'</span>'),
-                    TextColumn::make('note')->exportable(false),
-                    HiddenColumn::make('secret'),
-                ])
-                ->footer([
-                    Aggregate::sum('qty'),
-                    Aggregate::sum('rate')->format('number', ['scale' => 2]),
-                ]),
-        ];
+                return true;
+            })
+            ->paginate(2, [2, 5])
+            ->defaultSort('name')
+            ->searchable(['name'])
+            ->filters([
+                SelectFilter::make('type')->label('Type')
+                    ->options(['goods' => 'Goods', 'service' => 'Service']),
+            ])
+            ->exportable($this->exportOff ? false : $this->formats, fileName: 'item-register', limit: $this->limit)
+            ->columns([
+                SerialColumn::make(),
+                TextColumn::make('name')->label('Item')->sortable()->searchable()->grow(),
+                TextColumn::make('code')->width(80),
+                SelectColumn::make('type')->options(['goods' => 'Goods', 'service' => 'Service'])->width(90),
+                IntegerColumn::make('qty')->sortable()->width(70),
+                DecimalColumn::make('rate')->scale(2)->width(90),
+                CheckboxColumn::make('active')->width(60),
+                DateColumn::make('booked_on')->label('Booked')->width(100),
+                ComputedColumn::make('status')->html()
+                    ->state(fn (array $row): string => '<span class="badge">'.($row['active'] ? 'Live' : 'Off').'</span>'),
+                TextColumn::make('note')->exportable(false),
+                HiddenColumn::make('secret'),
+            ])
+            ->footer([
+                Aggregate::sum('qty'),
+                Aggregate::sum('rate')->format('number', ['scale' => 2]),
+            ]);
+
+        if ($this->persist) {
+            $grid->persistQuery('session', $this->persistKey);
+        }
+
+        return ['items' => $grid];
     }
 
     public function render(): View

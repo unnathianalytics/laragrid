@@ -93,12 +93,21 @@ export default class StateStore {
          */
         this.deferredInitial = !!server.deferred;
 
+        /**
+         * The operator's restored query (->persistQuery()): the server already BUILT the page
+         * above from this exact state, so adopting it here is not a re-application — it is
+         * telling the client the truth about what it is already showing. Without it the client
+         * would believe it was displaying an unfiltered default and would paint cleared filter
+         * controls over filtered rows. Absent for every grid that does not persist.
+         */
+        const restored = config.query || null;
+
         /** The query signature currently displayed (sort/dir/search/filters/page/perPage). */
         this.query = {
-            sort: defaultSort ? defaultSort.col : null,
-            dir: defaultSort ? defaultSort.dir : 'asc',
-            search: '',
-            filters: {},
+            sort: restored ? (restored.sort || null) : (defaultSort ? defaultSort.col : null),
+            dir: restored ? (restored.dir === 'desc' ? 'desc' : 'asc') : (defaultSort ? defaultSort.dir : 'asc'),
+            search: (restored && restored.search) || '',
+            filters: restored && restored.filters ? { ...restored.filters } : {},
             page: this.serverMeta.page,
             perPage: this.serverMeta.perPage,
         };

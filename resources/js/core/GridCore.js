@@ -571,6 +571,14 @@ export default class GridCore {
                 this.viewsManager || null,
             );
             this.toolbar.render();
+
+            // Restored query (->persistQuery()): the rows on screen are already narrowed, so the
+            // controls must SAY so — otherwise the operator sees a short list with an empty
+            // search box and blank selects and reads it as missing data. The header funnels and
+            // the sort caret need no help: they paint straight from store.query.
+            if (this.config.query) {
+                this.toolbar.reflect(this.store.query);
+            }
         }
 
         if (this.popupManager) {

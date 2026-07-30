@@ -7,7 +7,9 @@ namespace LaraGrid\Support;
 use Illuminate\Database\Eloquent\Model;
 use LaraGrid\Grid;
 use LaraGrid\Query\QueryPipeline;
+use LaraGrid\Query\QueryStore;
 use LaraGrid\Validation\RuleCompiler;
+use LaraGrid\Views\ViewState;
 
 /**
  * What: Compiles a Grid definition plus its host-supplied rows into the single declarative
@@ -98,7 +100,11 @@ class ConfigSerializer
      */
     protected function serializeServerSide(Grid $grid): array
     {
-        $default = $grid->getDefaultSort();
+        // The query page 1 answers: the grid's declared defaults, overlaid with the operator's
+        // session-persisted state when ->persistQuery() is declared. Resolved BEFORE the count so
+        // every downstream decision (deferral, single-page threshold, the page itself) sees the
+        // narrowed set — that is what makes a restored filter land without an unfiltered flash.
+        $initial = $this->initialQuery($grid);
 
         // Deferred initial load (adaptive single-page): when page 1 would exceed
         // laragrid.max_per_page rows, DO NOT inline it — Livewire regex-processes the
@@ -109,14 +115,14 @@ class ConfigSerializer
         $cap = max(1, (int) config('laragrid.max_per_page', 1000));
         $threshold = $grid->getSinglePageUpTo();
 
-        if ($threshold !== null || $grid->getPerPage() > $cap) {
-            $total = (int) $grid->resolveQuery()->toBase()->getCountForPagination();
+        if ($threshold !== null || $initial['perPage'] > $cap) {
+            $total = $this->queryPipeline->countFor($grid, $initial);
             $effective = ($threshold !== null && $total <= $threshold)
                 ? max(1, $total)
-                : $grid->getPerPage();
+                : $initial['perPage'];
 
             if ($effective > $cap) {
-                return [
+                return $this->withInitialQuery($grid, $initial, [
                     'name' => $grid->name,
                     'columns' => $this->serializeColumns($grid),
                     'groups' => $this->serializeGroups($grid),
@@ -131,18 +137,13 @@ class ConfigSerializer
                         'perPage' => $effective,
                         'lastPage' => 1,
                     ],
-                ];
+                ]);
             }
         }
 
-        $page = $this->queryPipeline->run($grid, [
-            'sort' => $default['col'] ?? null,
-            'dir' => $default['dir'] ?? 'asc',
-            'page' => 1,
-            'perPage' => $grid->getPerPage(),
-        ]);
+        $page = $this->queryPipeline->run($grid, array_merge($initial, ['page' => 1]));
 
-        return [
+        return $this->withInitialQuery($grid, $initial, [
             'name' => $grid->name,
             'columns' => $this->serializeColumns($grid),
             'groups' => $this->serializeGroups($grid),
@@ -158,7 +159,70 @@ class ConfigSerializer
                 'pageTotals' => $page->pageTotals,
                 'grandTotals' => $page->grandTotals,
             ],
-        ];
+        ]);
+    }
+
+    /**
+     * The query the config's page 1 is built from: the grid's declared defaults, overlaid with
+     * the operator's persisted state when ->persistQuery() is declared.
+     *
+     * What: Reads the bound QueryStore and runs whatever it holds back through the SAME
+     *       whitelist the write path used (ViewState::sanitizeQuery) — a storage backend is
+     *       untrusted input on the way IN as much as the client is, and the definition may have
+     *       changed since (a dropped column, a renamed filter, a narrowed per-page list).
+     * Why:  Doing this at SERIALIZE time — not after boot on the client — is the whole point of
+     *       the session lifetime: the server already knows the operator's filters when it builds
+     *       page 1, so the first paint is the narrowed list. A client-side restore would paint
+     *       the unfiltered page first and visibly replace it.
+     * When: Once per server-side serialize, before the count and the page.
+     *
+     * @return array{search: string, sort: string|null, dir: string, filters: array<string, string>, perPage: int}
+     */
+    protected function initialQuery(Grid $grid): array
+    {
+        $default = $grid->defaultQuery();
+        $persist = $grid->getPersistQuery();
+
+        if ($persist === null) {
+            return $default;
+        }
+
+        $stored = app(QueryStore::class)->get($persist['key']);
+
+        if ($stored === []) {
+            return $default;
+        }
+
+        $query = app(ViewState::class)->sanitizeQuery($grid, array_merge($default, $stored));
+
+        // A stored sort naming a column the definition no longer has sanitizes to null; fall
+        // back to the declared default rather than serving an arbitrarily ordered register.
+        if ($query['sort'] === null) {
+            $query['sort'] = $default['sort'];
+            $query['dir'] = $default['dir'];
+        }
+
+        return $query;
+    }
+
+    /**
+     * Attach the initial query to a server-side config — but only for a grid that declares
+     * ->persistQuery(), per the whenFilled discipline, so every other grid's committed golden
+     * config stays byte-identical and the client keeps seeding from layout.defaultSort.
+     *
+     * @param  array{search: string, sort: string|null, dir: string, filters: array<string, string>, perPage: int}  $initial
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    protected function withInitialQuery(Grid $grid, array $initial, array $config): array
+    {
+        if ($grid->getPersistQuery() === null) {
+            return $config;
+        }
+
+        $config['query'] = $initial;
+
+        return $config;
     }
 
     /**

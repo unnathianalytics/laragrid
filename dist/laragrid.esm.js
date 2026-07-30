@@ -213,11 +213,12 @@ var StateStore = class {
       lastPage: server.lastPage || 1
     };
     this.deferredInitial = !!server.deferred;
+    const restored = config.query || null;
     this.query = {
-      sort: defaultSort ? defaultSort.col : null,
-      dir: defaultSort ? defaultSort.dir : "asc",
-      search: "",
-      filters: {},
+      sort: restored ? restored.sort || null : defaultSort ? defaultSort.col : null,
+      dir: restored ? restored.dir === "desc" ? "desc" : "asc" : defaultSort ? defaultSort.dir : "asc",
+      search: restored && restored.search || "",
+      filters: restored && restored.filters ? { ...restored.filters } : {},
       page: this.serverMeta.page,
       perPage: this.serverMeta.perPage
     };
@@ -7413,6 +7414,9 @@ var GridCore = class {
         this.viewsManager || null
       );
       this.toolbar.render();
+      if (this.config.query) {
+        this.toolbar.reflect(this.store.query);
+      }
     }
     if (this.popupManager) {
       this.columnChooser = new ColumnChooser(this.store, this.refs, this.popupManager, this.layoutStore, {

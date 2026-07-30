@@ -87,6 +87,27 @@ final class QueryPipeline
     }
 
     /**
+     * How many rows the NARROWING half of a request produces, without materialising a page.
+     *
+     * Why: the adaptive single-page decision (ConfigSerializer) needs a count BEFORE it dares
+     *      build page 1, and that count must see the same search + filters the page will —
+     *      otherwise a restored ->persistQuery() state that narrows 73k rows down to 12 would
+     *      still be judged "too big to inline" and deferred for nothing. Sort is skipped: it
+     *      cannot change a count.
+     *
+     * @param  array{search?: string|null, filters?: array<string, mixed>}  $request
+     */
+    public function countFor(Grid $grid, array $request): int
+    {
+        $query = $grid->resolveQuery();
+
+        $this->search->apply($query, $grid, $request);
+        $this->filters->apply($query, $grid, $request);
+
+        return (int) $query->toBase()->getCountForPagination();
+    }
+
+    /**
      * Aggregate each footer column over a (filtered) query without loading rows — a SUM per
      * summable footer column, so grand totals stay exact and cheap on large sets.
      *

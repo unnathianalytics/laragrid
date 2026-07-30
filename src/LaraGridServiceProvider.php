@@ -43,6 +43,10 @@ class LaraGridServiceProvider extends ServiceProvider
         // Saved-view storage (->savedViews()): swappable — an app rebinds the interface in its
         // own provider to keep views in Redis / a tenant table / an existing preference store.
         $this->app->bind(Views\ViewStore::class, Views\DatabaseViewStore::class);
+
+        // Live query storage (->persistQuery()): swappable the same way — the default keeps the
+        // operator's search/filters/sort/per-page in the Laravel session, so it dies with it.
+        $this->app->bind(Query\QueryStore::class, Query\SessionQueryStore::class);
     }
 
     public function boot(): void

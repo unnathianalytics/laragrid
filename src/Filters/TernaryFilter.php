@@ -40,6 +40,15 @@ final class TernaryFilter extends Filter
     }
 
     /**
+     * The legal value space is exactly the three states (plus the blank the client sends when a
+     * control is cleared) — anything else is a stale or invented value and drops.
+     */
+    public function accepts(mixed $value): bool
+    {
+        return in_array($value, ['yes', 'no', 'any', '', true, false], true);
+    }
+
+    /**
      * @param  Builder<covariant Model>  $query
      */
     public function apply(Builder $query, mixed $value): void

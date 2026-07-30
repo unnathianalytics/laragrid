@@ -48,6 +48,7 @@ live formula columns, auto-append and a running footer:
 - [Toolbar, search & filters](#toolbar-search--filters)
 - [Exports (CSV / XLSX / PDF)](#exports-csv--xlsx--pdf)
 - [Saved views](#saved-views)
+- [Sticky filters — `persistQuery()`](#sticky-filters--persistquery)
 - [Keyboard](#keyboard)
   - [The magic of Enter Key](#the-magic-of-enter-key)
   - [Mouse — the same selection engine](#mouse--the-same-selection-engine)
@@ -461,7 +462,9 @@ Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `alig
 `focusOnMount()` · `focusOutTo(selector)` (Tab off the last cell lands here) ·
 `onCompleteFocus(selector)` (the completion signal lands here — see
 [the comparison](#-focusoutto-vs--oncompletefocus)) · `emptyState(text)` · `statusBar(bool)` ·
-`persistWidths()` (column layout survives reloads).
+`persistWidths()` (column layout survives reloads) ·
+`persistQuery()` (search/filters/sort/per-page survive for the session — see
+[Sticky filters](#sticky-filters--persistquery)).
 
 **Layout** — `columnGroups([ColumnGroup::make('GST', ['cgst', 'sgst'])])` (two-tier grouped headers) · `stickyHeader()` · `freezeColumns(n)` · `striped()` ·
 `density(GridDensity::Compact|Normal|Comfortable)` · `height('420px')` · `maxHeight('60vh')` ·
@@ -589,6 +592,78 @@ Redis, a tenant-scoped table, or an existing preferences service — the three-m
 Note `->savedViews()` persists views **server-side by name, on demand**, while
 `->persistWidths()` silently persists the current column layout in `localStorage` — the two
 compose: recalling a view also updates the persisted layout.
+
+## Sticky filters — `persistQuery()`
+
+An operator narrows a register, opens a row to edit it, comes back — and the filters are gone.
+`->persistQuery()` fixes exactly that, and nothing more: the grid remembers the **current**
+search, filters, sort and per-page **for the rest of the operator's session**.
+
+```php
+Grid::make('items')
+    ->query(fn () => Item::query())
+    ->authorize('item.viewAny')
+    ->persistQuery()                  // opt-in; ->persistQuery('session', 'key') overrides the key
+    ->persistWidths()                 // composes — different lifetime, different state
+```
+
+No migration, no configuration. State lives in the Laravel session under
+`laragrid.query.{key}`, so it survives a reload, a full-page navigation away and back, and a
+second tab — and dies at logout or session expiry, with nothing to clean up.
+
+**The page number is deliberately not persisted.** Coming back to page 7 of a list you have
+forgotten you filtered is disorienting; coming back to page 1 of your filtering is not.
+
+### No first-paint flash
+
+The state is read **on the server, before page 1 is built** — not restored on the client after
+boot. The first paint is already the narrowed list, and the toolbar controls, header funnels
+and sort caret paint the restored state with it. (This is why the lifetime is the session
+rather than `localStorage`: the server has to know before it renders.)
+
+### Stale values drop themselves
+
+Every restored filter value is offered back to its own filter's `accepts()` before it is
+replayed. `SelectFilter` answers against its **currently resolved** options — which, for a
+tenant-scoped `->options()` closure, are this company's options. So an `item_group_id` carried
+over from another company (or pointing at a since-deleted record) is dropped rather than
+replayed into a `WHERE` that silently empties the list. Same guard for a column that has left
+the definition since: the stored sort falls back to `->defaultSort()`.
+
+For hard isolation on top of that, scope the storage key:
+
+```php
+->persistQuery(key: "items:{$companyId}")
+```
+
+Custom filters extending `LaraGrid\Filters\Filter` inherit an `accepts()` that allows
+anything — override it when your filter has a knowable legal set.
+
+### Clearing
+
+Clearing a control clears the stored state — a query equal to the grid's declared defaults is
+**forgotten**, not stored, so an operator who never filters leaves no session entry at all.
+Hosts can clear it explicitly for events the package cannot see (a tenant switch, a "start
+clean" workflow):
+
+```php
+$this->forgetGridQuery('items');      // no-op on a grid without ->persistQuery()
+```
+
+### Which persistence is which
+
+| | What it holds | Where | Lifetime | How it's set |
+| --- | --- | --- | --- | --- |
+| `persistQuery()` | search, filters, sort, per-page | Laravel session | the session | automatic |
+| `persistWidths()` | column widths + hidden columns | `localStorage` | until cleared | automatic |
+| `savedViews()` | all of the above, by name | `laragrid_views` table | permanent | operator saves |
+
+All three compose on one grid. Storage is swappable the same way: rebind
+`LaraGrid\Query\QueryStore` in a service provider (`get` / `put` / `forget` is the whole
+contract) to keep live query state in a cache store or a preferences service instead.
+
+`'local'`, `'url'` and `'server'` are reserved mode names — declaring one throws rather than
+silently giving you a lifetime you did not ask for.
 
 ## Keyboard
 

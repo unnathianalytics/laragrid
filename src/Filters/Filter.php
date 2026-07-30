@@ -65,6 +65,25 @@ abstract class Filter
     }
 
     /**
+     * Whether a value is still a LEGAL choice for this filter right now.
+     *
+     * Why: isActive() answers "does this narrow anything"; this answers "does this value still
+     *      exist". They differ only for a RESTORED value — one that ->persistQuery() stored in a
+     *      previous request, or that a saved view is replaying. Between then and now the operator
+     *      may have switched tenant, or the referenced record may have been deleted, and replaying
+     *      a stale id would silently empty the list with no visible cause. Concrete filters that
+     *      know their legal set (SelectFilter's options, TernaryFilter's three states) override;
+     *      the base accepts anything, because a filter over an open value space (a free-text or
+     *      range filter) has nothing to check against.
+     *
+     * When: ViewState::sanitizeQuery, on every stored/replayed filter value.
+     */
+    public function accepts(mixed $value): bool
+    {
+        return true;
+    }
+
+    /**
      * Narrow the query by the client-supplied value. Only called when isActive($value) is true.
      *
      * @param  Builder<covariant Model>  $query
