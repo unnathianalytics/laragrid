@@ -3461,6 +3461,10 @@ var PageSource = class {
     this.latest = 0;
     this.loading = false;
     this.idleHandle = null;
+    this.deferredRetries = 0;
+    this.deferredRetryDelay = opts.deferredRetryDelay ?? 150;
+    this.deferredRetryMax = opts.deferredRetryMax ?? 6;
+    this.retryHandle = null;
     if (!this.store.deferredInitial) {
       this.cache.set(this.signatureOf(this.store.query), this.pageFromStore());
     }
@@ -3595,10 +3599,19 @@ var PageSource = class {
       this.cache.set(sig, page);
       this.apply(page, query, mySeq);
     }).catch((err) => {
-      if (mySeq === this.latest) {
-        this.setLoading(false);
-        this.bus.emit("fetch:error", { error: err, query });
+      if (mySeq !== this.latest) {
+        return;
       }
+      if (this.store.deferredInitial && this.deferredRetries < this.deferredRetryMax) {
+        this.deferredRetries++;
+        this.retryHandle = setTimeout(
+          () => this.load({ ...this.store.query }),
+          this.deferredRetryDelay * this.deferredRetries
+        );
+        return;
+      }
+      this.setLoading(false);
+      this.bus.emit("fetch:error", { error: err, query });
     });
   }
   /** The raw RPC — resolves to the page payload. */
@@ -3657,6 +3670,10 @@ var PageSource = class {
   }
   destroy() {
     this.cancelPrefetch();
+    if (this.retryHandle != null) {
+      clearTimeout(this.retryHandle);
+      this.retryHandle = null;
+    }
     this.cache.clear();
   }
 };

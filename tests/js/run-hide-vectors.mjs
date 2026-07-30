@@ -179,6 +179,37 @@ check('deferred mount: boot load() actually fetches (no empty cache hit)', fetch
 check('deferred mount: fetched page lands in the store', dstore2.rows.length === 1);
 source.destroy();
 
+// A deferred boot fetch that REJECTS (the wire:navigate race: the observer scans the
+// swapped-in mount before Livewire initializes the component, so the call-time $wire
+// lookup fails) must retry until the first page lands — never strand the empty grid.
+const dstore3 = new StateStore({
+    name: 'd3', columns: [{ key: 'n' }], layout: { serverSide: true }, rows: [],
+    server: { deferred: true, total: 1100, page: 1, perPage: 1100, lastPage: 1 },
+}, new EventBus());
+let flakyCalls = 0;
+const flakyWire = {
+    gridFetch: () => {
+        flakyCalls++;
+        if (flakyCalls <= 2) {
+            return Promise.reject(new Error('LaraGrid: could not resolve a Livewire $wire'));
+        }
+        return Promise.resolve({
+            rows: [{ _k: 'a', n: 1 }], total: 1100, page: 1, perPage: 1100,
+            lastPage: 1, pageTotals: {}, grandTotals: {},
+        });
+    },
+};
+const flakyBus = new EventBus();
+let terminalErrors = 0;
+flakyBus.on('fetch:error', () => terminalErrors++);
+const flakySource = new PageSource(dstore3, flakyBus, flakyWire, { deferredRetryDelay: 5 });
+flakySource.load({ ...dstore3.query });
+await new Promise((r) => setTimeout(r, 100)); // 2 retries at 5/10ms + settle
+check('deferred boot: rejected fetch retries until it lands', flakyCalls === 3 && dstore3.rows.length === 1);
+check('deferred boot: no terminal fetch:error while retrying to success', terminalErrors === 0);
+check('deferred boot: deferral over after the retried page', dstore3.deferredInitial === false);
+flakySource.destroy();
+
 // The non-deferred seed behaviour is unchanged: same-query load() stays a cache hit.
 const istore = new StateStore({
     name: 'i', columns: [{ key: 'n' }], layout: { serverSide: true },

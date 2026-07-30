@@ -34,6 +34,11 @@ export default class PageSource {
         /** True while a fetch that will change the visible page is in flight. */
         this.loading = false;
         this.idleHandle = null;
+        /** Deferred-initial retry bookkeeping (see load()'s catch). */
+        this.deferredRetries = 0;
+        this.deferredRetryDelay = opts.deferredRetryDelay ?? 150;
+        this.deferredRetryMax = opts.deferredRetryMax ?? 6;
+        this.retryHandle = null;
 
         // Seed the cache with the config's first page so paging back to it is a cache hit and the
         // signature bookkeeping matches what's already on screen — EXCEPT on a deferred mount:
@@ -201,10 +206,24 @@ export default class PageSource {
                 this.apply(page, query, mySeq);
             })
             .catch((err) => {
-                if (mySeq === this.latest) {
-                    this.setLoading(false);
-                    this.bus.emit('fetch:error', { error: err, query });
+                if (mySeq !== this.latest) {
+                    return;
                 }
+                // Deferred-initial resilience: on a wire:navigate arrival the MutationObserver
+                // scans (and boots) the swapped-in mount BEFORE Livewire initializes the new
+                // component, so the call-time $wire lookup rejects the boot fetch. While the
+                // FIRST page still hasn't landed, retry with a short backoff (spinner stays on)
+                // instead of stranding the grid; a terminal failure is still loud.
+                if (this.store.deferredInitial && this.deferredRetries < this.deferredRetryMax) {
+                    this.deferredRetries++;
+                    this.retryHandle = setTimeout(
+                        () => this.load({ ...this.store.query }),
+                        this.deferredRetryDelay * this.deferredRetries,
+                    );
+                    return;
+                }
+                this.setLoading(false);
+                this.bus.emit('fetch:error', { error: err, query });
             });
     }
 
@@ -275,6 +294,10 @@ export default class PageSource {
 
     destroy() {
         this.cancelPrefetch();
+        if (this.retryHandle != null) {
+            clearTimeout(this.retryHandle);
+            this.retryHandle = null;
+        }
         this.cache.clear();
     }
 }
