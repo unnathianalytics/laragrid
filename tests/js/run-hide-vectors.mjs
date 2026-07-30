@@ -27,6 +27,7 @@ const mod = (p) => pathToFileURL(resolve(root, 'resources', 'js', ...p.split('/'
 
 const { default: StateStore } = await import(mod('core/StateStore.js'));
 const { default: EventBus } = await import(mod('core/EventBus.js'));
+const { default: PageSource } = await import(mod('sync/PageSource.js'));
 const { SHARED_KEYMAP } = await import(mod('keyboard/keys.js'));
 
 let failures = 0;
@@ -152,6 +153,48 @@ dstore.setPage(
 );
 check('first page clears the deferral', dstore.deferredInitial === false && dstore.rows.length === 1);
 check('inline stores default to deferredInitial=false', displayStore().deferredInitial === false);
+
+// PageSource on a deferred mount must NOT seed its cache from the (deliberately empty)
+// store: the seed sits under the current query's signature, so the boot-time load() of
+// that same query becomes a cache hit — the empty page is applied, the deferral ends,
+// and the real page-1 fetch never fires (the 4k-items empty-grid regression).
+const dstore2 = new StateStore({
+    name: 'd2', columns: [{ key: 'n' }], layout: { serverSide: true }, rows: [],
+    server: { deferred: true, total: 4200, page: 1, perPage: 4200, lastPage: 1 },
+}, new EventBus());
+const fetched = [];
+const wireStub = {
+    gridFetch: (name, query) => {
+        fetched.push(query);
+        return Promise.resolve({
+            rows: [{ _k: 'a', n: 1 }], total: 4200, page: 1, perPage: 4200,
+            lastPage: 1, pageTotals: {}, grandTotals: {},
+        });
+    },
+};
+const source = new PageSource(dstore2, new EventBus(), wireStub);
+source.load({ ...dstore2.query });
+await new Promise((r) => setTimeout(r, 0)); // let the stubbed RPC promise settle
+check('deferred mount: boot load() actually fetches (no empty cache hit)', fetched.length >= 1);
+check('deferred mount: fetched page lands in the store', dstore2.rows.length === 1);
+source.destroy();
+
+// The non-deferred seed behaviour is unchanged: same-query load() stays a cache hit.
+const istore = new StateStore({
+    name: 'i', columns: [{ key: 'n' }], layout: { serverSide: true },
+    rows: [{ _k: 'r1', n: 1 }],
+    server: { total: 1, page: 1, perPage: 100, lastPage: 1 },
+}, new EventBus());
+const inlineFetches = [];
+const inlineSource = new PageSource(istore, new EventBus(), {
+    gridFetch: (name, query) => {
+        inlineFetches.push(query);
+        return Promise.resolve(null);
+    },
+});
+inlineSource.load({ ...istore.query });
+check('inline mount: same-query load() is still a cache hit (no fetch)', inlineFetches.length === 0);
+inlineSource.destroy();
 
 /* ------------------------------------------------------------------ summary */
 

@@ -36,8 +36,14 @@ export default class PageSource {
         this.idleHandle = null;
 
         // Seed the cache with the config's first page so paging back to it is a cache hit and the
-        // signature bookkeeping matches what's already on screen.
-        this.cache.set(this.signatureOf(this.store.query), this.pageFromStore());
+        // signature bookkeeping matches what's already on screen — EXCEPT on a deferred mount:
+        // there the store holds the config's deliberate zero rows, and seeding them under the
+        // current query's signature makes the boot-time load() of that same query a cache hit —
+        // the empty page gets "applied", the deferral ends, and the real page-1 fetch never
+        // fires (grid strands on the empty state with no request and no error).
+        if (!this.store.deferredInitial) {
+            this.cache.set(this.signatureOf(this.store.query), this.pageFromStore());
+        }
     }
 
     /** The page payload equivalent for what the store currently displays (for the seed entry). */
