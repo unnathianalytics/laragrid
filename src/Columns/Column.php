@@ -346,7 +346,7 @@ abstract class Column
      */
     public function isNavigable(): bool
     {
-        return true;
+        return $this->getFocusMode() === FocusMode::Always;
     }
 
     /**
@@ -504,6 +504,8 @@ abstract class Column
             'parse' => $this->parseSpec(),
             'required' => $this->isRequiredDynamic() ? 'dynamic' : ($this->required === true),
             'readonly' => $this->readonlyIsDynamic() ? 'dynamic' : ($this->readonly === true),
+            'focusMode' => $this->getFocusMode()->value,
+            'default' => $this->resolveDefaultValue(),
             'maxLength' => $this->getMaxLength(),
             'case' => $this->getCaseTransform(),
             ...$this->serializeWhenFilled(),

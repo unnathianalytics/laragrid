@@ -481,7 +481,7 @@ export default class StateStore {
      * @returns {boolean[]}
      */
     navigabilityMask() {
-        return this.visibleColumns().map((c) => c.navigable !== false);
+        return this.visibleColumns().map((c) => c.navigable !== false && c.focusMode !== 'manual' && c.focusMode !== 'never');
     }
 
     /** The visible column index for a column key, or -1. */

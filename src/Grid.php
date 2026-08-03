@@ -1152,7 +1152,7 @@ class Grid
             if ($column->key === '' || str_starts_with($column->key, '_')) {
                 continue; // serial gutter etc.
             }
-            $row[$column->key] = null;
+            $row[$column->key] = $column->resolveDefaultValue($row);
         }
 
         if ($this->newRowUsing !== null) {

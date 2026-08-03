@@ -237,7 +237,7 @@ export default class SelectionManager {
         const column = this.store.visibleColumns().find((c) => c.key === colKey);
 
         // Serial gutter (non-navigable) → row selection.
-        if (!column || column.navigable === false) {
+        if (!column || (column.navigable === false && column.focusMode !== 'manual')) {
             this.selectRow(rowKey);
             return;
         }

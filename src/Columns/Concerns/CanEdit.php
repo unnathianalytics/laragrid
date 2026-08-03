@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace LaraGrid\Columns\Concerns;
 
 use Closure;
+use LaraGrid\Columns\FocusMode;
 
 /**
  * What: The editable-column fluent surface — validation rules, required/readonly (static or
@@ -24,6 +25,12 @@ use Closure;
  */
 trait CanEdit
 {
+    /** Focus mode for keyboard navigation (Always | Manual | Never). */
+    protected FocusMode $focusMode = FocusMode::Always;
+
+    /** Default value or Closure fn(array $row = []): mixed resolved on fresh row creation. */
+    protected mixed $default = null;
+
     /**
      * Declared validation rules for this column — Laravel rule strings/objects the RuleCompiler
      * turns into a server validator + a client-side declarative subset.
@@ -107,6 +114,66 @@ trait CanEdit
         $this->readonly = $readonly;
 
         return $this;
+    }
+
+    /**
+     * Set the keyboard navigation focus mode (Always | Manual | Never) and optional default value.
+     *
+     * @param  FocusMode|string  $mode  'always' | 'manual' | 'never'
+     * @param  mixed  $default  Optional static value or Closure fn(array $row = []): mixed
+     */
+    public function focusMode(FocusMode|string $mode, mixed $default = null): static
+    {
+        $resolved = is_string($mode) ? FocusMode::from($mode) : $mode;
+        $this->focusMode = $resolved;
+
+        if ($resolved === FocusMode::Never) {
+            $this->readonly = true;
+        }
+
+        if ($default !== null) {
+            $this->default($default);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Declare a default value or Closure fn(array $row = []): mixed for this column.
+     */
+    public function default(mixed $value): static
+    {
+        $this->default = $value;
+
+        return $this;
+    }
+
+    public function getFocusMode(): FocusMode
+    {
+        if ($this->readonly === true || ! $this->isEditable()) {
+            return FocusMode::Never;
+        }
+
+        return $this->focusMode;
+    }
+
+    public function getDefaultValue(): mixed
+    {
+        return $this->default;
+    }
+
+    /**
+     * Resolve the default value for a given row context (evaluates Closure if present).
+     *
+     * @param  array<string, mixed>  $row
+     */
+    public function resolveDefaultValue(array $row = []): mixed
+    {
+        if ($this->default instanceof Closure) {
+            return ($this->default)($row);
+        }
+
+        return $this->default;
     }
 
     public function maxLength(int $length): static

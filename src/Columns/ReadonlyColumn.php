@@ -20,6 +20,8 @@ final class ReadonlyColumn extends Column
     protected function configureDefaults(): void
     {
         $this->defaultAlign('left');
+        $this->focusMode = FocusMode::Never;
+        $this->readonly = true;
     }
 
     public function painterId(): string

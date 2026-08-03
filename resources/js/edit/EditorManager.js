@@ -164,7 +164,7 @@ export default class EditorManager {
     }
 
     isReadonlyCell(column, row) {
-        if (column.readonly === true) {
+        if (column.readonly === true || column.focusMode === 'never') {
             return true;
         }
         // Declarative per-row lock (lockedWhen): unlike a 'dynamic' readonly closure this IS

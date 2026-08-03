@@ -22,8 +22,7 @@ footer totals, all through a whitelisted fail-closed pipeline:
 
 ![A paginated Resorts list with a search box, Type and Visibility filters, sortable headers, a checkbox selection gutter, status badges, a summed footer and a per-page picker](assets/images/table.png)
 
-An editable entry grid — typed cell editors, an async picker that enriches the row on select,
-live formula columns, auto-append and a running footer:
+An editable entry grid — typed cell editors, ERP cell focus control (`FocusMode`) `[v1.20.0+]`, an async picker that enriches the row on select, live formula columns, auto-append and a running footer:
 
 ![A Booking Entry form where a resort picker auto-fills the nightly rate, nights derive from a date range, the amount column recomputes live, and a status bar shows count, sum and average](assets/images/form.png)
 
@@ -43,6 +42,7 @@ live formula columns, auto-append and a running footer:
 - [Server hooks — enrichment & row consistency](#server-hooks--enrichment--row-consistency)
 - [Display-only mode](#display-only-mode)
 - [Column types](#column-types)
+  - [Column focus modes & defaults (`->focusMode()`)](#column-focus-modes--defaults--focusmode)
 - [Grid definition reference](#grid-definition-reference)
 - [Actions](#actions)
 - [Toolbar, search & filters](#toolbar-search--filters)
@@ -440,10 +440,38 @@ To refresh a display grid's data later, call `$this->reseedGrid('name', $freshRo
 
 Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `align`, `visible`,
 `frozen`, `sortable(bool|'db.column')`, `searchable`, `filterable(Filter)`, `required` /
-`required(fn)`, `readonly` / `readonly(fn)`, `rules([...])`, `lockedWhen('col', value)`,
+`required(fn)`, `readonly` / `readonly(fn)`, `focusMode(FocusMode|'always'|'manual'|'never', default: ...)` `[v1.20.0+]` / `default(mixed|fn)` `[v1.20.0+]`, `rules([...])`, `lockedWhen('col', value)`,
 `requiredWhen('col', value)`, `whenFilled(sets: [...], clears: [...])`,
 `endOfListOption()` (see *Ending entry*), `opensPanel('name')`, `html()`,
 `exportable(false)` (keep a painted column out of downloads).
+
+### Column focus modes & defaults (`->focusMode()`) `[v1.20.0+]`
+
+Control how keyboard navigation (<kbd>Tab</kbd> / <kbd>Enter</kbd>) traverses cells, mirroring ERP and voucher entry field behaviors (e.g. Fixed, Semi-Variable, Variable):
+
+```php
+use LaraGrid\Columns\FocusMode;
+
+// Variable (Default): Always receives sequential keyboard focus
+TextColumn::make('party_name')
+    ->focusMode(FocusMode::Always);
+
+// Semi-Variable: Skipped on keyboard navigation (Tab/Enter), focusable and editable on mouse click
+DecimalColumn::make('qty')
+    ->focusMode(FocusMode::Manual, default: 1);
+
+// Fixed: Skipped on keyboard navigation, read-only / non-editable, dynamic Closure default
+DateColumn::make('vch_date')
+    ->focusMode(FocusMode::Never, default: fn () => now()->format('Y-m-d'));
+```
+
+| Mode | Enum / String | Keyboard Focus (<kbd>Tab</kbd>/<kbd>Enter</kbd>) | Mouse Click / Selection |
+|---|---|---|---|
+| **Variable** (Default) | `FocusMode::Always` / `'always'` | **Focused** | Editable |
+| **Semi-Variable** | `FocusMode::Manual` / `'manual'` | Skipped | **Editable on Click** |
+| **Fixed** | `FocusMode::Never` / `'never'` | Skipped | Readonly |
+
+* **Default value callbacks**: `->default($value)` accepts static scalar values or dynamic Closure callbacks (`fn (array $row = []) => mixed`). When fresh rows are created via `gridMountRows()` or auto-append, column defaults populate automatically.
 
 ## Grid definition reference
 
