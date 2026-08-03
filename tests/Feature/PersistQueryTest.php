@@ -234,15 +234,18 @@ it('counts the NARROWED set when deciding the deferred initial load', function (
         'search' => '',
         'sort' => 'name',
         'dir' => 'asc',
-        'filters' => ['type' => 'goods'],
+        'filters' => ['type' => 'service'],
         'perPage' => 2,
     ]);
 
-    $config = app(ConfigSerializer::class)->serialize(persistHost()->gridDefinition('items'));
+    $host = persistHost();
+    $host->singlePageUpTo = 1;
+
+    $config = app(ConfigSerializer::class)->serialize($host->gridDefinition('items'));
 
     // Deferred (perPage 2 > cap 1) — and the advertised total is the FILTERED one, so the
     // client's boot fetch inherits the narrowing rather than re-deciding it.
     expect($config['server']['deferred'])->toBeTrue();
-    expect($config['server']['total'])->toBe(1);
-    expect($config['query']['filters'])->toBe(['type' => 'goods']);
+    expect($config['server']['total'])->toBe(2);
+    expect($config['query']['filters'])->toBe(['type' => 'service']);
 });

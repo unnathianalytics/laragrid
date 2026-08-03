@@ -46,6 +46,9 @@ class DatagridComponent extends Component
 
     public function render(): View
     {
-        return view('laragrid::datagrid');
+        /** @var view-string $view */
+        $view = 'laragrid::datagrid';
+
+        return view($view);
     }
 }

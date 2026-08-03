@@ -56,6 +56,9 @@ class ServerGridComponent extends Component
     /** Storage key override handed to ->persistQuery() (null = the grid name). */
     public ?string $persistKey = null;
 
+    /** Adaptive single page threshold override (null = disabled). */
+    public ?int $singlePageUpTo = null;
+
     /** Public wrapper so tests can exercise the protected refreshGrid() seam (issue #5). */
     public function refreshItems(): void
     {
@@ -102,6 +105,10 @@ class ServerGridComponent extends Component
                 Aggregate::sum('qty'),
                 Aggregate::sum('rate')->format('number', ['scale' => 2]),
             ]);
+
+        if ($this->singlePageUpTo !== null) {
+            $grid->singlePageUpTo($this->singlePageUpTo);
+        }
 
         if ($this->persist) {
             $grid->persistQuery('session', $this->persistKey);

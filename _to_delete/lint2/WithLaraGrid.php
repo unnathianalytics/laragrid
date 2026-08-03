@@ -6,13 +6,13 @@ namespace LaraGrid\Livewire;
 
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use LaraGrid\Columns\SearchSelectColumn;
 use LaraGrid\Editing\OpApplier;
 use LaraGrid\Editing\OpBatch;
-use Illuminate\Support\Facades\Gate;
 use LaraGrid\Export\ExportBuilder;
 use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Grid;

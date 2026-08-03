@@ -57,6 +57,6 @@ it('refreshGrid() dispatches the lgrid:refresh window event for the client (issu
 it('refreshGrid() refuses a non-server grid — reseedGrid() owns in-memory rows', function () {
     $method = new ReflectionMethod(DisplayGridComponent::class, 'refreshGrid');
 
-    expect(fn () => $method->invoke(new DisplayGridComponent, 'display'))
+    expect(fn () => $method->invoke(new DisplayGridComponent, 'taxes'))
         ->toThrow(InvalidArgumentException::class, 'not server-side');
 });

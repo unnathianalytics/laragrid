@@ -26,7 +26,10 @@ class CellHtml
      */
     public static function badge(string $color, string $label, string $class = ''): string
     {
-        return trim(view('laragrid::cells.badge', [
+        /** @var view-string $view */
+        $view = 'laragrid::cells.badge';
+
+        return trim(view($view, [
             'color' => $color,
             'label' => $label,
             'class' => $class,
@@ -40,7 +43,10 @@ class CellHtml
      */
     public static function editLink(string $href): string
     {
-        return trim(view('laragrid::cells.edit-link', ['href' => $href])->render());
+        /** @var view-string $view */
+        $view = 'laragrid::cells.edit-link';
+
+        return trim(view($view, ['href' => $href])->render());
     }
 
     /**
