@@ -70,6 +70,8 @@
         max-height: var(--lgrid-max-h, 70vh);
         overflow: auto;
         width: 100%;
+        touch-action: pan-x pan-y;
+        -webkit-overflow-scrolling: touch;
     }
 
     /* ->fillParent(): the grid fills its containing box; the scroll region flexes, so the

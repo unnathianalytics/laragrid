@@ -254,8 +254,9 @@ export default class SelectionManager {
         // body cells grows the range live — head+rows are user-select:none so the native
         // text selection that used to win this gesture never engages. Main button only;
         // a Shift+click keeps its one-shot extend AND can continue as a drag from the
-        // same anchor.
-        if (e.button === 0) {
+        // same anchor. Skip drag when pressing interactive buttons/actions inside a cell.
+        const isInteractive = e.target && e.target.closest && e.target.closest('.lgrid-action, button, a, select, input');
+        if (e.button === 0 && !isInteractive) {
             this.beginDrag();
         }
     }

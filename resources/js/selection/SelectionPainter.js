@@ -68,12 +68,54 @@ export default class SelectionPainter {
     }
 
     /**
-     * Keep the active cell visible after PgDn/Ctrl+End etc. `nearest` avoids yanking the whole
-     * grid; the sticky header/frozen columns keep their band, so the cell isn't occluded (R-A).
+     * Keep the active cell visible inside the grid's scroll container after movement.
+     * Container-bounded: adjusts container.scrollTop and container.scrollLeft ONLY when
+     * the cell is out of view, taking frozen columns into account. Never calls native
+     * Element.prototype.scrollIntoView to prevent unwanted window/document page jumping.
      */
     scrollIntoView(cell) {
-        if (typeof cell.scrollIntoView === 'function') {
-            cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        if (!cell) {
+            return;
+        }
+        const container = (this.refs && this.refs.scroll) || cell.closest('.lgrid-scroll');
+        if (!container) {
+            return;
+        }
+
+        const cRect = container.getBoundingClientRect();
+        const cellRect = cell.getBoundingClientRect();
+
+        if (cRect.width <= 0 || cRect.height <= 0) {
+            return;
+        }
+
+        // Calculate left boundary offset reserved by frozen sticky columns on the row
+        let frozenLeftOffset = 0;
+        const rowEl = cell.closest('.lgrid-row');
+        if (rowEl) {
+            const frozenCells = rowEl.querySelectorAll('.lgrid-cell--frozen');
+            for (const fc of frozenCells) {
+                if (fc !== cell) {
+                    const fcRect = fc.getBoundingClientRect();
+                    frozenLeftOffset = Math.max(frozenLeftOffset, fcRect.right - cRect.left);
+                }
+            }
+        }
+
+        const visibleLeft = cRect.left + frozenLeftOffset;
+
+        // Vertical adjustment
+        if (cellRect.top < cRect.top) {
+            container.scrollTop -= (cRect.top - cellRect.top);
+        } else if (cellRect.bottom > cRect.bottom) {
+            container.scrollTop += (cellRect.bottom - cRect.bottom);
+        }
+
+        // Horizontal adjustment
+        if (cellRect.left < visibleLeft) {
+            container.scrollLeft -= (visibleLeft - cellRect.left);
+        } else if (cellRect.right > cRect.right) {
+            container.scrollLeft += (cellRect.right - cRect.right);
         }
     }
 
