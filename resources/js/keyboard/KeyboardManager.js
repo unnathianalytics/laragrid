@@ -31,7 +31,8 @@ export default class KeyboardManager {
      * @param {object} [hooks]
      * @param {() => void} [hooks.onCopy] invoked for the copy intent (Ctrl+C)
      * @param {object} [hooks.editor] the EditorManager (editable grids) — open/isEditing
-     * @param {object} [hooks.rowOps] row-op handlers {insert, delete, fillDown} (editable grids)
+     * @param {object} [hooks.rowOps] row-op handlers {insert, delete, repeatAbove, fillDown}
+     *        (editable grids)
      * @param {(() => boolean)} [hooks.rowActivate] activate the active row (readonly grids); returns
      *        true when it dispatched (Enter handled), false to fall through to the keymap move-down
      * @param {() => void} [hooks.undo] Ctrl+Z handler (editable grids — the UndoManager)
@@ -182,10 +183,15 @@ export default class KeyboardManager {
                     this.rowOps[binding.kind]();
                 }
                 break;
-            case 'rowHide':
+            case 'rowRemove':
+                // F9: delete in editable grids, temporarily hide in non-editable grids.
+                if (this.hooks.rowRemove) {
+                    e.preventDefault();
+                    this.hooks.rowRemove();
+                }
+                break;
             case 'rowRestore':
-                // Wired only for DISPLAY grids (GridCore leaves the hooks null elsewhere);
-                // where absent the chord falls through untouched.
+                // Restore is wired only for non-editable grids.
                 if (this.hooks[binding.action]) {
                     e.preventDefault();
                     this.hooks[binding.action]();

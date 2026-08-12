@@ -63,8 +63,8 @@ class Grid
     protected string $keymap = 'entry';
 
     /**
-     * Status-bar toggle. null = auto (shown when the grid has any numeric/summable column, so
-     * a selection's Sum/Count/Avg is available where it makes sense); true/false forces it.
+     * Status-bar toggle. Off by default; ->statusBar() explicitly enables the Excel-style
+     * selection Sum/Count/Avg row.
      */
     protected ?bool $statusBar = null;
 
@@ -399,7 +399,7 @@ class Grid
     }
 
     /**
-     * Force the selection status bar on or off (default: auto — on when a numeric column exists).
+     * Enable or disable the selection status bar (default: off).
      */
     public function statusBar(bool $show = true): static
     {
@@ -1463,22 +1463,12 @@ class Grid
     }
 
     /**
-     * The resolved status-bar visibility: the explicit toggle when set, else auto — true when
-     * any column is a summable numeric column (so Sum/Count/Avg is worth showing).
+     * The resolved status-bar visibility. It is opt-in so numeric grids do not grow an
+     * Excel-style summary row unless the definition explicitly calls ->statusBar().
      */
     public function showsStatusBar(): bool
     {
-        if ($this->statusBar !== null) {
-            return $this->statusBar;
-        }
-
-        foreach ($this->columns as $column) {
-            if ($column->isSelectableNumeric()) {
-                return true;
-            }
-        }
-
-        return false;
+        return $this->statusBar ?? false;
     }
 
     public function getDensity(): GridDensity

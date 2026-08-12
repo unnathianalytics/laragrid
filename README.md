@@ -52,7 +52,7 @@ An editable entry grid — typed cell editors, ERP cell focus control (`FocusMod
 - [Keyboard](#keyboard)
   - [The magic of Enter Key](#the-magic-of-enter-key)
   - [Mouse — the same selection engine](#mouse--the-same-selection-engine)
-  - [Key reference](#key-reference)
+  - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Undo & redo](#undo--redo)
 - [Theming](#theming)
   - [Shipped color schemes](#shipped-color-schemes)
@@ -705,7 +705,7 @@ what a key *does* simply deepens with the mode:
 |---|---|---|---|
 | Navigate · select · copy TSV | ✓ | ✓ | ✓ |
 | Sort from the header (whole cell is the click target) | ✓ client-side | ✓ SQL | — row order is domain state |
-| F9 / Shift+F9 temporary row hide (what-if totals) | ✓ | — | — |
+| F9 row delete / temporary row hide | ✓ hide | ✓ hide | ✓ delete |
 | Enter / double-click activates a row (`->rowActivate()`) | ✓ | ✓ | — |
 | Edit · row ops · paste · undo | — | — | ✓ |
 
@@ -758,27 +758,84 @@ Ctrl/Cmd/Shift+click on a header **column-selects** instead; a serial-gutter cli
 selects the row. Column edges drag-resize (double-click autofits) and `->persistWidths()`
 remembers the layout per grid.
 
-### Key reference
+### Keyboard shortcuts
 
-| Keys | Action |
-|---|---|
-| Arrows / Tab / Home / End / PageUp / PageDown / Ctrl+edges | navigate |
-| Shift + movement, Ctrl+A | extend / select all |
-| Ctrl+C | copy selection as TSV (pastes into Excel; paste back round-trips) |
-| Type / F2 / double-click | overwrite / edit a cell |
-| Space | toggle a `CheckboxColumn` / `YesNoColumn` cell in place |
-| `Y` / `N` | answer a `YesNoColumn` cell **and advance** — one keystroke per row |
-| Enter | commit + advance — serpentine in `entry`, down in `excel` |
-| **Delete** | **clear** selected cells |
-| **Shift+Delete or F8** | delete the row (minRows-guarded) |
-| **F9** | display grids: temporarily hide the active row — footer sums recompute over the remaining rows (what-if view) |
-| **Shift+F9** | display grids: restore all hidden rows |
-| Insert / Ctrl+D | insert row / fill down |
-| **Ctrl+Z** | **undo** the last change (editable grids) |
-| **Ctrl+Y or Ctrl+Shift+Z** | **redo** |
-| Ctrl+E | jump to the first error |
-| ContextMenu / Shift+F10 | open the row's actions menu |
-| Escape | clear selection / cancel edit |
+These are the complete built-in bindings. `Ctrl` shortcuts also accept `Cmd` on macOS.
+Grid shortcuts run only while the grid owns focus; inputs in the toolbar, filters, and
+popup forms retain their normal browser keyboard behavior.
+
+#### Navigation
+
+| Shortcut | Action | Available in |
+|---|---|---|
+| `Arrow Up` / `Arrow Down` | Move one row in the same column | All grids |
+| `Arrow Left` / `Arrow Right` | Move one navigable cell left or right | All grids |
+| `Ctrl+Arrow Up` / `Ctrl+Arrow Down` | Jump to the first or last row in the same column | All grids |
+| `Ctrl+Arrow Left` / `Ctrl+Arrow Right` | Jump to the first or last navigable cell in the row | All grids |
+| `Home` / `End` | Move to the first or last navigable cell in the row | All grids |
+| `Ctrl+Home` / `Ctrl+End` | Move to the first or last navigable cell in the grid | All grids |
+| `Page Up` / `Page Down` | Move up or down by one visible page | All grids |
+| `Tab` / `Shift+Tab` | Move forward or backward, wrapping between rows; at the grid boundary, move focus out | All grids |
+| `Enter` | Move right and wrap to the next row; on an editable cell, use the context-aware entry flow described above | `entry` keymap |
+| `Shift+Enter` | Move left and wrap to the previous row | `entry` keymap |
+| `Enter` / `Shift+Enter` | Move down / up in the same column | `excel` keymap |
+
+On a non-editable grid with `->rowActivate()`, plain `Enter` activates the focused row
+instead of moving. Per-row locked cells are skipped by horizontal and wrapping movement.
+
+#### Selection and clipboard
+
+| Shortcut | Action | Available in |
+|---|---|---|
+| `Shift+Arrow` | Extend the selection in that direction | All grids |
+| `Ctrl+A` | Select all navigable grid cells | All grids |
+| `Ctrl+C` | Copy the selection as TSV for Excel or another grid | All grids |
+| `Ctrl+V` | Paste TSV starting at the active cell; may add rows when `->autoAppend()` is enabled | Editable grids |
+| `Escape` | Collapse a range selection to the active cell | All grids |
+
+#### Cell editing
+
+| Shortcut | Action | Available in |
+|---|---|---|
+| Any printable character except `Space` | Open a non-toggle active cell and replace its value with the typed character | Editable grids |
+| `F2` | Open the active cell without replacing its value; place the caret at the end | Editable grids |
+| `Space` | Toggle a `CheckboxColumn` or `YesNoColumn` without advancing | Editable grids |
+| `Y` / `N` | Set a `YesNoColumn` and advance | Editable grids |
+| `Enter` / `Shift+Enter` | Commit and advance forward / backward according to the active keymap | While editing |
+| `Tab` / `Shift+Tab` | Commit and move to the next / previous navigable cell | While editing |
+| `Escape` | Cancel the edit and restore the committed value | While editing |
+| `Delete` | Clear every editable, unlocked cell in the current selection | Editable grids |
+| `Ctrl+E` | Jump to the first cell with a validation error | Editable grids |
+
+While editing text, Left/Right/Home/End control the caret and Up/Down commit and move.
+For number cells, every arrow commits and moves. Date cells use Left/Right for the caret
+and Up/Down to commit and move.
+
+#### Picker and popup editing
+
+| Shortcut | Action | Available in |
+|---|---|---|
+| `Arrow Up` / `Arrow Down` | Move the highlighted picker option | Open select/search picker |
+| `Enter` | Choose the highlighted option, commit, and advance using the active keymap | Open select/search picker |
+| `Shift+Enter` | Choose, commit, and advance backward | Open select/search picker |
+| `Tab` / `Shift+Tab` | Choose, commit, and move to the next / previous cell | Open select/search picker |
+| `Escape` | Cancel the picker/edit | Open select/search picker |
+
+#### Rows, history, and actions
+
+| Shortcut | Action | Available in |
+|---|---|---|
+| `Insert` | Insert a new blank row after the active row | Editable grids |
+| `Ctrl+D` | Fill the active column down through the selected rows, using the selection's first row as the source | Editable grids |
+| `F7` | Repeat the row immediately above the active row; insert and focus the new copy (no-op on the first row) | Editable grids |
+| `F8` | Unassigned and available to the host application | All grids |
+| `Shift+Delete` | Delete the active row, subject to `->minRows()` | Editable grids |
+| `F9` | Delete the active row, subject to `->minRows()` | Editable grids |
+| `F9` | Temporarily hide the active row; page/reseed/browser refresh resets the view | Non-editable grids |
+| `Shift+F9` | Restore all rows temporarily hidden with `F9` | Non-editable grids |
+| `Ctrl+Z` | Undo the last change | Editable grids |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo the last undone change | Editable grids |
+| `Context Menu` / `Shift+F10` | Open the active row's declared actions menu | Grids with row actions |
 
 Paste is bulk-aware: a multi-row TSV paste maps onto editable cells, auto-appends rows as
 needed, and flushes as one batch (with a confirm above 500 cells).

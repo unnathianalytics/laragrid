@@ -372,7 +372,7 @@ var StateStore = class {
     this.bus.emit("selection:changed", { selection: null });
   }
   /**
-   * Temporarily hide one row from a DISPLAY grid's view (F9) — the accountant's
+   * Temporarily hide one row from a non-editable grid's view (F9) — the accountant's
    * what-if. Strictly view state: the row moves to hiddenStash, the seed order is
    * captured (shared with the local sort's third-click contract), and the footer's
    * aggregates recompute over what remains (localAggregate via FooterRenderer). No-op
@@ -381,7 +381,7 @@ var StateStore = class {
    * @returns {boolean} whether a row was hidden
    */
   hideRowLocally(rowKey) {
-    if (this.serverSide || this.editable) {
+    if (this.editable) {
       return false;
     }
     const hit = this.rowByKey.get(rowKey);
@@ -405,7 +405,7 @@ var StateStore = class {
    * @returns {boolean} whether anything was restored
    */
   restoreHiddenRows() {
-    if (this.serverSide || this.editable || this.hiddenStash.size === 0) {
+    if (this.editable || this.hiddenStash.size === 0) {
       return false;
     }
     const all = this.rows.concat(Array.from(this.hiddenStash.values()));
@@ -2428,6 +2428,10 @@ var _SelectionManager = class _SelectionManager {
     const rowKey = rowEl.dataset.k;
     const colKey = cell.dataset.c;
     const column = this.store.visibleColumns().find((c) => c.key === colKey);
+    const isInteractive = e.target && e.target.closest && e.target.closest(".lgrid-action, button, a, select, input");
+    if (!isInteractive) {
+      this.refs.root.focus({ preventScroll: true });
+    }
     if (!column || column.navigable === false && column.focusMode !== "manual") {
       this.selectRow(rowKey);
       return;
@@ -2438,7 +2442,6 @@ var _SelectionManager = class _SelectionManager {
     } else {
       this.store.setActive(addr);
     }
-    const isInteractive = e.target && e.target.closest && e.target.closest(".lgrid-action, button, a, select, input");
     if (e.button === 0 && !isInteractive) {
       this.beginDrag();
     }
@@ -2755,19 +2758,17 @@ var SHARED_KEYMAP = {
   "Ctrl+Shift+z": { action: "redo" },
   // Row/cell-op chords — recognised, but no-op in readonly (wired to editable handlers).
   // Excel-trained operators expect Delete to CLEAR content, never to remove the row;
-  // row removal sits behind the deliberate Shift+Delete (or F8 — moved off F7 by
-  // consumer request, 2026-07-19; F7 is free again for host apps).
+  // Shift+Delete remains the explicit alternate row-delete gesture. F7 repeats the row
+  // immediately above the active row in editable grids; F8 is deliberately unassigned.
   Insert: { action: "rowop", kind: "insert" },
   Delete: { action: "rowop", kind: "clear" },
   "Shift+Delete": { action: "rowop", kind: "delete" },
-  F8: { action: "rowop", kind: "delete" },
+  F7: { action: "rowop", kind: "repeatAbove" },
   "Ctrl+d": { action: "rowop", kind: "fillDown" },
-  // Temporary row hide (F9, DISPLAY grids only) — the accountant's what-if: a Trial
-  // Balance minus one row, footer sums recomputed over what remains. Strictly VIEW
-  // state: Shift+F9 restores everything, an external reseed clears it, and a
-  // sort-clear never resurrects hidden rows. No-op on server-side grids (grand totals
-  // span pages the client cannot see) and editable grids (row content is domain state).
-  F9: { action: "rowHide" },
+  // F9 is mode-aware: editable grids delete the active row; non-editable grids only hide
+  // it from the current view. Hidden state is ephemeral: Shift+F9 restores it and any
+  // page/reseed/browser refresh clears it.
+  F9: { action: "rowRemove" },
   "Shift+F9": { action: "rowRestore" },
   // The row-actions menu (P7) — works in every mode that declares row actions.
   ContextMenu: { action: "actionsMenu" },
@@ -2809,7 +2810,8 @@ var KeyboardManager = class {
    * @param {object} [hooks]
    * @param {() => void} [hooks.onCopy] invoked for the copy intent (Ctrl+C)
    * @param {object} [hooks.editor] the EditorManager (editable grids) — open/isEditing
-   * @param {object} [hooks.rowOps] row-op handlers {insert, delete, fillDown} (editable grids)
+   * @param {object} [hooks.rowOps] row-op handlers {insert, delete, repeatAbove, fillDown}
+   *        (editable grids)
    * @param {(() => boolean)} [hooks.rowActivate] activate the active row (readonly grids); returns
    *        true when it dispatched (Enter handled), false to fall through to the keymap move-down
    * @param {() => void} [hooks.undo] Ctrl+Z handler (editable grids — the UndoManager)
@@ -2922,7 +2924,12 @@ var KeyboardManager = class {
           this.rowOps[binding.kind]();
         }
         break;
-      case "rowHide":
+      case "rowRemove":
+        if (this.hooks.rowRemove) {
+          e.preventDefault();
+          this.hooks.rowRemove();
+        }
+        break;
       case "rowRestore":
         if (this.hooks[binding.action]) {
           e.preventDefault();
@@ -7113,9 +7120,9 @@ var GridCore = class {
       onRequiredBlock: (addr) => this.flashRequiredCell(addr),
       onComplete: () => this.dispatchComplete(),
       rowActivate: this.rowActivator.isEnabled() ? () => this.rowActivator.activate() : null,
-      // F9 / Shift+F9 (display grids only): temporary row hide + restore-all.
-      rowHide: !this.store.serverSide && !this.store.editable ? () => this.hideActiveRow() : null,
-      rowRestore: !this.store.serverSide && !this.store.editable ? () => this.restoreHiddenRowsView() : null
+      // F9 is mode-aware: delete editable rows, temporarily hide non-editable rows.
+      rowRemove: this.store.editable ? () => this.rowDelete() : () => this.hideActiveRow(),
+      rowRestore: !this.store.editable ? () => this.restoreHiddenRowsView() : null
     });
     this.offComplete = this.bus.on("grid:complete", () => this.dispatchComplete());
     this.pendingPanelAdvance = null;
@@ -7378,6 +7385,7 @@ var GridCore = class {
     this.rowOps = {
       insert: () => this.rowInsert(),
       delete: () => this.rowDelete(),
+      repeatAbove: () => this.rowRepeatAbove(),
       fillDown: () => this.rowFillDown(),
       clear: () => this.clearSelectedCells()
     };
@@ -7656,7 +7664,35 @@ var GridCore = class {
       { flush: true }
     );
   }
-  /** Delete the active row (Shift+Delete / F8) — pre-checked against minRows (P6). */
+  /** F7: duplicate the row immediately above the active row and focus the new copy. */
+  rowRepeatAbove() {
+    const active = this.store.active;
+    if (!active) {
+      return;
+    }
+    const activeIndex = this.store.rowIndexOf(active.rowKey);
+    const source = this.store.rowAt(activeIndex - 1);
+    if (!source) {
+      if (this.announcer) {
+        this.announcer.message("There is no row above to repeat.");
+      }
+      return;
+    }
+    const newKey = "r" + this.store.nextSeq() + Math.random().toString(36).slice(2, 6);
+    if (!this.store.dupRow(source._k, newKey)) {
+      return;
+    }
+    this.store.setActive({ rowKey: newKey, colKey: active.colKey });
+    this.sync.enqueue(
+      { seq: this.store.nextSeq(), t: "dup", row: source._k, as: newKey },
+      [],
+      { flush: true }
+    );
+    if (this.announcer) {
+      this.announcer.message("Row above repeated.");
+    }
+  }
+  /** Delete the active row (Shift+Delete / F9) — pre-checked against minRows (P6). */
   rowDelete() {
     const active = this.store.active;
     if (!active) {

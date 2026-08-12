@@ -120,10 +120,11 @@ export default class GridCore {
             onRequiredBlock: (addr) => this.flashRequiredCell(addr),
             onComplete: () => this.dispatchComplete(),
             rowActivate: this.rowActivator.isEnabled() ? () => this.rowActivator.activate() : null,
-            // F9 / Shift+F9 (display grids only): temporary row hide + restore-all.
-            rowHide: (!this.store.serverSide && !this.store.editable)
-                ? () => this.hideActiveRow() : null,
-            rowRestore: (!this.store.serverSide && !this.store.editable)
+            // F9 is mode-aware: delete editable rows, temporarily hide non-editable rows.
+            rowRemove: this.store.editable
+                ? () => this.rowDelete()
+                : () => this.hideActiveRow(),
+            rowRestore: !this.store.editable
                 ? () => this.restoreHiddenRowsView() : null,
         });
 
@@ -482,10 +483,11 @@ export default class GridCore {
         this.offActiveRow = this.bus.on('active:changed', () => this.onActiveCellChanged());
         this.lastActiveRow = null;
 
-        // Row ops (Insert/Delete/Ctrl+D) → optimistic store mutation + op enqueue.
+        // Row ops (Insert/F7 repeat/Delete/Ctrl+D) → optimistic store mutation + op enqueue.
         this.rowOps = {
             insert: () => this.rowInsert(),
             delete: () => this.rowDelete(),
+            repeatAbove: () => this.rowRepeatAbove(),
             fillDown: () => this.rowFillDown(),
             clear: () => this.clearSelectedCells(),
         };
@@ -807,7 +809,37 @@ export default class GridCore {
         );
     }
 
-    /** Delete the active row (Shift+Delete / F8) — pre-checked against minRows (P6). */
+    /** F7: duplicate the row immediately above the active row and focus the new copy. */
+    rowRepeatAbove() {
+        const active = this.store.active;
+        if (!active) {
+            return;
+        }
+        const activeIndex = this.store.rowIndexOf(active.rowKey);
+        const source = this.store.rowAt(activeIndex - 1);
+        if (!source) {
+            if (this.announcer) {
+                this.announcer.message('There is no row above to repeat.');
+            }
+            return;
+        }
+
+        const newKey = 'r' + this.store.nextSeq() + Math.random().toString(36).slice(2, 6);
+        if (!this.store.dupRow(source._k, newKey)) {
+            return;
+        }
+        this.store.setActive({ rowKey: newKey, colKey: active.colKey });
+        this.sync.enqueue(
+            { seq: this.store.nextSeq(), t: 'dup', row: source._k, as: newKey },
+            [],
+            { flush: true },
+        );
+        if (this.announcer) {
+            this.announcer.message('Row above repeated.');
+        }
+    }
+
+    /** Delete the active row (Shift+Delete / F9) — pre-checked against minRows (P6). */
     rowDelete() {
         const active = this.store.active;
         if (!active) {

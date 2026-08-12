@@ -1,10 +1,10 @@
 /**
  * Node harness: pins the F9 TEMPORARY ROW HIDE contract (display grids) and the
- * F8 row-delete remap — consumer feature requests, 2026-07-19.
+ * mode-aware F9 row removal and F7 repeat remap.
  *
  * Pinned against the REAL StateStore + SHARED_KEYMAP:
- *   1. Keymap: F8 = row delete (F7 unbound — freed for host apps), Delete still clears,
- *      Shift+Delete still deletes; F9 = rowHide, Shift+F9 = rowRestore.
+ *   1. Keymap: F7 repeats above, F8 is unbound, Delete still clears,
+ *      Shift+Delete still deletes; F9 = rowRemove, Shift+F9 = rowRestore.
  *   2. hideRowLocally: removes the row from view into hiddenStash, captures the seed
  *      order, and localAggregate recomputes sum/count over the VISIBLE rows (sum skips
  *      the ''-empty convention) — the footer's what-if view.
@@ -13,7 +13,8 @@
  *   4. Interplay: a sort-clear (third click) NEVER resurrects hidden rows and keeps the
  *      seed copy alive for the eventual restore; an external setRows() clears the stash
  *      and the sort state together.
- *   5. Gates: server-side and editable stores refuse hide/restore outright.
+ *   5. Gates: editable stores refuse hide/restore; server-side display rows can be hidden
+ *      until their page data is refreshed.
  *
  * Invoke directly: `node tests/js/run-hide-vectors.mjs` (also part of `npm test`).
  */
@@ -28,6 +29,7 @@ const mod = (p) => pathToFileURL(resolve(root, 'resources', 'js', ...p.split('/'
 const { default: StateStore } = await import(mod('core/StateStore.js'));
 const { default: EventBus } = await import(mod('core/EventBus.js'));
 const { default: PageSource } = await import(mod('sync/PageSource.js'));
+const { default: SelectionManager } = await import(mod('selection/SelectionManager.js'));
 const { SHARED_KEYMAP } = await import(mod('keyboard/keys.js'));
 
 let failures = 0;
@@ -44,14 +46,42 @@ const keys = (store) => store.rows.map((r) => r._k).join(',');
 /* -------------------------------------------------------------------- keymap */
 
 console.log('keymap:');
-check('F8 deletes the row', SHARED_KEYMAP.F8
-    && SHARED_KEYMAP.F8.action === 'rowop' && SHARED_KEYMAP.F8.kind === 'delete');
-check('F7 is unbound (freed for host apps)', SHARED_KEYMAP.F7 === undefined);
+check('F7 repeats the row above', SHARED_KEYMAP.F7
+    && SHARED_KEYMAP.F7.action === 'rowop' && SHARED_KEYMAP.F7.kind === 'repeatAbove');
+check('F8 is unbound', SHARED_KEYMAP.F8 === undefined);
 check('Delete still CLEARS (Excel contract)', SHARED_KEYMAP.Delete.kind === 'clear');
 check('Shift+Delete still deletes', SHARED_KEYMAP['Shift+Delete'].kind === 'delete');
-check('F9 hides', SHARED_KEYMAP.F9 && SHARED_KEYMAP.F9.action === 'rowHide');
+check('F9 performs the mode-aware row removal', SHARED_KEYMAP.F9
+    && SHARED_KEYMAP.F9.action === 'rowRemove');
 check('Shift+F9 restores', SHARED_KEYMAP['Shift+F9']
     && SHARED_KEYMAP['Shift+F9'].action === 'rowRestore');
+
+/* --------------------------------------------------------- click focus return */
+
+console.log('focus return:');
+let rootFocused = false;
+let selectedAddress = null;
+const fakeRow = { dataset: { k: 'row-2' } };
+const fakeCell = {
+    dataset: { c: 'name' },
+    closest: (selector) => selector === '.lgrid-row' ? fakeRow : null,
+};
+const fakeTarget = {
+    closest: (selector) => selector === '.lgrid-cell' ? fakeCell : null,
+};
+const focusSelection = new SelectionManager({
+    visibleColumns: () => [{ key: 'name', navigable: true }],
+    active: null,
+    setActive: (address) => { selectedAddress = address; },
+}, {
+    root: { focus: () => { rootFocused = true; } },
+    body: { contains: () => true },
+    head: { contains: () => false },
+});
+focusSelection.handlePointerDown({ target: fakeTarget, shiftKey: false, button: 1 });
+check('clicking a grid cell returns keyboard focus to the grid root', rootFocused === true);
+check('focus return still activates the clicked cell',
+    selectedAddress && selectedAddress.rowKey === 'row-2' && selectedAddress.colKey === 'name');
 
 /* ------------------------------------------------------------------- fixture */
 
@@ -85,6 +115,13 @@ check('count tracks visible rows', s.localAggregate({ column: 'debit', op: 'coun
 s.hideRowLocally('d');
 check('second hide compounds', keys(s) === 'b,c,e' && s.localAggregate(sumAgg) === 101900);
 check('hiding an unknown key is a no-op', s.hideRowLocally('ghost') === false);
+
+console.log('repeat row primitive:');
+const repeated = displayStore();
+const clone = repeated.dupRow('a', 'copy-a');
+check('duplicate is inserted immediately after its source', keys(repeated) === 'a,copy-a,b,c,d,e');
+check('duplicate carries the source values under a fresh key',
+    clone && clone._k === 'copy-a' && clone.account === 'Cash' && clone.debit === 125000);
 
 /* ------------------------------------------------------------- restore order */
 
@@ -136,7 +173,8 @@ const server = new StateStore({
     name: 's', columns: [{ key: 'n' }], layout: { serverSide: true },
     rows: [{ _k: 'x', n: 1 }],
 }, new EventBus());
-check('server-side refuses hide', server.hideRowLocally('x') === false);
+check('server-side display grids can hide the current-page row',
+    server.hideRowLocally('x') === true && server.rows.length === 0);
 
 /* --------------------------------------------- deferred initial (store flag) */
 

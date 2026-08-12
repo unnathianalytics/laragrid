@@ -50,7 +50,7 @@ export function chordFor(e) {
  * presets already import for chordFor — keeps the keymap files free of a circular import.
  *
  * Intent shape: { action, intent?, kind? }
- *   action: 'move' | 'select' | 'selectAll' | 'copy' | 'clearSelection' | 'rowop'
+ *   action: 'move' | 'select' | 'selectAll' | 'copy' | 'clearSelection' | 'rowop' | 'rowRemove'
  *   intent: a geometry intent passed to resolveMove (for move/select)
  *   kind:   a row-op name (for rowop) — no-op in readonly, wired at M4
  *
@@ -98,20 +98,18 @@ export const SHARED_KEYMAP = {
 
     // Row/cell-op chords — recognised, but no-op in readonly (wired to editable handlers).
     // Excel-trained operators expect Delete to CLEAR content, never to remove the row;
-    // row removal sits behind the deliberate Shift+Delete (or F8 — moved off F7 by
-    // consumer request, 2026-07-19; F7 is free again for host apps).
+    // Shift+Delete remains the explicit alternate row-delete gesture. F7 repeats the row
+    // immediately above the active row in editable grids; F8 is deliberately unassigned.
     Insert: { action: 'rowop', kind: 'insert' },
     Delete: { action: 'rowop', kind: 'clear' },
     'Shift+Delete': { action: 'rowop', kind: 'delete' },
-    F8: { action: 'rowop', kind: 'delete' },
+    F7: { action: 'rowop', kind: 'repeatAbove' },
     'Ctrl+d': { action: 'rowop', kind: 'fillDown' },
 
-    // Temporary row hide (F9, DISPLAY grids only) — the accountant's what-if: a Trial
-    // Balance minus one row, footer sums recomputed over what remains. Strictly VIEW
-    // state: Shift+F9 restores everything, an external reseed clears it, and a
-    // sort-clear never resurrects hidden rows. No-op on server-side grids (grand totals
-    // span pages the client cannot see) and editable grids (row content is domain state).
-    F9: { action: 'rowHide' },
+    // F9 is mode-aware: editable grids delete the active row; non-editable grids only hide
+    // it from the current view. Hidden state is ephemeral: Shift+F9 restores it and any
+    // page/reseed/browser refresh clears it.
+    F9: { action: 'rowRemove' },
     'Shift+F9': { action: 'rowRestore' },
 
     // The row-actions menu (P7) — works in every mode that declares row actions.

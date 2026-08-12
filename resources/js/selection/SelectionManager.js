@@ -236,6 +236,15 @@ export default class SelectionManager {
         const colKey = cell.dataset.c;
         const column = this.store.visibleColumns().find((c) => c.key === colKey);
 
+        // A click on a rendered cell must return keyboard ownership to the grid. Browsers do
+        // not consistently focus a tabindex parent when its non-focusable child is clicked;
+        // without this, clicking back into a grid after focusing another control updates the
+        // active cell visually but leaves F-keys routed to the old control.
+        const isInteractive = e.target && e.target.closest && e.target.closest('.lgrid-action, button, a, select, input');
+        if (!isInteractive) {
+            this.refs.root.focus({ preventScroll: true });
+        }
+
         // Serial gutter (non-navigable) → row selection.
         if (!column || (column.navigable === false && column.focusMode !== 'manual')) {
             this.selectRow(rowKey);
@@ -255,7 +264,6 @@ export default class SelectionManager {
         // text selection that used to win this gesture never engages. Main button only;
         // a Shift+click keeps its one-shot extend AND can continue as a drag from the
         // same anchor. Skip drag when pressing interactive buttons/actions inside a cell.
-        const isInteractive = e.target && e.target.closest && e.target.closest('.lgrid-action, button, a, select, input');
         if (e.button === 0 && !isInteractive) {
             this.beginDrag();
         }

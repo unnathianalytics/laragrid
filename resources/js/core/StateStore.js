@@ -353,7 +353,7 @@ export default class StateStore {
     }
 
     /**
-     * Temporarily hide one row from a DISPLAY grid's view (F9) — the accountant's
+     * Temporarily hide one row from a non-editable grid's view (F9) — the accountant's
      * what-if. Strictly view state: the row moves to hiddenStash, the seed order is
      * captured (shared with the local sort's third-click contract), and the footer's
      * aggregates recompute over what remains (localAggregate via FooterRenderer). No-op
@@ -362,7 +362,7 @@ export default class StateStore {
      * @returns {boolean} whether a row was hidden
      */
     hideRowLocally(rowKey) {
-        if (this.serverSide || this.editable) {
+        if (this.editable) {
             return false;
         }
         const hit = this.rowByKey.get(rowKey);
@@ -387,7 +387,7 @@ export default class StateStore {
      * @returns {boolean} whether anything was restored
      */
     restoreHiddenRows() {
-        if (this.serverSide || this.editable || this.hiddenStash.size === 0) {
+        if (this.editable || this.hiddenStash.size === 0) {
             return false;
         }
         const all = this.rows.concat(Array.from(this.hiddenStash.values()));

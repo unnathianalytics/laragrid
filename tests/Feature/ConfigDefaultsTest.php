@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use LaraGrid\Columns\IntegerColumn;
 use LaraGrid\Columns\TextColumn;
 use LaraGrid\Grid;
 use LaraGrid\GridDensity;
@@ -37,6 +38,16 @@ it('falls back to shipped defaults on invalid config values', function () {
 
     expect($layout['density'])->toBe('compact');
     expect($layout['keymap'])->toBe('entry');
+});
+
+it('keeps the Excel-style selection summary off by default and supports explicit opt-in', function () {
+    $default = Grid::make('summary-default')->columns([IntegerColumn::make('amount')]);
+    expect((new ConfigSerializer)->serialize($default)['layout']['statusBar'])->toBeFalse();
+
+    $enabled = Grid::make('summary-enabled')
+        ->columns([IntegerColumn::make('amount')])
+        ->statusBar();
+    expect((new ConfigSerializer)->serialize($enabled)['layout']['statusBar'])->toBeTrue();
 });
 
 it('applies shipped themes via ->theme(), config default, and rejects unknown names', function () {
