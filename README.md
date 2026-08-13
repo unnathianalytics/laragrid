@@ -495,8 +495,8 @@ DateColumn::make('vch_date')
 [Sticky filters](#sticky-filters--persistquery)).
 
 **Layout** — `columnGroups([ColumnGroup::make('GST', ['cgst', 'sgst'])])` (two-tier grouped headers) · `stickyHeader()` · `freezeColumns(n)` · `striped()` ·
-`density(GridDensity::Compact|Normal|Comfortable)` · `height('420px')` · `maxHeight('60vh')` ·
-`fillParent()` · `themeClass('my-theme')` · `rowClass(fn)` · `cellClass(fn)`.
+`density(GridDensity::Compact|Normal|Comfortable)` · `height('420px')` · `minHeight('300px')` ·
+`maxHeight('60vh')` · `fillParent()` · `themeClass('my-theme')` · `rowClass(fn)` · `cellClass(fn)`.
 
 ## Actions
 

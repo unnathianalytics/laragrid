@@ -277,6 +277,9 @@ class Grid
     /** Fixed grid height (any CSS length); the body scrolls inside it. */
     protected ?string $height = null;
 
+    /** Minimum grid height (any CSS length); short-grid footers stay at its bottom edge. */
+    protected ?string $minHeight = null;
+
     /** Max height override for the internal scroll box (defaults to 70vh in CSS). */
     protected ?string $maxHeight = null;
 
@@ -946,6 +949,14 @@ class Grid
         return $this;
     }
 
+    /** Set a minimum grid height; the grid can still grow when its content needs more room. */
+    public function minHeight(string $minHeight): static
+    {
+        $this->minHeight = $minHeight;
+
+        return $this;
+    }
+
     /** Cap the scroll box (defaults to 70vh); the grid grows to content until the cap. */
     public function maxHeight(string $maxHeight): static
     {
@@ -1116,6 +1127,11 @@ class Grid
     public function getHeight(): ?string
     {
         return $this->height;
+    }
+
+    public function getMinHeight(): ?string
+    {
+        return $this->minHeight;
     }
 
     public function getMaxHeight(): ?string

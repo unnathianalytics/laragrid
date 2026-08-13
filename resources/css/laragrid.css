@@ -74,11 +74,16 @@
         -webkit-overflow-scrolling: touch;
     }
 
-    /* ->fillParent(): the grid fills its containing box; the scroll region flexes, so the
-       pagination/status chrome below it stays visible. Pair with a sized ancestor div. */
-    .lgrid--fill {
+    /* Sized grids are flex columns so the scroll region can consume their spare height while
+       pagination/status chrome remains visible. ->fillParent() pairs with a sized ancestor;
+       ->minHeight() establishes only a floor and still lets the grid grow with its content. */
+    .lgrid--fill,
+    .lgrid--min-height {
         display: flex;
         flex-direction: column;
+    }
+
+    .lgrid--fill {
         height: 100%;
     }
 
@@ -86,6 +91,26 @@
         flex: 1 1 auto;
         min-height: 0;
         max-height: none;
+    }
+
+    .lgrid--min-height .lgrid-scroll {
+        flex: 1 0 auto;
+        min-height: 0;
+    }
+
+    /* A sticky footer only sticks once content overflows; it does not move to the bottom of a
+       short scroll box. Flex the inner stack and consume its spare space with the footer's auto
+       margin. When rows overflow, the auto margin resolves to zero and sticky scrolling behaves
+       exactly as before. This covers ->height(), ->minHeight(), and ->fillParent(). */
+    .lgrid--fill .lgrid-scroll,
+    .lgrid--min-height .lgrid-scroll {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .lgrid--fill .lgrid-footer,
+    .lgrid--min-height .lgrid-footer {
+        margin-top: auto;
     }
 
     /* ---- Header (single- or two-tier) --------------------------------------------- */

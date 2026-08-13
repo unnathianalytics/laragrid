@@ -314,6 +314,7 @@ class ConfigSerializer
 
         $sizing = array_filter([
             'height' => $grid->getHeight(),
+            'minHeight' => $grid->getMinHeight(),
             'maxHeight' => $grid->getMaxHeight(),
             'fill' => $grid->getFillParent() ?: null,
         ]);

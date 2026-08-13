@@ -33,6 +33,12 @@ it('serializes the P6 behavior chains into layout only when declared', function 
     expect($full['focus'])->toBe(['onMount' => true, 'outTo' => '[data-save]', 'complete' => '#post']);
     expect($full['sizing'])->toBe(['height' => '420px']);
     expect($full['emptyState'])->toBe('Nothing here');
+
+    $minimum = p6Layout(
+        Grid::make('minimum')->columns([TextColumn::make('name')])
+            ->minHeight('300px')
+    );
+    expect($minimum['sizing'])->toBe(['minHeight' => '300px']);
 });
 
 it('resolves toolbar config defaults, per-grid overrides, and suppression', function () {

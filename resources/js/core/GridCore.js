@@ -510,8 +510,9 @@ export default class GridCore {
 
     /**
      * Apply the declarative sizing chains (P6): ->height() fixes the root box (flex mode so the
-     * pagination/status chrome keeps its place), ->maxHeight() re-caps the scroll box via the
-     * --lgrid-max-h token, ->fillParent() fills a sized ancestor.
+     * pagination/status chrome keeps its place), ->minHeight() gives short grids a floor while
+     * still allowing content growth, ->maxHeight() re-caps the scroll box via the --lgrid-max-h
+     * token, and ->fillParent() fills a sized ancestor.
      */
     applySizing() {
         const sizing = this.store.layout.sizing;
@@ -521,6 +522,10 @@ export default class GridCore {
         if (sizing.height) {
             this.refs.root.style.height = sizing.height;
             this.refs.root.classList.add('lgrid--fill');
+        }
+        if (sizing.minHeight) {
+            this.refs.root.style.minHeight = sizing.minHeight;
+            this.refs.root.classList.add('lgrid--min-height');
         }
         if (sizing.maxHeight && this.refs.scroll) {
             this.refs.scroll.style.setProperty('--lgrid-max-h', sizing.maxHeight);
