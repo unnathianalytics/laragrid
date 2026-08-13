@@ -50,6 +50,23 @@ it('keeps the Excel-style selection summary off by default and supports explicit
     expect((new ConfigSerializer)->serialize($enabled)['layout']['statusBar'])->toBeTrue();
 });
 
+it('distinguishes chooser-hidden defaults from definition-hidden columns', function () {
+    $normal = TextColumn::make('normal')->toArray();
+    $chooserHidden = TextColumn::make('optional')->hiddenByDefault()->toArray();
+    $definitionHidden = TextColumn::make('internal')->visible(false)->toArray();
+
+    expect($normal)->not->toHaveKey('hiddenByDefault')
+        ->and($chooserHidden)->toHaveKey('visible', true)
+        ->and($chooserHidden)->toHaveKey('hiddenByDefault', true)
+        ->and($definitionHidden)->toHaveKey('visible', false)
+        ->and($definitionHidden)->not->toHaveKey('hiddenByDefault');
+});
+
+it('rejects chooser-hidden defaults for chooser-locked columns', function () {
+    expect(fn () => TextColumn::make('locked')->frozen()->hiddenByDefault()->toArray())
+        ->toThrow(LogicException::class, 'chooser-locked');
+});
+
 it('applies shipped themes via ->theme(), config default, and rejects unknown names', function () {
     $grid = Grid::make('t')->columns([TextColumn::make('name')])->theme('blue');
     expect((new ConfigSerializer)->serialize($grid)['layout']['themeClass'])

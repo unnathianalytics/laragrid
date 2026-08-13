@@ -123,11 +123,19 @@ export default class StateStore {
          */
         this.widthOverrides = {};
         /**
-         * Columns the OPERATOR hid (column chooser) — separate from the definition's static
-         * `visible` flag so a reset can restore exactly the declared layout.
+         * Chooser-eligible columns declared hidden on first paint. Kept separately so Reset
+         * Layout restores the definition instead of making every column visible.
          * @type {Set<string>}
          */
-        this.userHidden = new Set();
+        this.defaultHidden = new Set(this.columns
+            .filter((column) => column.visible !== false && column.hiddenByDefault === true)
+            .map((column) => column.key));
+        /**
+         * Columns currently hidden through chooser layout state. It begins with the definition's
+         * defaults; a persisted layout or saved view may subsequently replace it wholesale.
+         * @type {Set<string>}
+         */
+        this.userHidden = new Set(this.defaultHidden);
 
         // ---- Editable (M4) state ---------------------------------------------------------
         this.editable = !!(this.layout && this.layout.editable);

@@ -70,6 +70,12 @@ abstract class Column
     protected bool $visible = true;
 
     /**
+     * Whether this chooser-eligible column starts hidden. Unlike $visible=false, the column
+     * remains part of the grid definition and the operator may reveal it from the chooser.
+     */
+    protected bool $hiddenByDefault = false;
+
+    /**
      * Whether this column's values ride grid exports (csv/xlsx/pdf). Default yes for every
      * visible column; ->exportable(false) keeps a painted column out of the file (an inline
      * chart, a chrome-ish computed cell) without hiding it on screen.
@@ -131,6 +137,16 @@ abstract class Column
     public function visible(bool $visible = true): static
     {
         $this->visible = $visible;
+
+        return $this;
+    }
+
+    /**
+     * Start this column unchecked in the column chooser while keeping it available there.
+     */
+    public function hiddenByDefault(bool $hidden = true): static
+    {
+        $this->hiddenByDefault = $hidden;
 
         return $this;
     }
@@ -463,6 +479,16 @@ abstract class Column
         // Emitted only when declared (the golden-config anti-rot discipline).
         if ($this->filter !== null) {
             $fragment['filter'] = $this->filter->toArray();
+        }
+
+        // Omitted for the common case so existing serialized configurations stay compact.
+        if ($this->hiddenByDefault && $this->visible) {
+            if ($this->frozen || $this->painterId() === 'serial') {
+                throw new \LogicException(
+                    "Column [{$this->key}] cannot be hidden by default because chooser-locked columns cannot be revealed."
+                );
+            }
+            $fragment['hiddenByDefault'] = true;
         }
 
         // The Busy-style exit option label (endOfListOption) — same whenFilled discipline, so a

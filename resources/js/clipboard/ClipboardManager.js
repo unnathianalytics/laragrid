@@ -27,6 +27,23 @@ function parseTsv(text) {
     return lines.map((line) => line.split('\t'));
 }
 
+/**
+ * Convert an explicitly HTML-formatted display value to the plain text users see. Besides
+ * keeping markup out of spreadsheets, collapsing whitespace prevents indentation/newlines in
+ * an HTML fragment from being interpreted as extra TSV rows or columns by Excel.
+ */
+function htmlDisplayText(html) {
+    const template = document.createElement('template');
+    template.innerHTML = String(html == null ? '' : html);
+    return (template.content.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+/** The read-only clipboard value must match the painted cell, never its backing HTML fragment. */
+function displayTextFor(column, value) {
+    const display = formatValue(column.format, value);
+    return column.html ? htmlDisplayText(display) : display;
+}
+
 export default class ClipboardManager {
     /** Cell count above which a paste asks for confirmation first (plan G15). */
     static CONFIRM_THRESHOLD = 500;
@@ -52,7 +69,7 @@ export default class ClipboardManager {
             .map((cells) => cells
                 .map((cell) => editable
                     ? editTextFor(cell.column, cell.value)
-                    : formatValue(cell.column.format, cell.value))
+                    : displayTextFor(cell.column, cell.value))
                 .join('\t'))
             .join('\n');
     }

@@ -439,11 +439,21 @@ To refresh a display grid's data later, call `$this->reseedGrid('name', $freshRo
 | `ReadonlyColumn` / `HiddenColumn` | — | display / carried | writes rejected server-side |
 
 Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `align`, `visible`,
-`frozen`, `sortable(bool|'db.column')`, `searchable`, `filterable(Filter)`, `required` /
+`hiddenByDefault` (initially unchecked but available in the column chooser), `frozen`,
+`sortable(bool|'db.column')`, `searchable`, `filterable(Filter)`, `required` /
 `required(fn)`, `readonly` / `readonly(fn)`, `focusMode(FocusMode|'always'|'manual'|'never', default: ...)` `[v1.20.0+]` / `default(mixed|fn)` `[v1.20.0+]`, `rules([...])`, `lockedWhen('col', value)`,
 `requiredWhen('col', value)`, `whenFilled(sets: [...], clears: [...])`,
 `endOfListOption()` (see *Ending entry*), `opensPanel('name')`, `html()`,
 `exportable(false)` (keep a painted column out of downloads).
+
+To keep an optional column out of the initial layout while still listing it in the column
+chooser, use `hiddenByDefault()`:
+
+```php
+TextColumn::make('type')->hiddenByDefault()
+```
+
+Use `visible(false)` only for a definition-level hidden column that operators must never reveal.
 
 ### Column focus modes & defaults (`->focusMode()`) `[v1.20.0+]`
 

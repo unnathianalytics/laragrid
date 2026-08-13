@@ -225,7 +225,8 @@ var StateStore = class {
     this.pageTotals = server.pageTotals || {};
     this.grandTotals = server.grandTotals || {};
     this.widthOverrides = {};
-    this.userHidden = /* @__PURE__ */ new Set();
+    this.defaultHidden = new Set(this.columns.filter((column) => column.visible !== false && column.hiddenByDefault === true).map((column) => column.key));
+    this.userHidden = new Set(this.defaultHidden);
     this.editable = !!(this.layout && this.layout.editable);
     this.canSort = this.serverSide || !this.editable;
     this.localSeedRows = null;
@@ -3079,6 +3080,15 @@ function parseTsv(text) {
   }
   return lines.map((line) => line.split("	"));
 }
+function htmlDisplayText(html) {
+  const template = document.createElement("template");
+  template.innerHTML = String(html == null ? "" : html);
+  return (template.content.textContent || "").replace(/\s+/g, " ").trim();
+}
+function displayTextFor(column, value) {
+  const display = formatValue(column.format, value);
+  return column.html ? htmlDisplayText(display) : display;
+}
 var _ClipboardManager = class _ClipboardManager {
   /**
    * @param {import('../core/StateStore').default} store
@@ -3096,7 +3106,7 @@ var _ClipboardManager = class _ClipboardManager {
   selectionToTsv() {
     const grid = this.store.selectedCells();
     const editable = this.store.editable;
-    return grid.map((cells) => cells.map((cell) => editable ? editTextFor(cell.column, cell.value) : formatValue(cell.column.format, cell.value)).join("	")).join("\n");
+    return grid.map((cells) => cells.map((cell) => editable ? editTextFor(cell.column, cell.value) : displayTextFor(cell.column, cell.value)).join("	")).join("\n");
   }
   /** Copy the current selection to the clipboard; announce the shape. */
   copy() {
@@ -5473,7 +5483,7 @@ var ColumnChooser = class {
   }
   /** Clear every operator layout override (widths + hidden) and the persisted entry. */
   reset() {
-    this.store.userHidden.clear();
+    this.store.userHidden = new Set(this.store.defaultHidden || []);
     this.store.widthOverrides = {};
     this.layoutStore.reset();
     this.applyChange();

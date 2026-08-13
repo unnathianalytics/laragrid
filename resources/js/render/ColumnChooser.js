@@ -1,7 +1,7 @@
 /**
  * What: The hide/show column chooser (M7) — a small grid-owned "⚙" button at the grid's
  *       top-right opening a PopupManager checklist of columns, plus the "Reset layout" action
- *       that clears every operator override (widths + hidden) and the persisted entry.
+ *       that clears every operator override (widths + hidden) and restores definition defaults.
  * Why:  Visibility is operator layout state, exactly like widths: it lives in the store
  *       (`userHidden`, separate from the definition's static `visible` flag so reset restores
  *       the declared layout precisely), persists through the same LayoutStore entry, and rides
@@ -157,7 +157,7 @@ export default class ColumnChooser {
 
     /** Clear every operator layout override (widths + hidden) and the persisted entry. */
     reset() {
-        this.store.userHidden.clear();
+        this.store.userHidden = new Set(this.store.defaultHidden || []);
         this.store.widthOverrides = {};
         this.layoutStore.reset();
         this.applyChange();
