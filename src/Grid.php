@@ -124,6 +124,15 @@ class Grid
     protected ?Closure $queryResolver = null;
 
     /**
+     * A trusted server-side row source used only for exports of readonly in-memory grids.
+     * Its presence deliberately does not make the grid server-side: normal rendering keeps
+     * using the rows passed to <x-laragrid>, while gridExport invokes this resolver afresh.
+     *
+     * @var (Closure(array{sort: string|null, dir: string, search: string, filters: array<string, string>}): mixed)|null
+     */
+    protected ?Closure $exportRowsResolver = null;
+
+    /**
      * The authorization gate for this grid's RPCs — a Closure (typically fn () => $this->authorize(...))
      * or an ability string resolved against the host. Fail-closed: a readonly grid without one
      * throws at build time in local/testing (G12).
@@ -554,6 +563,23 @@ class Grid
     }
 
     /**
+     * Bind a trusted server-side row source for exports without changing the display mode.
+     *
+     * The resolver receives only normalized current-view state and must independently rebuild
+     * rows from server-owned data. Rows passed to Blade, Livewire public properties, or the DOM
+     * are never supplied to it. Arrays, generators, Eloquent models, and Laravel Arrayable DTOs
+     * are accepted by the export pipeline.
+     *
+     * @param  Closure(array{sort: string|null, dir: string, search: string, filters: array<string, string>}): iterable<mixed>  $resolver
+     */
+    public function exportRows(Closure $resolver): static
+    {
+        $this->exportRowsResolver = $resolver;
+
+        return $this;
+    }
+
+    /**
      * Declare the grid's authorization gate — a Closure (fn () => $this->authorize('viewAny', X))
      * or an ability string the host resolves. Fail-closed for readonly grids (assertValid).
      *
@@ -652,7 +678,8 @@ class Grid
 
     /**
      * Offer downloads of the grid's CURRENT view (sort + search + filters, the whole filtered
-     * set — never one page) in the given formats. Readonly ->query() grids only.
+     * set — never one page) in the given formats. Readonly ->query() grids, or readonly
+     * in-memory grids with an explicit trusted ->exportRows() source, only.
      *
      * What: Adds an Export control to the package toolbar and enables the gridExport RPC.
      *       Formats default to config('laragrid.export.formats') — csv, xlsx and pdf ship
@@ -664,7 +691,8 @@ class Grid
      *       ->authorize() gate and only serves formats this declaration enables. The row cap
      *       (default config laragrid.export.max_rows) bounds a runaway register download; the
      *       totals row always sums the rows actually in the file.
-     * When: Readonly master lists / registers: ->query(...)->exportable(['csv', 'xlsx']).
+     * When: Readonly master lists / registers: ->query(...)->exportable(['csv', 'xlsx']), or
+     *       transformed reports: ->exportRows(...)->exportable(['csv', 'xlsx']).
      *
      * @param  array<int, string>|bool  $formats  true = the config default set; a list = exactly
      *                                            these formats; false = disable (the default state).
@@ -1324,6 +1352,45 @@ class Grid
         return ($this->queryResolver)();
     }
 
+    /** Whether a trusted server-side export-row resolver was explicitly declared. */
+    public function hasExportRowResolver(): bool
+    {
+        return $this->exportRowsResolver !== null;
+    }
+
+    /**
+     * Whether exports can rebuild their rows from a trusted server-side source.
+     * This is intentionally separate from isServerSide(), which remains query/display mode.
+     */
+    public function hasServerExportSource(): bool
+    {
+        return $this->isServerSide() || $this->hasExportRowResolver();
+    }
+
+    /**
+     * Invoke the trusted export-row resolver with normalized current-view state.
+     *
+     * @param  array{sort: string|null, dir: string, search: string, filters: array<string, string>}  $state
+     * @return iterable<array-key, mixed>
+     *
+     * @throws InvalidArgumentException When no resolver exists or it returns a non-iterable.
+     */
+    public function resolveExportRows(array $state): iterable
+    {
+        if ($this->exportRowsResolver === null) {
+            throw new InvalidArgumentException("Grid [{$this->name}] has no exportRows() resolver.");
+        }
+
+        $rows = ($this->exportRowsResolver)($state);
+        if (! is_iterable($rows)) {
+            throw new InvalidArgumentException(
+                "Grid [{$this->name}] exportRows() must return an iterable; ".get_debug_type($rows).' returned.'
+            );
+        }
+
+        return $rows;
+    }
+
     /**
      * @return (Closure(): mixed)|string|null
      */
@@ -1595,6 +1662,12 @@ class Grid
             );
         }
 
+        if ($this->editable && $this->hasExportRowResolver()) {
+            throw new InvalidArgumentException(
+                "Grid [{$this->name}] cannot be both editable() and exportRows(); export row resolvers are for readonly grids."
+            );
+        }
+
         $this->assertReadonlyValid($keySet);
         $this->assertEditableValid($keySet);
         $this->assertActionsValid();
@@ -1753,9 +1826,9 @@ class Grid
     protected function assertReadonlyValid(array $keySet): void
     {
         if (! $this->isServerSide()) {
-            if ($this->export !== null) {
+            if ($this->export !== null && ! $this->hasExportRowResolver()) {
                 throw new InvalidArgumentException(
-                    "Grid [{$this->name}] declares exportable() but no query(); exports need a server-side readonly grid."
+                    "Grid [{$this->name}] declares exportable() but no query() or exportRows(); exports need a server-side readonly grid or explicit export row resolver."
                 );
             }
 
@@ -1771,6 +1844,17 @@ class Grid
                 );
             }
 
+            if ($this->hasExportRowResolver()) {
+                if ($this->authorizeUsing === null) {
+                    throw new InvalidArgumentException(
+                        "Grid [{$this->name}] declares exportRows() but no authorize(); server-backed exports must be gated (fail-closed)."
+                    );
+                }
+
+                $this->assertExportValid();
+                $this->assertReadonlyStateValid($keySet);
+            }
+
             return;
         }
 
@@ -1782,6 +1866,16 @@ class Grid
 
         $this->assertExportValid();
 
+        $this->assertReadonlyStateValid($keySet);
+    }
+
+    /**
+     * Validate the declared state whitelist shared by query-backed and resolver-backed exports.
+     *
+     * @param  array<string, int>  $keySet
+     */
+    protected function assertReadonlyStateValid(array $keySet): void
+    {
         foreach ($this->searchable as $column) {
             // A dot-qualified target (e.g. 'items.name') is an explicit DB column — used to
             // disambiguate under a join — not a column key, so it isn't validated against the

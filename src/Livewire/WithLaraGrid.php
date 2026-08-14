@@ -192,8 +192,9 @@ trait WithLaraGrid
      *       NAME — a format the definition doesn't offer is refused even if registered), then
      *       streams the file through the named Exporter. The query payload carries the
      *       client's {sort, dir, search, filters} and runs through the SAME whitelisted
-     *       narrowing pipeline as gridFetch — an export can never widen what the operator
-     *       could already see (G12).
+     *       narrowing pipeline as gridFetch. An in-memory grid's trusted exportRows resolver
+     *       receives only normalized declared state and independently rebuilds server rows;
+     *       Blade/Livewire display rows are never accepted as a download source.
      * Why:  Running on the host component keeps tenancy + policies exactly as every other
      *       grid RPC; Livewire turns the StreamedResponse into a browser download.
      *
@@ -209,9 +210,11 @@ trait WithLaraGrid
 
         $this->authorizeGrid($definition);
 
-        $export = $definition->isServerSide() ? $definition->getExport() : null;
+        $export = $definition->hasServerExportSource() ? $definition->getExport() : null;
         if ($export === null) {
-            throw new InvalidArgumentException("Grid [{$grid}] is not exportable; declare ->exportable() on a query() grid.");
+            throw new InvalidArgumentException(
+                "Grid [{$grid}] is not exportable; declare ->exportable() with query() or exportRows()."
+            );
         }
 
         if (! in_array($format, $export['formats'], true)) {

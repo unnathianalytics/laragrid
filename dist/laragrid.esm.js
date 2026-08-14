@@ -3496,8 +3496,36 @@ var Lru = class {
   }
 };
 
+// resources/js/sync/ExportSource.js
+var ExportSource = class {
+  constructor(store, bus, wire) {
+    this.store = store;
+    this.bus = bus;
+    this.wire = wire;
+    this.exporting = false;
+  }
+  /** Download the current sort/search/filter view through the server-authoritative RPC. */
+  export(format) {
+    if (this.exporting || typeof this.wire.gridExport !== "function") {
+      return Promise.resolve();
+    }
+    const query = { ...this.store.query };
+    delete query.page;
+    delete query.perPage;
+    this.exporting = true;
+    this.bus.emit("export:started", { format });
+    return this.wire.gridExport(this.store.name, format, query).then(() => {
+      this.exporting = false;
+      this.bus.emit("export:done", { format });
+    }).catch((error) => {
+      this.exporting = false;
+      this.bus.emit("export:error", { format, error });
+    });
+  }
+};
+
 // resources/js/sync/PageSource.js
-var PageSource = class {
+var PageSource = class extends ExportSource {
   /**
    * @param {import('../core/StateStore').default} store
    * @param {import('../core/EventBus').default} bus
@@ -3505,9 +3533,7 @@ var PageSource = class {
    * @param {{cacheSize?: number}} [opts]
    */
   constructor(store, bus, wire, opts = {}) {
-    this.store = store;
-    this.bus = bus;
-    this.wire = wire;
+    super(store, bus, wire);
     this.cache = new Lru(opts.cacheSize || 24);
     this.seq = 0;
     this.latest = 0;
@@ -3597,30 +3623,6 @@ var PageSource = class {
   /** Change page size and reload from page 1. */
   setPerPage(perPage) {
     this.load({ ...this.store.query, perPage, page: 1 });
-  }
-  /**
-   * Download the CURRENT view (sort/search/filters — the whole filtered set, never the
-   * page window) in one of the grid's enabled export formats. The server re-authorizes
-   * and re-whitelists everything; we only echo the format name + the query intents.
-   * Livewire turns the streamed response into a browser download; bus events let the
-   * toolbar disable its control (and the announcer speak) while one is in flight.
-   */
-  export(format) {
-    if (this.exporting || typeof this.wire.gridExport !== "function") {
-      return Promise.resolve();
-    }
-    const query = { ...this.store.query };
-    delete query.page;
-    delete query.perPage;
-    this.exporting = true;
-    this.bus.emit("export:started", { format });
-    return this.wire.gridExport(this.store.name, format, query).then(() => {
-      this.exporting = false;
-      this.bus.emit("export:done", { format });
-    }).catch((error) => {
-      this.exporting = false;
-      this.bus.emit("export:error", { format, error });
-    });
   }
   // ---- Fetch + reconcile ----------------------------------------------------------------
   /**
@@ -5618,8 +5620,9 @@ var Toolbar = class {
    * @param {Array<object>} filters the grid-level filter configs ({key, label, kind, options})
    * @param {object|null} popup the shared PopupManager (export format menu / views menu)
    * @param {import('../views/ViewsManager').default|null} views saved-views service (->savedViews())
+   * @param {object|null} exportSource mode-independent gridExport driver
    */
-  constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null, views = null) {
+  constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null, views = null, exportSource = null) {
     this.store = store;
     this.refs = refs;
     this.pageSource = pageSource;
@@ -5629,6 +5632,7 @@ var Toolbar = class {
     this.actions = actions || {};
     this.popup = popup;
     this.views = views;
+    this.exportSource = exportSource;
     this.chooserSlot = null;
     this.searchTimer = null;
     this.offChecked = null;
@@ -5679,7 +5683,7 @@ var Toolbar = class {
       any = true;
     }
     const exportSpec = this.store.layout.export;
-    if (this.pageSource && exportSpec && (exportSpec.formats || []).length) {
+    if (this.exportSource && exportSpec && (exportSpec.formats || []).length) {
       host.appendChild(this.buildExport(exportSpec.formats));
       any = true;
     }
@@ -5714,12 +5718,12 @@ var Toolbar = class {
       return button;
     };
     if (formats.length === 1) {
-      make("\u2913 " + this.formatLabel(formats[0]), () => this.pageSource.export(formats[0]));
+      make("\u2913 " + this.formatLabel(formats[0]), () => this.exportSource.export(formats[0]));
     } else if (this.popup) {
       make("\u2913 Export\u2026", (button) => this.openExportMenu(formats, button));
     } else {
       for (const format of formats) {
-        make("\u2913 " + this.formatLabel(format), () => this.pageSource.export(format));
+        make("\u2913 " + this.formatLabel(format), () => this.exportSource.export(format));
       }
     }
     if (this.bus) {
@@ -5750,7 +5754,7 @@ var Toolbar = class {
       item.textContent = this.formatLabel(format);
       item.addEventListener("click", () => {
         this.popup.close("owner");
-        this.pageSource.export(format);
+        this.exportSource.export(format);
       });
       container.appendChild(item);
     }
@@ -7148,6 +7152,7 @@ var GridCore = class {
     this.resizeManager = new ResizeManager(this.store, this.layout, this.refs, this.bus, this.layoutStore);
     this.resizeManager.init();
     this.installServerData();
+    this.installExportSource();
     this.installLocalSort();
     this.installToolbar();
     this.installReseed();
@@ -7297,6 +7302,20 @@ var GridCore = class {
       }
       console.error("[laragrid:" + this.store.name + "] gridFetch failed:", error);
     });
+  }
+  /**
+   * Install the export-only RPC seam without changing display mode. Query grids reuse their
+   * PageSource; readonly in-memory grids get only ExportSource and therefore never gridFetch.
+   */
+  installExportSource() {
+    if (this.pageSource) {
+      this.exportSource = this.pageSource;
+    } else if (this.store.layout.export && this.refs.wire) {
+      this.exportSource = new ExportSource(this.store, this.bus, this.refs.wire);
+    }
+    if (!this.exportSource) {
+      return;
+    }
     this.bus.on("export:started", () => {
       if (this.announcer) {
         this.announcer.message("Preparing download\u2026");
@@ -7318,14 +7337,14 @@ var GridCore = class {
       if (d.grid !== this.store.name) {
         return;
       }
-      if (d.kind === "search") {
+      if (d.kind === "search" && this.pageSource) {
         this.pageSource.search(d.value);
-      } else if (d.kind === "filter") {
+      } else if (d.kind === "filter" && this.pageSource) {
         this.pageSource.setFilter(d.key, d.value);
-      } else if (d.kind === "perPage") {
+      } else if (d.kind === "perPage" && this.pageSource) {
         this.pageSource.setPerPage(Number(d.value));
       } else if (d.kind === "export") {
-        this.pageSource.export(d.value);
+        this.exportSource.export(d.value);
       }
     };
     document.addEventListener("lgrid:toolbar", this.onToolbar);
@@ -7468,7 +7487,8 @@ var GridCore = class {
         this.actionRunner || null,
         this.config.actions || {},
         this.popupManager || null,
-        this.viewsManager || null
+        this.viewsManager || null,
+        this.exportSource || null
       );
       this.toolbar.render();
       if (this.config.query) {

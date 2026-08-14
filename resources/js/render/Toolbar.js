@@ -23,8 +23,9 @@ export default class Toolbar {
      * @param {Array<object>} filters the grid-level filter configs ({key, label, kind, options})
      * @param {object|null} popup the shared PopupManager (export format menu / views menu)
      * @param {import('../views/ViewsManager').default|null} views saved-views service (->savedViews())
+     * @param {object|null} exportSource mode-independent gridExport driver
      */
-    constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null, views = null) {
+    constructor(store, refs, pageSource, filters, bus = null, runner = null, actions = {}, popup = null, views = null, exportSource = null) {
         this.store = store;
         this.refs = refs;
         this.pageSource = pageSource;
@@ -34,6 +35,7 @@ export default class Toolbar {
         this.actions = actions || {};
         this.popup = popup;
         this.views = views;
+        this.exportSource = exportSource;
         this.chooserSlot = null;
         this.searchTimer = null;
         this.offChecked = null;
@@ -100,7 +102,7 @@ export default class Toolbar {
         // several open the shared popup as a format menu. The button disables while a
         // download builds (export:* bus events from PageSource.export).
         const exportSpec = this.store.layout.export;
-        if (this.pageSource && exportSpec && (exportSpec.formats || []).length) {
+        if (this.exportSource && exportSpec && (exportSpec.formats || []).length) {
             host.appendChild(this.buildExport(exportSpec.formats));
             any = true;
         }
@@ -143,12 +145,12 @@ export default class Toolbar {
         };
 
         if (formats.length === 1) {
-            make('⤓ ' + this.formatLabel(formats[0]), () => this.pageSource.export(formats[0]));
+            make('⤓ ' + this.formatLabel(formats[0]), () => this.exportSource.export(formats[0]));
         } else if (this.popup) {
             make('⤓ Export…', (button) => this.openExportMenu(formats, button));
         } else {
             for (const format of formats) {
-                make('⤓ ' + this.formatLabel(format), () => this.pageSource.export(format));
+                make('⤓ ' + this.formatLabel(format), () => this.exportSource.export(format));
             }
         }
 
@@ -183,7 +185,7 @@ export default class Toolbar {
             item.textContent = this.formatLabel(format);
             item.addEventListener('click', () => {
                 this.popup.close('owner');
-                this.pageSource.export(format);
+                this.exportSource.export(format);
             });
             container.appendChild(item);
         }

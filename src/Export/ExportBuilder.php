@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace LaraGrid\Export;
 
+use ArrayIterator;
 use Closure;
+use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Database\Eloquent\Model;
+use InvalidArgumentException;
+use Iterator;
+use IteratorAggregate;
 use LaraGrid\Columns\Column;
 use LaraGrid\Columns\ComputedColumn;
 use LaraGrid\Columns\SerialColumn;
@@ -14,22 +19,19 @@ use LaraGrid\Grid;
 use LaraGrid\Query\AppliesFilters;
 use LaraGrid\Query\AppliesSearch;
 use LaraGrid\Query\AppliesSort;
+use LaraGrid\Views\ViewState;
 
 /**
- * What: Compiles a readonly grid + the operator's CURRENT view (sort / search / filters, sent
- *       by the client exactly as gridFetch receives them) into the format-agnostic ExportData:
- *       the exportable columns, a lazy stream of resolved cell values over the WHOLE filtered
- *       set (never one page), and a running totals row for the grid's footer sums.
+ * What: Compiles a readonly grid + the operator's CURRENT view into format-agnostic ExportData:
+ *       the exportable columns, a lazy stream of resolved cell values over the trusted query or
+ *       exportRows source, and a running totals row for the grid's footer sums.
  *
- * Why:  An export is "the register I am looking at, complete": it must run through the SAME
- *       whitelisted narrowing pipeline as gridFetch (AppliesSort/Search/Filters — G12, the
- *       injection-closed contract), and export what the grid PAINTS — picker labels not ids,
- *       Y/N for yes-no cells, stripped text for html computeds, the date display pattern —
- *       while keeping summable numerics RAW so a spreadsheet can compute over them (only the
- *       PDF, a visual document, formats numbers). Rows stream via lazy() chunks under a hard
- *       row cap, so a huge table exports in bounded memory; totals accumulate during the same
- *       pass, so the totals row always equals the sum of the rows actually in the file (a
- *       capped export never claims the uncapped register total).
+ * Why:  Query grids run through the SAME whitelisted narrowing pipeline as gridFetch; custom
+ *       report resolvers see only normalized declared state and rebuild server-owned rows. Both
+ *       export what the grid PAINTS — picker labels not ids, Y/N for yes-no cells, stripped text
+ *       for html computeds, the date display pattern — while keeping summable numerics RAW so a
+ *       spreadsheet can compute over them. Every source streams under a hard row cap; totals
+ *       accumulate during that same pass and therefore cover exactly the rows in the file.
  *
  * When: Invoked by WithLaraGrid::gridExport inside the streamed download response.
  */
@@ -39,6 +41,7 @@ class ExportBuilder
         private readonly AppliesSort $sort = new AppliesSort,
         private readonly AppliesSearch $search = new AppliesSearch,
         private readonly AppliesFilters $filters = new AppliesFilters,
+        private readonly ViewState $viewState = new ViewState,
     ) {}
 
     /**
@@ -46,22 +49,21 @@ class ExportBuilder
      */
     public function build(Grid $grid, array $request): ExportData
     {
-        $query = $grid->resolveQuery();
-
-        // The same server-authoritative narrowing gridFetch applies — an export request
-        // carries the client's current {sort, dir, search, filters} and nothing else
-        // (page/perPage are meaningless here; unknown keys are ignored by the appliers).
-        $this->sort->apply($query, $grid, $request);
-        $this->search->apply($query, $grid, $request);
-        $this->filters->apply($query, $grid, $request);
-
-        // lazy() pages with limit/offset under the hood, so the order must be total — break
-        // sort ties on the primary key or a chunk boundary could repeat/skip rows mid-file.
-        $query->orderBy($query->getModel()->getQualifiedKeyName());
-
         $export = $grid->getExport() ?? [];
         $limit = max(1, (int) ($export['limit'] ?? 50000));
-        $chunk = max(50, (int) config('laragrid.export.chunk', 500));
+
+        if ($grid->hasExportRowResolver()) {
+            // Unlike query appliers, arbitrary host report code must never see the raw client
+            // payload. Reduce it to the exact declared state contract before invoking the
+            // trusted resolver. The resolver owns applying whichever intents its report supports.
+            $source = $grid->resolveExportRows($this->normalizeResolverState($grid, $request));
+        } elseif ($grid->isServerSide()) {
+            $source = $this->queryRows($grid, $request);
+        } else {
+            throw new InvalidArgumentException(
+                "Grid [{$grid->name}] has no trusted server export source; declare query() or exportRows()."
+            );
+        }
 
         $columns = $this->exportableColumns($grid);
         $resolvers = array_map(fn (Column $column): Closure => $this->cellResolver($column), $columns);
@@ -81,13 +83,14 @@ class ExportBuilder
             }
         }
 
-        $rows = (function () use ($query, $chunk, $limit, $resolvers, &$sums): \Generator {
+        $rows = (function () use ($source, $limit, $resolvers, &$sums): \Generator {
             $ordinal = 0;
-            foreach ($query->lazy($chunk)->take($limit) as $model) {
+            foreach ($this->take($source, $limit) as $sourceRow) {
+                $row = $this->normalizeRow($sourceRow);
                 $ordinal++;
                 $cells = [];
                 foreach ($resolvers as $index => $resolve) {
-                    $value = $resolve($model, $ordinal);
+                    $value = $resolve($row, $ordinal);
                     if (array_key_exists($index, $sums) && is_numeric($value)) {
                         $sums[$index] = $this->addExact($sums[$index], $value);
                     }
@@ -133,6 +136,121 @@ class ExportBuilder
     }
 
     /**
+     * The existing query-backed source: same whitelist appliers and lazy chunking as before.
+     *
+     * @param  array{sort?: string|null, dir?: string|null, search?: string|null, filters?: array<string, mixed>}  $request
+     * @return iterable<int, Model>
+     */
+    protected function queryRows(Grid $grid, array $request): iterable
+    {
+        $query = $grid->resolveQuery();
+
+        $this->sort->apply($query, $grid, $request);
+        $this->search->apply($query, $grid, $request);
+        $this->filters->apply($query, $grid, $request);
+
+        // lazy() pages with limit/offset under the hood, so the order must be total — break
+        // sort ties on the primary key or a chunk boundary could repeat/skip rows mid-file.
+        $query->orderBy($query->getModel()->getQualifiedKeyName());
+
+        return $query->lazy(max(50, (int) config('laragrid.export.chunk', 500)));
+    }
+
+    /**
+     * Normalize raw client state before it crosses into arbitrary host report code.
+     *
+     * @param  array<string, mixed>  $request
+     * @return array{sort: string|null, dir: string, search: string, filters: array<string, string>}
+     */
+    protected function normalizeResolverState(Grid $grid, array $request): array
+    {
+        $state = $this->viewState->sanitizeQuery($grid, $request);
+
+        // ViewState knows declared column keys; exports additionally require an actually
+        // sortable target, matching AppliesSort's query-backed whitelist.
+        if ($state['sort'] !== null) {
+            $column = $grid->column($state['sort']);
+            if ($column === null || ! $column->isSortable()) {
+                $state['sort'] = null;
+            }
+        }
+
+        return [
+            'sort' => $state['sort'],
+            'dir' => $state['dir'],
+            'search' => $state['search'],
+            'filters' => $state['filters'],
+        ];
+    }
+
+    /**
+     * Lazily cap any iterable without pulling the first row beyond the configured limit.
+     *
+     * @param  iterable<array-key, mixed>  $rows
+     * @return \Generator<int, mixed>
+     */
+    protected function take(iterable $rows, int $limit): \Generator
+    {
+        $iterator = $this->iterator($rows);
+        $iterator->rewind();
+        $taken = 0;
+
+        while ($taken < $limit && $iterator->valid()) {
+            yield $iterator->current();
+            $taken++;
+
+            if ($taken < $limit) {
+                $iterator->next();
+            }
+        }
+    }
+
+    /**
+     * Turn every PHP iterable shape into the Iterator needed by the exact lazy cap.
+     *
+     * @param  iterable<array-key, mixed>  $rows
+     * @return Iterator<array-key, mixed>
+     */
+    protected function iterator(iterable $rows): Iterator
+    {
+        if (is_array($rows)) {
+            return new ArrayIterator($rows);
+        }
+
+        if ($rows instanceof Iterator) {
+            return $rows;
+        }
+
+        if ($rows instanceof IteratorAggregate) {
+            $iterator = $rows->getIterator();
+
+            return $iterator instanceof Iterator ? $iterator : $this->iterator($iterator);
+        }
+
+        throw new InvalidArgumentException('Unsupported export iterable type '.get_debug_type($rows).'.');
+    }
+
+    /**
+     * Normalize supported row carriers while preserving Eloquent's attribute/cast access.
+     *
+     * @return Model|array<string, mixed>
+     */
+    protected function normalizeRow(mixed $row): Model|array
+    {
+        if ($row instanceof Model || is_array($row)) {
+            return $row;
+        }
+
+        if ($row instanceof Arrayable) {
+            return $row->toArray();
+        }
+
+        throw new InvalidArgumentException(
+            'Export rows must be arrays, Eloquent models, or Laravel Arrayable objects; '.get_debug_type($row).' given.'
+        );
+    }
+
+    /**
      * The columns an export carries: declared, visible, not opted out via ->exportable(false).
      * Synthetic chrome (_select/_actions) never exists on the definition, and HiddenColumn
      * is visible=false — both excluded by construction.
@@ -152,19 +270,19 @@ class ExportBuilder
      * Each resolver returns int|float|numeric-string (raw, for numeric columns) or a display
      * string — exactly what the grid paints, minus the styling.
      *
-     * @return Closure(Model, int): (int|float|string)
+     * @return Closure(Model|array<string, mixed>, int): (int|float|string)
      */
     protected function cellResolver(Column $column): Closure
     {
         if ($column instanceof SerialColumn) {
-            return fn (Model $model, int $ordinal): int => $ordinal;
+            return fn (Model|array $row, int $ordinal): int => $ordinal;
         }
 
         if ($column instanceof ComputedColumn) {
             $strip = $column->isHtml();
 
-            return function (Model $model) use ($column, $strip): string {
-                $state = $column->resolveState($model->toArray());
+            return function (Model|array $row) use ($column, $strip): string {
+                $state = $column->resolveState($this->rowArray($row));
                 $text = $state === null ? '' : (string) $state;
 
                 return $strip ? $this->stripHtml($text) : $text;
@@ -184,8 +302,8 @@ class ExportBuilder
                 }
             }
 
-            return function (Model $model) use ($key, $labels): string {
-                $value = data_get($model, $key);
+            return function (Model|array $row) use ($key, $labels): string {
+                $value = data_get($row, $key);
                 if ($value === null || $value === '') {
                     return '';
                 }
@@ -195,8 +313,8 @@ class ExportBuilder
         }
 
         if ($column->painterId() === 'checkbox') {
-            return function (Model $model) use ($key): string {
-                $value = data_get($model, $key);
+            return function (Model|array $row) use ($key): string {
+                $value = data_get($row, $key);
 
                 return $value === null || $value === '' ? '' : ($this->truthy($value) ? 'Yes' : 'No');
             };
@@ -204,8 +322,8 @@ class ExportBuilder
 
         // Y/N cells: blank until answered — an unanswered cell must not export as an explicit No.
         if ($column->painterId() === 'yesno') {
-            return function (Model $model) use ($key): string {
-                $value = data_get($model, $key);
+            return function (Model|array $row) use ($key): string {
+                $value = data_get($row, $key);
 
                 return $value === null || $value === '' ? '' : ($this->truthy($value) ? 'Y' : 'N');
             };
@@ -214,8 +332,8 @@ class ExportBuilder
         // Summable numerics stay RAW (int/float/fixed-scale string) so CSV/XLSX cells compute;
         // the PDF formats them at paint time from the column's Format tag.
         if ($column->isSelectableNumeric()) {
-            return function (Model $model) use ($key): int|float|string {
-                $value = data_get($model, $key);
+            return function (Model|array $row) use ($key): int|float|string {
+                $value = data_get($row, $key);
                 if ($value === null || $value === '') {
                     return '';
                 }
@@ -237,8 +355,8 @@ class ExportBuilder
         }
         $registry = $format !== null ? app(FormatRegistry::class) : null;
 
-        return function (Model $model) use ($key, $format, $strip, $registry): string {
-            $value = data_get($model, $key);
+        return function (Model|array $row) use ($key, $format, $strip, $registry): string {
+            $value = data_get($row, $key);
             if ($value === null || $value === '') {
                 return '';
             }
@@ -249,6 +367,15 @@ class ExportBuilder
 
             return $strip ? $this->stripHtml($text) : $text;
         };
+    }
+
+    /**
+     * @param  Model|array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    protected function rowArray(Model|array $row): array
+    {
+        return $row instanceof Model ? $row->toArray() : $row;
     }
 
     /**

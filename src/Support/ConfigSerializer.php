@@ -272,10 +272,9 @@ class ConfigSerializer
             $layout['rowActivate'] = ['navigate' => $grid->rowActivateNavigates()];
         }
 
-        // Exports (readonly grids): the enabled format list drives the toolbar's Export
-        // control; the client echoes a format name back through gridExport, nothing more.
-        // Emitted only when declared (whenFilled discipline).
-        if ($grid->isServerSide() && ($export = $grid->getExport()) !== null) {
+        // Exports (readonly grids): query-backed and trusted exportRows-backed grids both expose
+        // the control. hasServerExportSource deliberately does not alter in-memory display mode.
+        if ($grid->hasServerExportSource() && ($export = $grid->getExport()) !== null) {
             $layout['export'] = ['formats' => $export['formats']];
         }
 

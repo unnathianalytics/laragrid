@@ -68,7 +68,7 @@ An editable entry grid — typed cell editors, ERP cell focus control (`FocusMod
 
 | Mode | Declare with | What you get |
 |---|---|---|
-| **Display** | rows passed to the tag | Paints in-memory rows. Works on plain Blade pages without any Livewire component. `->sortable()` columns sort **client-side** (stable, type-aware, empties last; click cycles asc → desc → original order; `->defaultSort()` is applied at load) — built for computed report grids (trial balance, ageing) that can never be `query()`-backed. |
+| **Display** | rows passed to the tag | Paints in-memory rows. Works on plain Blade pages without any Livewire component. `->sortable()` columns sort **client-side** (stable, type-aware, empties last; click cycles asc → desc → original order; `->defaultSort()` is applied at load) — built for computed report grids (trial balance, ageing) that can never be `query()`-backed. A Livewire host may opt into trusted downloads with `->exportRows()` without changing this display mode. |
 | **Readonly server-side** | `->query(fn () => Model::query())` | Sort, global search, filters, pagination through a whitelisted fail-closed pipeline. Page 1 ships in the initial payload (zero-round-trip first paint); later pages stream over an RPC with an LRU cache and idle prefetch of the next page. `->singlePageUpTo(N)` serves the whole filtered set chrome-free whenever it fits (decided per request — a narrowing search flips into single-page view); a first page above `laragrid.max_per_page` auto-defers to a post-boot fetch so the mount HTML stays small at any table size. Opt-in CSV/XLSX/PDF downloads of the current view (`->exportable()`) and named per-user saved views (`->savedViews()`). |
 | **Editable** | `->editable()->rowsFrom('lines')` | The full spreadsheet: optimistic client, authoritative server, typed op protocol, validation on both sides, formula columns, async pickers with row enrichment, auto-append, undo/redo, live footer totals. |
 
@@ -561,6 +561,91 @@ open a menu). The download is always the operator's **current view**: the active
 search and filters apply — the whole filtered set, never just the visible page — through the
 same whitelisted, fail-closed pipeline as every fetch. The `gridExport` RPC re-runs the grid's
 `->authorize()` gate and refuses any format the definition doesn't enable.
+
+### Readonly in-memory reports
+
+An in-memory report can export without inventing an Eloquent query by declaring a separate,
+trusted server row resolver. `:rows` and `exportRows()` have intentionally different security
+roles: Blade `:rows` paints the in-memory display dataset; `exportRows()` rebuilds download rows
+on the server after authorization. LaraGrid never exports Blade rows, a Livewire public rows
+property, DOM content, or any rows included in the export request.
+
+The host must be a Livewire component using `WithLaraGrid`, register the definition from
+`grids()`, and declare `authorize()`:
+
+```php
+use App\Models\Voucher;
+use LaraGrid\Columns\{DateColumn, DecimalColumn, SerialColumn, TextColumn};
+use LaraGrid\Grid;
+use LaraGrid\Livewire\WithLaraGrid;
+use Livewire\Component;
+
+class DayBook extends Component
+{
+    use WithLaraGrid;
+
+    /** Rows built for the normal in-memory screen. */
+    public array $rows = [];
+
+    public string $from = '';
+    public string $to = '';
+
+    protected function grids(): array
+    {
+        return ['dayBook' => $this->dayBookGrid()];
+    }
+
+    protected function dayBookGrid(): Grid
+    {
+        return Grid::make('dayBook')
+            ->authorize(fn () => $this->authorize('viewAny', Voucher::class))
+            ->exportRows(fn (array $state): iterable => $this->dayBookExportRows($state))
+            ->exportable(['csv', 'xlsx', 'pdf'], fileName: 'day-book')
+            ->columns([
+                SerialColumn::make(),
+                DateColumn::make('date')->sortable(),
+                TextColumn::make('type')->sortable(),
+                TextColumn::make('voucher')->sortable(),
+                TextColumn::make('ledger'),
+                DecimalColumn::make('debit')->scale(2),
+                DecimalColumn::make('credit')->scale(2),
+            ]);
+    }
+
+    /**
+     * $state is exactly {sort, dir, search, filters}; unknown client keys and invalid
+     * sort/filter targets have already been removed. Apply the intents your report supports.
+     */
+    protected function dayBookExportRows(array $state): iterable
+    {
+        // Component report filters such as $this->from/$this->to are already trusted server
+        // state on this rehydrated Livewire component. Re-query and transform independently.
+        foreach ($this->reportBuilder($this->from, $this->to)->lazyEntries() as $voucher) {
+            foreach ($this->movePartyEntryFirst($voucher) as $row) {
+                yield $row; // generators keep the export pipeline bounded-memory
+            }
+        }
+    }
+
+    public function render()
+    {
+        return view('livewire.day-book');
+    }
+}
+```
+
+```blade
+{{-- These rows remain the in-memory display source; downloads never trust them. --}}
+<x-laragrid :grid="$this->gridDefinition('dayBook')" :rows="$rows" />
+```
+
+The resolver may return any iterable, including arrays, Laravel `Arrayable` DTOs, Eloquent
+models, collections, and generators. The export row cap is applied lazily. LaraGrid supplies
+normalized `sort`, `dir`, `search`, and declared `filters`, but the resolver is responsible for
+applying the relevant state when the custom report supports those grid-level controls. Report
+filters held by the component itself can simply be read from the component's server state.
+Adding `exportRows()` does not make `isServerSide()` true: rendering stays in-memory,
+`gridFetch` remains unavailable, and saved views plus query persistence still require `query()`.
 
 **What lands in the file** is what the grid paints: picker columns export their **labels** (not
 ids), `YesNoColumn` exports `Y`/`N` (blank while unanswered), `CheckboxColumn` exports

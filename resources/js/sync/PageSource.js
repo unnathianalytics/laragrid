@@ -14,8 +14,9 @@
  *       called by the header sort control and the pagination chrome.
  */
 import Lru from '../util/lru.js';
+import ExportSource from './ExportSource.js';
 
-export default class PageSource {
+export default class PageSource extends ExportSource {
     /**
      * @param {import('../core/StateStore').default} store
      * @param {import('../core/EventBus').default} bus
@@ -23,9 +24,7 @@ export default class PageSource {
      * @param {{cacheSize?: number}} [opts]
      */
     constructor(store, bus, wire, opts = {}) {
-        this.store = store;
-        this.bus = bus;
-        this.wire = wire;
+        super(store, bus, wire);
         this.cache = new Lru(opts.cacheSize || 24);
         /** Monotonic request id; a response is applied only if it's still the latest. */
         this.seq = 0;
@@ -139,35 +138,6 @@ export default class PageSource {
     /** Change page size and reload from page 1. */
     setPerPage(perPage) {
         this.load({ ...this.store.query, perPage, page: 1 });
-    }
-
-    /**
-     * Download the CURRENT view (sort/search/filters — the whole filtered set, never the
-     * page window) in one of the grid's enabled export formats. The server re-authorizes
-     * and re-whitelists everything; we only echo the format name + the query intents.
-     * Livewire turns the streamed response into a browser download; bus events let the
-     * toolbar disable its control (and the announcer speak) while one is in flight.
-     */
-    export(format) {
-        if (this.exporting || typeof this.wire.gridExport !== 'function') {
-            return Promise.resolve();
-        }
-        const query = { ...this.store.query };
-        delete query.page;
-        delete query.perPage;
-
-        this.exporting = true;
-        this.bus.emit('export:started', { format });
-        return this.wire
-            .gridExport(this.store.name, format, query)
-            .then(() => {
-                this.exporting = false;
-                this.bus.emit('export:done', { format });
-            })
-            .catch((error) => {
-                this.exporting = false;
-                this.bus.emit('export:error', { format, error });
-            });
     }
 
     // ---- Fetch + reconcile ----------------------------------------------------------------

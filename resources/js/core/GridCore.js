@@ -21,6 +21,7 @@ import ClipboardManager from '../clipboard/ClipboardManager.js';
 import StatusBar from '../statusbar/StatusBar.js';
 import Announcer from '../a11y/Announcer.js';
 import PageSource from '../sync/PageSource.js';
+import ExportSource from '../sync/ExportSource.js';
 import PaginationBar from '../render/PaginationBar.js';
 import SyncManager from '../sync/SyncManager.js';
 import UndoManager from '../undo/UndoManager.js';
@@ -161,6 +162,7 @@ export default class GridCore {
         // (sort/search/filter/paginate over gridFetch) + pagination chrome. In-memory grids skip it
         // entirely — identical behaviour to M1/M2.
         this.installServerData();
+        this.installExportSource();
         this.installLocalSort();
 
         // Package toolbar (P6) + the column chooser (M7): the chooser mounts into the toolbar's
@@ -357,8 +359,24 @@ export default class GridCore {
             console.error('[laragrid:' + this.store.name + '] gridFetch failed:', error);
         });
 
-        // Export lifecycle (PageSource.export): a download can take a few seconds on a big
-        // register — say so, and make a failure as loud as a failed fetch.
+    }
+
+    /**
+     * Install the export-only RPC seam without changing display mode. Query grids reuse their
+     * PageSource; readonly in-memory grids get only ExportSource and therefore never gridFetch.
+     */
+    installExportSource() {
+        if (this.pageSource) {
+            this.exportSource = this.pageSource;
+        } else if (this.store.layout.export && this.refs.wire) {
+            this.exportSource = new ExportSource(this.store, this.bus, this.refs.wire);
+        }
+
+        if (!this.exportSource) {
+            return;
+        }
+
+        // A download can take a few seconds on a big report — say so, and make failure loud.
         this.bus.on('export:started', () => {
             if (this.announcer) {
                 this.announcer.message('Preparing download…');
@@ -377,24 +395,23 @@ export default class GridCore {
             console.error('[laragrid:' + this.store.name + '] gridExport failed:', error);
         });
 
-        // Host-toolbar bridge: a host renders its own search/filter inputs (outside wire:ignore)
-        // and dispatches `lgrid:toolbar` DOM events; we route the matching grid's ones to PageSource
-        // so the host stays Livewire-free and never morphs the body. {grid, kind, key?, value}.
+        // Host-toolbar bridge. Query intents still require PageSource; export is available through
+        // the mode-independent source on resolver-backed in-memory reports too.
         this.onToolbar = (e) => {
             const d = e.detail || {};
             if (d.grid !== this.store.name) {
                 return;
             }
-            if (d.kind === 'search') {
+            if (d.kind === 'search' && this.pageSource) {
                 this.pageSource.search(d.value);
-            } else if (d.kind === 'filter') {
+            } else if (d.kind === 'filter' && this.pageSource) {
                 this.pageSource.setFilter(d.key, d.value);
-            } else if (d.kind === 'perPage') {
+            } else if (d.kind === 'perPage' && this.pageSource) {
                 this.pageSource.setPerPage(Number(d.value));
             } else if (d.kind === 'export') {
                 // Custom host chrome triggers a download the same way: {kind: 'export',
                 // value: 'csv'}. The server still enforces the grid's enabled-format list.
-                this.pageSource.export(d.value);
+                this.exportSource.export(d.value);
             }
         };
         document.addEventListener('lgrid:toolbar', this.onToolbar);
@@ -576,6 +593,7 @@ export default class GridCore {
                 this.config.actions || {},
                 this.popupManager || null,
                 this.viewsManager || null,
+                this.exportSource || null,
             );
             this.toolbar.render();
 
