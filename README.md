@@ -893,7 +893,6 @@ instead of moving. Per-row locked cells are skipped by horizontal and wrapping m
 | Shortcut | Action | Available in |
 |---|---|---|
 | Any printable character except `Space` | Open a non-toggle active cell and replace its value with the typed character | Editable grids |
-| `F2` | Open the active cell without replacing its value; place the caret at the end | Editable grids |
 | `Space` | Toggle a `CheckboxColumn` or `YesNoColumn` without advancing | Editable grids |
 | `Y` / `N` | Set a `YesNoColumn` and advance | Editable grids |
 | `Enter` / `Shift+Enter` | Commit and advance forward / backward according to the active keymap | While editing |

@@ -1,6 +1,6 @@
 /**
  * What: The single floating-editor host + the NAV↔EDIT state machine (plan §2.6). It opens one
- *       reusable editor over the active cell (type-through / F2 / double-click / Enter), runs the
+ *       reusable editor over the active cell (type-through / double-click / Enter), runs the
  *       commit pipeline (parse → client-validate → optimistic store apply → enqueue op → advance),
  *       cancels on Esc, and commits on blur — for every editable column type via the registry.
  *       M5 adds the picker seams: editors may consume keys first (handleKey — popup navigation),
@@ -72,7 +72,7 @@ export default class EditorManager {
      *
      * @param {{seed?: string, caretAtEnd?: boolean}} [opts]
      *   seed = a printable char that pre-seeds a type-through edit (replaces content);
-     *   caretAtEnd = F2 mode (keep content, caret at end).
+     *   caretAtEnd = keep content and place the caret at the end.
      */
     open(opts = {}) {
         if (this.mode === 'EDIT') {
@@ -103,7 +103,7 @@ export default class EditorManager {
 
         if (EditorClass.instant) {
             // A typed char the instant editor maps (YesNoInline.chars: y/n) SETS that value and
-            // advances like an Enter commit; any other open gesture (Space/F2/dblclick) toggles.
+            // advances like an Enter commit; any other open gesture (Space/dblclick) toggles.
             const chars = EditorClass.chars || null;
             const mapped = chars && opts.seed != null
                 ? chars[String(opts.seed).toLowerCase()]
@@ -123,7 +123,7 @@ export default class EditorManager {
         this.positionOver(cellEl);
         this.refs.editor.hidden = false;
 
-        // Seed text: a type-through char replaces; F2/dblclick keep the current EDIT text
+        // Seed text: a type-through char replaces; dblclick/programmatic opens keep the EDIT text
         // (editTextFor — e.g. an Amount cell seeds "125.00" rupees, never its raw paise digits).
         const initialText = opts.seed != null ? opts.seed : this.currentText(hit.row, column);
         this.editor = new EditorClass();
@@ -155,9 +155,9 @@ export default class EditorManager {
     }
 
     /**
-     * The current EDITING text for the cell (F2 / dblclick preserve): the canonical interchange
-     * text per parse kind — paise → rupees, ISO date → d-m-Y — so re-committing what the editor
-     * shows reproduces the same model value (the M4 F2-on-Amount 100× defect is fixed here).
+     * The current EDITING text for a content-preserving open: the canonical interchange text per
+     * parse kind — paise → rupees, ISO date → d-m-Y — so re-committing what the editor shows
+     * reproduces the same model value.
      */
     currentText(row, column) {
         return editTextFor(column, row[column.key]);

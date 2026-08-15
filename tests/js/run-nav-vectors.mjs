@@ -1,7 +1,8 @@
 /**
  * Node harness: run the shared navigation.json vectors through the REAL datagrid geometry +
  * keymap modules (the M2 half of the anti-drift lock, mirroring how M1 proved formatters.js in
- * Node). Exits non-zero with a diff on any mismatch. Invoked by tests/Feature/Grid/
+ * Node). It also pins intentionally unassigned keys at the dispatcher boundary. Exits non-zero
+ * with a diff on any mismatch. Invoked by tests/Feature/Grid/
  * NavigationVectorsTest.php via Symfony Process (skipped when node is unavailable) and runnable
  * directly: `node tests/js/run-nav-vectors.mjs`.
  */
@@ -17,6 +18,9 @@ const jsBase = resolve(root, 'resources', 'js');
 const { resolveMove } = await import(pathToFileURL(resolve(jsBase, 'util', 'geometry.js')).href);
 const { ENTRY_KEYMAP } = await import(pathToFileURL(resolve(jsBase, 'keyboard', 'keymap-entry.js')).href);
 const { EXCEL_KEYMAP } = await import(pathToFileURL(resolve(jsBase, 'keyboard', 'keymap-excel.js')).href);
+const { default: KeyboardManager } = await import(
+    pathToFileURL(resolve(jsBase, 'keyboard', 'KeyboardManager.js')).href,
+);
 
 const keymapFor = (name) => (name === 'excel' ? EXCEL_KEYMAP : ENTRY_KEYMAP);
 
@@ -56,11 +60,49 @@ for (const v of data.vectors) {
     }
 }
 
+// A free key must pass through the full dispatcher untouched even on editable grids. Checking
+// both presets catches either a future direct edit-open gesture or an accidental keymap binding.
+const originalDocument = globalThis.document;
+try {
+    const root = { contains: () => false };
+    globalThis.document = { activeElement: root };
+
+    for (const keymap of ['entry', 'excel']) {
+        const binding = keymapFor(keymap).F2;
+        let prevented = false;
+        let opened = false;
+        const manager = new KeyboardManager(
+            { layout: { keymap } },
+            {},
+            { root },
+            { editor: { isEditing: () => false, open: () => { opened = true; } } },
+        );
+        manager.handleKeyDown({
+            key: 'F2',
+            target: root,
+            preventDefault: () => { prevented = true; },
+        });
+
+        if (binding !== undefined || prevented || opened) {
+            failures.push(
+                `[${keymap}] F2 must remain unhandled `
+                + `(binding=${JSON.stringify(binding)}, prevented=${prevented}, opened=${opened})`,
+            );
+        }
+    }
+} finally {
+    if (originalDocument === undefined) {
+        delete globalThis.document;
+    } else {
+        globalThis.document = originalDocument;
+    }
+}
+
 if (failures.length > 0) {
     console.error(`navigation vectors: ${pass}/${data.vectors.length} passed`);
     failures.forEach((f) => console.error('  FAIL ' + f));
     process.exit(1);
 }
 
-console.log(`navigation vectors: ${pass}/${data.vectors.length} passed`);
+console.log(`navigation vectors: ${pass}/${data.vectors.length} passed; F2 is unhandled`);
 process.exit(0);

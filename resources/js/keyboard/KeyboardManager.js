@@ -95,22 +95,16 @@ export default class KeyboardManager {
         }
 
         // Edit-open intents (editable grids), checked before the keymap:
-        //  - F2 opens the editor with the caret at end (preserve content);
         //  - Space on a CHECKBOX cell toggles it inline (M5, §2.6 — no editor round-trip);
         //  - a printable char (no modifiers) type-through opens the editor seeded with that char.
         // Enter NEVER opens the editor (M5 verification refinement, form-kit/Tally parity):
         // under the entry keymap it advances through a FILLED cell (auto-appending at the grid's
         // end, G4) and is BLOCKED with a flash on a blank required cell (G7); under excel it
-        // falls through to the keymap's move-down. Typing / F2 / double-click are the edit
-        // gestures. Instant (checkbox) columns are likewise excluded from type-through — Space
+        // falls through to the keymap's move-down. Typing / double-click are the edit gestures.
+        // Instant (checkbox) columns are likewise excluded from type-through — Space
         // (and double-click) are the deliberate toggle gestures — EXCEPT the chars the instant
         // editor itself maps (YesNoInline: y/n), which commit that value directly and advance.
         if (this.editor) {
-            if (e.key === 'F2') {
-                e.preventDefault();
-                this.editor.open({ caretAtEnd: true });
-                return;
-            }
             if (e.key === ' ' && this.activeCellEditable() && this.activeCellInstant()) {
                 e.preventDefault();
                 this.editor.open({});
@@ -320,7 +314,7 @@ export default class KeyboardManager {
         return this.isEmptyCell(addr);
     }
 
-    /** True when the active cell's column is editable (so type-through/F2 opens the editor there). */
+    /** True when the active cell's column is editable (so type-through can open its editor). */
     activeCellEditable() {
         const addr = this.store.active;
         if (!addr) {

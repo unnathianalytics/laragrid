@@ -12,7 +12,7 @@ use Symfony\Component\Process\Process;
  *
  * Why:  The picker parse kinds and the editing/interchange text are dual-runtime adjacent (the PHP
  *       cast mirrors live in OpApplier, pinned by OpApplierTest); this locks the CLIENT half —
- *       including the paise→rupee edit text whose absence was the latent M4 F2 defect — so it
+ *       including the paise→rupee edit text required for a lossless editing round trip — so it
  *       can't silently drift. Mirrors the M4 expression-vector harness; skips cleanly where Node
  *       isn't installed (the browser suite exercises the JS live regardless).
  *

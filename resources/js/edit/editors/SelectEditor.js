@@ -32,7 +32,7 @@ export default class SelectEditor {
         this.input.type = 'text';
         this.input.setAttribute('autocomplete', 'off');
         this.input.placeholder = '';
-        // A type-through seed becomes the initial filter; F2/Enter opens unfiltered.
+        // A type-through seed becomes the initial filter; Enter/double-click opens unfiltered.
         this.input.value = ctx.seed != null ? String(ctx.seed) : '';
         this.onInput = () => this.applyFilter(this.input.value);
         this.input.addEventListener('input', this.onInput);

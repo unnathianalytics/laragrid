@@ -2859,11 +2859,6 @@ var KeyboardManager = class {
       return;
     }
     if (this.editor) {
-      if (e.key === "F2") {
-        e.preventDefault();
-        this.editor.open({ caretAtEnd: true });
-        return;
-      }
       if (e.key === " " && this.activeCellEditable() && this.activeCellInstant()) {
         e.preventDefault();
         this.editor.open({});
@@ -3034,7 +3029,7 @@ var KeyboardManager = class {
     }
     return this.isEmptyCell(addr);
   }
-  /** True when the active cell's column is editable (so type-through/F2 opens the editor there). */
+  /** True when the active cell's column is editable (so type-through can open its editor). */
   activeCellEditable() {
     const addr = this.store.active;
     if (!addr) {
@@ -4254,7 +4249,7 @@ var EditorManager = class {
    *
    * @param {{seed?: string, caretAtEnd?: boolean}} [opts]
    *   seed = a printable char that pre-seeds a type-through edit (replaces content);
-   *   caretAtEnd = F2 mode (keep content, caret at end).
+   *   caretAtEnd = keep content and place the caret at the end.
    */
   open(opts = {}) {
     if (this.mode === "EDIT") {
@@ -4324,9 +4319,9 @@ var EditorManager = class {
     this.bus.emit("editor:opened", { rowKey: addr.rowKey, colKey: addr.colKey });
   }
   /**
-   * The current EDITING text for the cell (F2 / dblclick preserve): the canonical interchange
-   * text per parse kind — paise → rupees, ISO date → d-m-Y — so re-committing what the editor
-   * shows reproduces the same model value (the M4 F2-on-Amount 100× defect is fixed here).
+   * The current EDITING text for a content-preserving open: the canonical interchange text per
+   * parse kind — paise → rupees, ISO date → d-m-Y — so re-committing what the editor shows
+   * reproduces the same model value.
    */
   currentText(row, column) {
     return editTextFor(column, row[column.key]);
@@ -6405,7 +6400,7 @@ var TextEditor = class {
     this.input.value = next;
     this.input.setSelectionRange(pos, pos);
   }
-  /** Focus the input; place the caret at the end (F2) or select-all (type-through replaces). */
+  /** Focus the input; place the caret at the end or select all for a replacing edit. */
   focus(caretAtEnd) {
     const place = () => {
       this.input.focus();

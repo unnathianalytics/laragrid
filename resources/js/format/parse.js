@@ -5,7 +5,7 @@
  *       core kinds text / int / decimal(scale) / select / bool / date, plus registerCast(): the
  *       seam a consuming app uses to add its own kinds (each MUST mirror a PHP Cast it
  *       registered under the same kind). Also owns editTextFor(): the canonical
- *       EDITING/interchange text for a model value (what F2 preserves, what an editable copy
+ *       EDITING/interchange text for a model value (what a content-preserving edit and copy
  *       emits, what a paste round-trips) — a registered cast supplies its own via `editText`.
  * Why:  An edit applies optimistically on the client (instant paint) and is re-cast
  *       authoritatively on the server; the two must agree by construction (plan §2.5, R2). This
@@ -199,8 +199,8 @@ export function parseValue(spec, raw) {
 }
 
 /**
- * The canonical EDITING/interchange text for a cell's MODEL value — what F2-preserve seeds the
- * editor with, what an editable-grid copy writes to the TSV, and what a paste of that TSV
+ * The canonical EDITING/interchange text for a cell's MODEL value — what a preserving edit seeds
+ * the editor with, what an editable-grid copy writes to the TSV, and what a paste of that TSV
  * parses back to the same model value (the round-trip contract): date ISO → the operator's
  * display pattern, bool → "1"/"0", a registered kind's own editText (e.g. paise 12500 →
  * "125.00"), everything else → String(value).

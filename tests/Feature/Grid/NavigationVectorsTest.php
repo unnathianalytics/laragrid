@@ -8,8 +8,7 @@ use Symfony\Component\Process\Process;
 /**
  * What: The M2 navigation anti-drift lock — runs the shared tests/fixtures/grid-vectors/
  *       navigation.json cases through the REAL JS geometry + keymap modules (via a Node harness)
- *       and asserts every case matches, so the keyboard engine's movement math can't silently
- *       drift from the committed spec.
+ *       and asserts every case matches, while also pinning free keys at the live dispatcher.
  * Why:  Movement (wrap, boundary-escape, skip-gutter, Home/End, Ctrl-edges, paging, both keymaps)
  *       is pure index arithmetic with no PHP counterpart — the vectors ARE the contract, and the
  *       cheapest durable way to hold JS to them is to execute the actual modules over the same
@@ -32,4 +31,5 @@ it('resolves every navigation vector through the real geometry + keymap modules'
         $process->getOutput().$process->getErrorOutput(),
     );
     expect($process->getOutput())->toContain('33/33 passed');
+    expect($process->getOutput())->toContain('F2 is unhandled');
 });

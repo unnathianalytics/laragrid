@@ -51,7 +51,7 @@ export default class TextEditor {
         this.input.setSelectionRange(pos, pos);
     }
 
-    /** Focus the input; place the caret at the end (F2) or select-all (type-through replaces). */
+    /** Focus the input; place the caret at the end or select all for a replacing edit. */
     focus(caretAtEnd) {
         const place = () => {
             this.input.focus();

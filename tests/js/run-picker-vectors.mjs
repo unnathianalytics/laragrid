@@ -1,8 +1,8 @@
 /**
  * Node harness: run the picker-parse.json vectors through the REAL datagrid parse.js module —
  * the M5 half of the R2 anti-drift lock for the picker kinds (date via the SHARED fuzzy parser,
- * bool, select) and for editTextFor (the F2/copy/paste interchange text, incl. the paise→rupee
- * round-trip that fixes the latent M4 F2 defect). The PHP cast mirrors are pinned by
+ * bool, select) and for editTextFor (the edit/copy/paste interchange text, including the
+ * paise→rupee round-trip). The PHP cast mirrors are pinned by
  * OpApplierTest. Exits non-zero with a diff on any mismatch. Invoked by
  * tests/Feature/Grid/PickerVectorsTest.php via Symfony Process (skipped when node is
  * unavailable) and runnable directly: `node tests/js/run-picker-vectors.mjs`.
