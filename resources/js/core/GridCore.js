@@ -823,7 +823,7 @@ export default class GridCore {
     /** Insert a blank row after the active row (Insert key). */
     rowInsert() {
         const after = this.store.active ? this.store.active.rowKey : null;
-        const newKey = 'r' + this.store.nextSeq() + Math.random().toString(36).slice(2, 6);
+        const newKey = this.freshRowKey();
         this.store.insertRow(newKey, after);
         this.sync.enqueue(
             { seq: this.store.nextSeq(), t: 'insert', after, as: newKey },
@@ -847,7 +847,7 @@ export default class GridCore {
             return;
         }
 
-        const newKey = 'r' + this.store.nextSeq() + Math.random().toString(36).slice(2, 6);
+        const newKey = this.freshRowKey();
         if (!this.store.dupRow(source._k, newKey)) {
             return;
         }
@@ -885,8 +885,46 @@ export default class GridCore {
             }
         }
 
+        // An editable auto-append grid always retains an entry surface, even when its LOGICAL
+        // dataset is empty. Swap the sole physical row for a template-built draft atomically in
+        // the store (one repaint, so the empty-state listener never observes zero), then send the
+        // matching remove+insert as one RPC batch. Both recorder entries occur synchronously and
+        // are therefore one undo step: undo drops this draft and restores the deleted snapshot;
+        // redo returns to exactly this one draft.
+        if (this.store.rowCount() === 1 && this.store.layout.autoAppend) {
+            const newKey = this.freshRowKey();
+            if (!this.store.replaceRowWithDraft(rowKey, newKey)) {
+                return;
+            }
+
+            const firstCol = this.store.navigabilityMask().indexOf(true);
+            const addr = firstCol >= 0 ? this.store.addressAt(0, firstCol) : null;
+            if (addr) {
+                this.store.setActive(addr);
+            }
+            if (this.refs.root && typeof this.refs.root.focus === 'function') {
+                this.refs.root.focus({ preventScroll: true });
+            }
+
+            this.sync.enqueueBatch([
+                { op: { seq: this.store.nextSeq(), t: 'remove', row: rowKey }, cells: [] },
+                { op: { seq: this.store.nextSeq(), t: 'insert', as: newKey }, cells: [] },
+            ]);
+            return;
+        }
+
         this.store.removeRow(rowKey);
         this.sync.enqueue({ seq: this.store.nextSeq(), t: 'remove', row: rowKey }, [], { flush: true });
+    }
+
+    /** Generate a client row key that is unique within the current physical row set. */
+    freshRowKey() {
+        let key;
+        do {
+            key = 'r' + this.store.nextSeq() + Math.random().toString(36).slice(2, 6);
+        } while (this.store.rowByKey.has(key));
+
+        return key;
     }
 
     /** Fill the active cell's column down across the current selection (Ctrl+D). */

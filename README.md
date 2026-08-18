@@ -275,6 +275,12 @@ are exempt from validation (a `required()` column never flags a row nobody touch
 from footer totals, stripped by `gridRows()` at save, not counted by `->minRows(n)`, and are
 where the end-of-list exit appears (next section).
 
+When the operator deletes its final row, an editable `->autoAppend()` grid keeps one blank physical
+draft even though it now has zero logical rows. The deleted row is replaced with a fresh keyed row
+from the same new-row template and focus stays on the entry surface; `->minRows(0)` and
+`gridRows() === []` remain true. Readonly grids and editable grids with `->autoAppend(false)` still
+show their normal empty state when they contain no rows.
+
 **Row keys are law.** Every op addresses rows by `_k`, never by position — so sorting,
 insertion and concurrent edits can never target the wrong row. If your host code ever replaces
 the bound rows outside the op protocol (a save reset, importing lines), call

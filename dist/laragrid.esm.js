@@ -840,12 +840,14 @@ var StateStore = class {
     return changed;
   }
   /**
-   * Insert a fresh blank row (all editable columns null) after `afterKey` (or appended), keyed by
-   * the client-generated `newKey`. Structural → full body repaint via rows:changed.
+   * Build the optimistic twin of Grid::makeNewRow(): every declared data column receives its
+   * serialized new-row-template value (or null), under the client-generated stable key.
+   * Insert, auto-append, paste growth and the last-row replacement all share this shape.
+   *
    * @param {string} newKey
-   * @param {string|null} afterKey
+   * @returns {object}
    */
-  insertRow(newKey, afterKey = null) {
+  makeDraftRow(newKey) {
     const template = this.layout && this.layout.newRow || {};
     const blank = { _k: newKey };
     for (const c of this.columns) {
@@ -853,6 +855,16 @@ var StateStore = class {
         blank[c.key] = template[c.key] !== void 0 ? template[c.key] : null;
       }
     }
+    return blank;
+  }
+  /**
+   * Insert a fresh blank row after `afterKey` (or appended), keyed by the client-generated
+   * `newKey`. Structural → full body repaint via rows:changed.
+   * @param {string} newKey
+   * @param {string|null} afterKey
+   */
+  insertRow(newKey, afterKey = null) {
+    const blank = this.makeDraftRow(newKey);
     const at = afterKey !== null ? this.rowIndexOf(afterKey) : -1;
     if (at < 0) {
       this.rows.push(blank);
@@ -870,6 +882,44 @@ var StateStore = class {
     }
     this.bus.emit("rows:changed", { rows: this.rows });
     return blank;
+  }
+  /**
+   * Replace one physical row with a fresh draft in ONE structural repaint. This is the
+   * zero-logical-row auto-append invariant: deleting the final physical row must never expose
+   * a zero-row editable surface, but the replacement remains template-blank and therefore does
+   * not count toward minRows/totals/save rows. The paired recorder entries deliberately share
+   * the current task, so undo/redo owns the swap as one step with no duplicate draft.
+   *
+   * @param {string} rowKey the sole row being removed
+   * @param {string} newKey the unique key for its replacement draft
+   * @returns {object|null}
+   */
+  replaceRowWithDraft(rowKey, newKey) {
+    const at = this.rowIndexOf(rowKey);
+    if (at < 0 || newKey === rowKey || this.rowByKey.has(newKey)) {
+      return null;
+    }
+    const removed = this.rows[at];
+    const draft = this.makeDraftRow(newKey);
+    if (this.recorder) {
+      this.recorder.record({
+        t: "remove",
+        rowKey,
+        index: at,
+        snapshot: { ...removed, _labels: { ...removed._labels || {} } }
+      });
+      this.recorder.record({
+        t: "insert",
+        rowKey: newKey,
+        index: at,
+        snapshot: { ...draft }
+      });
+    }
+    this.rows.splice(at, 1, draft);
+    this.clearRowState(rowKey);
+    this.reindex();
+    this.bus.emit("rows:changed", { rows: this.rows });
+    return draft;
   }
   /**
    * Remove a row by key. Structural → full body repaint.
@@ -7686,7 +7736,7 @@ var GridCore = class {
   /** Insert a blank row after the active row (Insert key). */
   rowInsert() {
     const after = this.store.active ? this.store.active.rowKey : null;
-    const newKey = "r" + this.store.nextSeq() + Math.random().toString(36).slice(2, 6);
+    const newKey = this.freshRowKey();
     this.store.insertRow(newKey, after);
     this.sync.enqueue(
       { seq: this.store.nextSeq(), t: "insert", after, as: newKey },
@@ -7708,7 +7758,7 @@ var GridCore = class {
       }
       return;
     }
-    const newKey = "r" + this.store.nextSeq() + Math.random().toString(36).slice(2, 6);
+    const newKey = this.freshRowKey();
     if (!this.store.dupRow(source._k, newKey)) {
       return;
     }
@@ -7740,8 +7790,35 @@ var GridCore = class {
         return;
       }
     }
+    if (this.store.rowCount() === 1 && this.store.layout.autoAppend) {
+      const newKey = this.freshRowKey();
+      if (!this.store.replaceRowWithDraft(rowKey, newKey)) {
+        return;
+      }
+      const firstCol = this.store.navigabilityMask().indexOf(true);
+      const addr = firstCol >= 0 ? this.store.addressAt(0, firstCol) : null;
+      if (addr) {
+        this.store.setActive(addr);
+      }
+      if (this.refs.root && typeof this.refs.root.focus === "function") {
+        this.refs.root.focus({ preventScroll: true });
+      }
+      this.sync.enqueueBatch([
+        { op: { seq: this.store.nextSeq(), t: "remove", row: rowKey }, cells: [] },
+        { op: { seq: this.store.nextSeq(), t: "insert", as: newKey }, cells: [] }
+      ]);
+      return;
+    }
     this.store.removeRow(rowKey);
     this.sync.enqueue({ seq: this.store.nextSeq(), t: "remove", row: rowKey }, [], { flush: true });
+  }
+  /** Generate a client row key that is unique within the current physical row set. */
+  freshRowKey() {
+    let key;
+    do {
+      key = "r" + this.store.nextSeq() + Math.random().toString(36).slice(2, 6);
+    } while (this.store.rowByKey.has(key));
+    return key;
   }
   /** Fill the active cell's column down across the current selection (Ctrl+D). */
   rowFillDown() {
