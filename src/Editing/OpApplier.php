@@ -31,7 +31,7 @@ use LaraGrid\Validation\RuleCompiler;
  *
  * When: Called by WithLaraGrid::gridOps() with the host's bound rows + the parsed batch.
  *
- * @phpstan-type OpResultShape array{seq: int, ok: bool, patch: array<string, array<string, mixed>>, errors: array<string, array<string, string>>}
+ * @phpstan-type OpResultShape array{seq: int, ok: bool, conflict?: bool, patch: array<string, array<string, mixed>>, errors: array<string, array<string, string>>, rows?: list<array<string, mixed>>}
  */
 class OpApplier
 {
@@ -49,6 +49,33 @@ class OpApplier
      */
     public function apply(Grid $grid, array $rows, OpBatch $batch, int $version = 0): OpResult
     {
+        if ($batch->baseVersion !== $version) {
+            $results = [];
+            foreach ($batch->ops as $op) {
+                $rowKey = $op->row ?? '_grid';
+                $colKey = $op->col ?? '_row';
+                $results[] = [
+                    'seq' => $op->seq,
+                    'ok' => false,
+                    'conflict' => true,
+                    'patch' => [],
+                    'errors' => [
+                        $rowKey => [
+                            $colKey => 'This grid changed in another request. Review the latest values and try again.',
+                        ],
+                    ],
+                ];
+            }
+
+            return new OpResult(
+                version: $version,
+                results: $results,
+                footer: $this->computeFooter($grid, $rows),
+                rows: $rows,
+                refreshHost: false,
+            );
+        }
+
         /** @var list<OpResultShape> $results */
         $results = [];
         $refreshHost = false;
@@ -177,13 +204,30 @@ class OpApplier
         $sourceLabel = $sourceLabels[$column->key] ?? null;
 
         $patch = [];
+        $resultErrors = [];
         foreach (array_slice($keys, 1) as $key) {
             $index = $this->indexOfKey($rows, $key);
-            if ($index === null || $column->isReadonlyFor($rows[$index])) {
+            if ($index === null) {
+                $resultErrors[$key][$column->key] = 'That row no longer exists.';
+
+                continue;
+            }
+            if ($column->isReadonlyFor($rows[$index])) {
+                $resultErrors[$key][$column->key] = 'This cell is not editable.';
+
                 continue;
             }
             $rows[$index][$column->key] = $sourceValue;
             $rowPatch = [];
+            $validation = $this->isBlankTrailing($grid, $rows, $index)
+                ? []
+                : $this->validateCell($column, $rows[$index], $sourceValue);
+            if ($validation !== []) {
+                $resultErrors[$key][$column->key] = $validation[0];
+                $patch[$key] = [$column->key => $sourceValue];
+
+                continue;
+            }
             if ($isPicker) {
                 $labels = is_array($rows[$index]['_labels'] ?? null) ? $rows[$index]['_labels'] : [];
                 if ($sourceLabel !== null && $sourceValue !== null) {
@@ -202,7 +246,12 @@ class OpApplier
             $patch[$key] = [$column->key => $sourceValue] + $rowPatch;
         }
 
-        $result = ['seq' => $op->seq, 'ok' => true, 'patch' => $patch, 'errors' => []];
+        $result = [
+            'seq' => $op->seq,
+            'ok' => $resultErrors === [],
+            'patch' => $patch,
+            'errors' => $resultErrors,
+        ];
         $touchedRefresh = isset($refreshCols[$column->key]);
 
         return [$rows, $result, $touchedRefresh];
@@ -218,6 +267,10 @@ class OpApplier
      */
     private function applyInsert(Grid $grid, array $rows, Op $op): array
     {
+        if ($this->indexOfKey($rows, (string) $op->as) !== null) {
+            // Applied-but-lost responses are safe to retry: the echoed key is the idempotency key.
+            return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
+        }
         $blank = $grid->makeNewRow((string) $op->as);
 
         $beforeIndex = $op->before !== null ? $this->indexOfKey($rows, $op->before) : null;
@@ -270,6 +323,9 @@ class OpApplier
      */
     private function applyDup(Grid $grid, array $rows, Op $op): array
     {
+        if ($this->indexOfKey($rows, (string) $op->as) !== null) {
+            return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
+        }
         $index = $this->indexOfKey($rows, (string) $op->row);
         if ($index === null) {
             return [$rows, $this->fail($op, '_row', 'That row no longer exists.', $rows), false];
@@ -313,8 +369,10 @@ class OpApplier
             return [];
         }
 
+        $input = $row;
+        $input[$column->key] = $value === '' ? null : $value;
         $validator = Validator::make(
-            [$column->key => $value === '' ? null : $value],
+            $input,
             [$column->key => $rules],
         );
 

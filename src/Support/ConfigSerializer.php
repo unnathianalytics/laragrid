@@ -68,6 +68,10 @@ class ConfigSerializer
             $config['actions'] = $actions;
         }
 
+        if ($grid->isEditable() && $grid->getProtocolVersion() > 0) {
+            $config['version'] = $grid->getProtocolVersion();
+        }
+
         return $config;
     }
 
@@ -260,9 +264,17 @@ class ConfigSerializer
             $layout['persist'] = $grid->getPersist();
         }
 
+        if ($grid->isEditable() && $grid->getPersistDraft() !== null) {
+            $layout['draft'] = $grid->getPersistDraft();
+        }
+
         // Dedicated entry rows (Busy parity) — same whenFilled discipline as persist.
         if ($grid->getPadRows() > 0) {
             $layout['padRows'] = $grid->getPadRows();
+        }
+
+        if ($grid->getVirtualizeAbove() !== null) {
+            $layout['virtualizeAbove'] = $grid->getVirtualizeAbove();
         }
 
         // Row activation (readonly master lists): advertise that Enter/double-click on a row with

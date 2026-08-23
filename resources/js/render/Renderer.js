@@ -23,7 +23,7 @@ export default class Renderer {
         this.layout = layout;
         this.bus = bus;
         this.header = new HeaderRenderer(store, layout, refs.head);
-        this.body = new BodyRenderer(store, layout, refs.body);
+        this.body = new BodyRenderer(store, layout, refs.body, bus);
         this.footer = new FooterRenderer(store, layout, refs.footer);
 
         // Repaint the body when rows are replaced (initial load today; server pages M3+; and any
@@ -34,11 +34,27 @@ export default class Renderer {
         // whose column CONTROLS sibling locks (lockedWhen) also repaints those siblings, so
         // their locked look tracks the controlling value (e.g. a D/C flip re-mutes the amounts)
         // — purely visual, no store/sync bookkeeping rides on the extra repaints.
+        this.pendingCellPaints = new Map();
+        this.cellPaintFrame = null;
         this.unsubscribeCells = bus.on('cells:changed', ({ cells }) => {
             (cells || []).forEach(({ rowKey, colKey }) => {
-                this.body.repaintCell(rowKey, colKey);
-                this.store.lockedDependentsOf(colKey).forEach((dependentKey) => {
-                    this.body.repaintCell(rowKey, dependentKey);
+                this.pendingCellPaints.set(rowKey + '' + colKey, { rowKey, colKey });
+            });
+            if (this.cellPaintFrame !== null) {
+                return;
+            }
+            const request = typeof requestAnimationFrame === 'function'
+                ? requestAnimationFrame
+                : (callback) => setTimeout(callback, 0);
+            this.cellPaintFrame = request(() => {
+                this.cellPaintFrame = null;
+                const changed = [...this.pendingCellPaints.values()];
+                this.pendingCellPaints.clear();
+                changed.forEach(({ rowKey, colKey }) => {
+                    this.body.repaintCell(rowKey, colKey);
+                    this.store.lockedDependentsOf(colKey).forEach((dependentKey) => {
+                        this.body.repaintCell(rowKey, dependentKey);
+                    });
                 });
             });
         });
@@ -85,6 +101,11 @@ export default class Renderer {
         return this.body.cellElFor(rowKey, colKey);
     }
 
+    /** Ensure a virtualized row is mounted before focusing/editing its cell. */
+    ensureCellElFor(rowKey, colKey) {
+        return this.body.ensureCellElFor(rowKey, colKey);
+    }
+
     /**
      * Repaint one cell in place (M4) — the O(1) seam the editor/store use after an optimistic set.
      * @param {string} rowKey
@@ -107,5 +128,10 @@ export default class Renderer {
         if (this.unsubscribePage) {
             this.unsubscribePage();
         }
+        if (this.cellPaintFrame !== null) {
+            const cancel = typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout;
+            cancel(this.cellPaintFrame);
+        }
+        this.body.destroy();
     }
 }

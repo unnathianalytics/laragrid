@@ -20,24 +20,65 @@ export default class BodyRenderer {
      * @param {import('../core/StateStore').default} store
      * @param {import('./Layout').default} layout
      * @param {HTMLElement} bodyEl
+     * @param {import('../core/EventBus').default} bus
      */
-    constructor(store, layout, bodyEl) {
+    constructor(store, layout, bodyEl, bus) {
         this.store = store;
         this.layout = layout;
         this.bodyEl = bodyEl;
+        this.bus = bus;
         this.striped = !!(store.layout && store.layout.striped);
+        const virtualizeAbove = store.layout && store.layout.virtualizeAbove;
+        this.virtualThreshold = virtualizeAbove === 0 ? Number.POSITIVE_INFINITY
+            : (Number(virtualizeAbove) || 750);
+        this.overscan = 20;
+        this.virtual = false;
+        this.windowStart = -1;
+        this.windowEnd = -1;
+        this.scrollFrame = null;
+        this.printing = false;
         /** @type {Map<string, HTMLElement>} row element by `_k` (row-level addressing). */
         this.rowElByKey = new Map();
         /** @type {Map<string, HTMLElement>} cell element by cellMapKey(rowKey,colKey). */
         this.cellElByKey = new Map();
+
+        this.onScroll = () => this.scheduleVirtualWindow();
+        this.onBeforePrint = () => {
+            if (this.virtual) {
+                this.printing = true;
+                this.render();
+            }
+        };
+        this.onAfterPrint = () => {
+            if (this.printing) {
+                this.printing = false;
+                this.render();
+            }
+        };
+        if (this.layout.refs.scroll) {
+            this.layout.refs.scroll.addEventListener('scroll', this.onScroll, { passive: true });
+        }
+        if (typeof window !== 'undefined') {
+            window.addEventListener('beforeprint', this.onBeforePrint);
+            window.addEventListener('afterprint', this.onAfterPrint);
+        }
     }
 
     render() {
         const columns = this.store.visibleColumns();
         const rows = this.store.rows;
+        this.virtual = !this.printing && rows.length > this.virtualThreshold;
+        if (this.virtual) {
+            const bounds = this.virtualBounds();
+            this.renderRange(bounds.start, bounds.end, columns);
+            return;
+        }
+
         const frag = document.createDocumentFragment();
         this.rowElByKey.clear();
         this.cellElByKey.clear();
+        this.windowStart = 0;
+        this.windowEnd = rows.length;
 
         for (let r = 0; r < rows.length; r++) {
             frag.appendChild(this.buildRow(rows[r], r, columns));
@@ -54,6 +95,88 @@ export default class BodyRenderer {
 
         this.bodyEl.textContent = '';
         this.bodyEl.appendChild(frag);
+    }
+
+    rowHeightPx() {
+        if (typeof getComputedStyle !== 'function') {
+            return 24;
+        }
+        const rootStyle = getComputedStyle(this.layout.refs.root);
+        const token = rootStyle.getPropertyValue('--lgrid-row-h').trim();
+        const amount = parseFloat(token) || 1.5;
+        if (token.endsWith('px')) {
+            return amount;
+        }
+        const font = typeof document !== 'undefined'
+            ? parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+            : 16;
+        return amount * font;
+    }
+
+    virtualBounds(centerIndex = null) {
+        const rows = this.store.rows.length;
+        const height = this.rowHeightPx();
+        const scroll = this.layout.refs.scroll;
+        const viewport = scroll ? scroll.clientHeight : height * 30;
+        const visible = Math.max(1, Math.ceil(viewport / height));
+        let first;
+        if (centerIndex !== null) {
+            first = centerIndex - Math.floor(visible / 2);
+        } else {
+            const headHeight = this.layout.refs.head ? this.layout.refs.head.offsetHeight || 0 : 0;
+            first = Math.floor(Math.max(0, (scroll ? scroll.scrollTop : 0) - headHeight) / height);
+        }
+        const start = Math.max(0, Math.min(rows, first - this.overscan));
+        const end = Math.min(rows, start + visible + (this.overscan * 2));
+        return { start, end };
+    }
+
+    renderRange(start, end, columns = this.store.visibleColumns()) {
+        const frag = document.createDocumentFragment();
+        const height = this.rowHeightPx();
+        this.rowElByKey.clear();
+        this.cellElByKey.clear();
+        this.windowStart = start;
+        this.windowEnd = end;
+
+        if (start > 0) {
+            frag.appendChild(this.spacer(start * height));
+        }
+        for (let index = start; index < end; index++) {
+            frag.appendChild(this.buildRow(this.store.rows[index], index, columns));
+        }
+        if (end < this.store.rows.length) {
+            frag.appendChild(this.spacer((this.store.rows.length - end) * height));
+        }
+        this.bodyEl.textContent = '';
+        this.bodyEl.appendChild(frag);
+    }
+
+    spacer(height) {
+        const spacer = el('div', 'lgrid-virtual-spacer');
+        spacer.style.height = height + 'px';
+        spacer.setAttribute('aria-hidden', 'true');
+        return spacer;
+    }
+
+    scheduleVirtualWindow() {
+        if (!this.virtual || this.scrollFrame !== null) {
+            return;
+        }
+        const request = typeof requestAnimationFrame === 'function'
+            ? requestAnimationFrame
+            : (callback) => setTimeout(callback, 0);
+        this.scrollFrame = request(() => {
+            this.scrollFrame = null;
+            const { start, end } = this.virtualBounds();
+            if (start === this.windowStart && end === this.windowEnd) {
+                return;
+            }
+            this.bus.emit('body:will-render');
+            this.renderRange(start, end);
+            this.bus.emit('body:did-render');
+            this.bus.emit('body:window-rendered');
+        });
     }
 
     buildRow(row, index, columns) {
@@ -151,6 +274,24 @@ export default class BodyRenderer {
         return this.cellElByKey.get(cellMapKey(rowKey, colKey)) || null;
     }
 
+    ensureCellElFor(rowKey, colKey) {
+        let cell = this.cellElFor(rowKey, colKey);
+        if (cell || !this.virtual) {
+            return cell;
+        }
+        const hit = this.store.rowByKey.get(rowKey);
+        if (!hit) {
+            return null;
+        }
+        this.bus.emit('body:will-render');
+        const { start, end } = this.virtualBounds(hit.index);
+        this.renderRange(start, end);
+        this.bus.emit('body:did-render');
+        this.bus.emit('body:window-rendered');
+        cell = this.cellElFor(rowKey, colKey);
+        return cell;
+    }
+
     /**
      * Repaint ONE cell's value in place (M4 hot path): re-run its column painter over the current
      * store value. O(1) — no row/body rebuild, so a cell edit + its formula write-backs touch only
@@ -177,5 +318,19 @@ export default class BodyRenderer {
         // CONTROLLING column (e.g. dc), which is exactly when the muted look must flip.
         toggleClass(cellEl, 'lgrid-cell--locked', this.store.cellLocked(hit.row, column));
         return cellEl;
+    }
+
+    destroy() {
+        if (this.layout.refs.scroll) {
+            this.layout.refs.scroll.removeEventListener('scroll', this.onScroll);
+        }
+        if (typeof window !== 'undefined') {
+            window.removeEventListener('beforeprint', this.onBeforePrint);
+            window.removeEventListener('afterprint', this.onAfterPrint);
+        }
+        if (this.scrollFrame !== null) {
+            const cancel = typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout;
+            cancel(this.scrollFrame);
+        }
     }
 }

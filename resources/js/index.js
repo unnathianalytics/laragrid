@@ -57,6 +57,17 @@ function resolveRefs(root) {
         emptyTemplate: ref('emptyTemplate'),
         editor: ref('editor'),
         errorCount: ref('errorCount'),
+        errorReview: ref('errorReview'),
+        errorPanel: ref('errorPanel'),
+        errorList: ref('errorList'),
+        errorPrev: ref('errorPrev'),
+        errorNext: ref('errorNext'),
+        syncStatus: ref('syncStatus'),
+        syncRetry: ref('syncRetry'),
+        draftBar: ref('draftBar'),
+        draftMessage: ref('draftMessage'),
+        draftRestore: ref('draftRestore'),
+        draftDiscard: ref('draftDiscard'),
         popup: ref('popup'),
         wire: resolveWire(root),
     };
@@ -127,12 +138,14 @@ function resolveWire(root) {
     return {
         gridFetch: call('gridFetch'),
         gridOps: call('gridOps'),
+        gridRestoreDraft: call('gridRestoreDraft'),
         gridOptions: call('gridOptions'),
         gridAction: call('gridAction'),
         gridExport: call('gridExport'),
         gridViews: call('gridViews'),
         gridViewSave: call('gridViewSave'),
         gridViewDelete: call('gridViewDelete'),
+        invoke: (method, ...args) => call(method)(...args),
     };
 }
 

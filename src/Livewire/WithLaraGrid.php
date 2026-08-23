@@ -7,6 +7,7 @@ namespace LaraGrid\Livewire;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -19,8 +20,10 @@ use LaraGrid\Grid;
 use LaraGrid\Query\QueryPipeline;
 use LaraGrid\Query\QueryStore;
 use LaraGrid\Support\RowSerializer;
+use LaraGrid\Validation\RuleCompiler;
 use LaraGrid\Views\ViewState;
 use LaraGrid\Views\ViewStore;
+use Livewire\Attributes\Locked;
 use Livewire\Attributes\Renderless;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -47,6 +50,10 @@ use function Livewire\store;
  */
 trait WithLaraGrid
 {
+    /** Server-owned revision per editable grid; locked against client mutation. */
+    #[Locked]
+    public array $laraGridVersions = [];
+
     /**
      * Per-request cache of the resolved grid definitions, so grids() (which may run tenant-scoped
      * option lookups) is built once per Livewire request, not per RPC + per render.
@@ -91,7 +98,12 @@ trait WithLaraGrid
             );
         }
 
-        return $grids[$name];
+        $definition = $grids[$name];
+        if ($definition->isEditable()) {
+            $definition->protocolVersion((int) ($this->laraGridVersions[$name] ?? 0));
+        }
+
+        return $definition;
     }
 
     /**
@@ -401,7 +413,9 @@ trait WithLaraGrid
         /** @var list<array<string, mixed>> $rows */
         $rows = (array) ($this->{$property} ?? []);
 
-        $result = app(OpApplier::class)->apply($definition, $rows, $batch, $batch->baseVersion);
+        $serverVersion = (int) ($this->laraGridVersions[$grid] ?? 0);
+        $result = app(OpApplier::class)->apply($definition, $rows, $batch, $serverVersion);
+        $this->laraGridVersions[$grid] = $result->version;
 
         // Write the authoritative rows back to the host property so save() + a possible re-render
         // read the applied state (cast values, recomputed formulas, row structure).
@@ -416,6 +430,132 @@ trait WithLaraGrid
         }
 
         return $result->toArray();
+    }
+
+    /**
+     * Rehydrate an opt-in browser draft into the new Livewire component after a reload.
+     *
+     * The browser payload is never assigned directly. Existing rows are matched by stable key,
+     * new keys start from the definition's fresh-row template, and every writable value is run
+     * through the normal OpApplier authorization/cast/validation/hooks/formula pipeline.
+     *
+     * @param  array{baseVersion?: int, rows?: list<array<string, mixed>>}  $payload
+     * @return array{version: int, results: list<array<string, mixed>>, footer: array<string, int|float|string>, rows: list<array<string, mixed>>}
+     */
+    #[Renderless]
+    public function gridRestoreDraft(string $grid, array $payload): array
+    {
+        $definition = $this->gridDefinition($grid);
+        $this->authorizeGrid($definition);
+
+        if (! $definition->isEditable()) {
+            throw new InvalidArgumentException("Grid [{$grid}] is not editable; draft restoration is unavailable.");
+        }
+
+        $rawRows = $payload['rows'] ?? null;
+        if (! is_array($rawRows)) {
+            throw ValidationException::withMessages([$grid => 'The saved grid draft is malformed.']);
+        }
+        $limit = max(1, (int) config('laragrid.max_draft_rows', 10000));
+        if (count($rawRows) > $limit) {
+            throw ValidationException::withMessages([
+                $grid => "The saved grid draft exceeds the {$limit}-row recovery limit.",
+            ]);
+        }
+
+        $serverVersion = (int) ($this->laraGridVersions[$grid] ?? 0);
+        if ((int) ($payload['baseVersion'] ?? 0) !== $serverVersion) {
+            throw ValidationException::withMessages([
+                $grid => 'The grid changed while its browser draft was being restored. Retry recovery.',
+            ]);
+        }
+
+        $property = $definition->getRowsProperty();
+        /** @var list<array<string, mixed>> $currentRows */
+        $currentRows = $property !== null ? (array) ($this->{$property} ?? []) : [];
+        $current = [];
+        foreach ($currentRows as $row) {
+            if (isset($row['_k'])) {
+                $current[(string) $row['_k']] = $row;
+            }
+        }
+
+        $rows = [];
+        $ops = [];
+        $seen = [];
+        $seq = 0;
+        foreach (array_values($rawRows) as $index => $raw) {
+            if (! is_array($raw)) {
+                throw ValidationException::withMessages(["{$grid}.{$index}" => 'Draft row must be an object.']);
+            }
+            $key = isset($raw['_k']) ? (string) $raw['_k'] : '';
+            if ($key === '' || strlen($key) > 190 || str_contains($key, "\x1F") || isset($seen[$key])) {
+                throw ValidationException::withMessages([
+                    "{$grid}.{$index}._k" => 'Draft row keys must be present, unique, and valid.',
+                ]);
+            }
+            $seen[$key] = true;
+            $rows[] = $current[$key] ?? $definition->makeNewRow($key);
+
+            foreach ($definition->getColumns() as $column) {
+                if (! $column->isWritable() || ! array_key_exists($column->key, $raw)) {
+                    continue;
+                }
+                $op = [
+                    't' => 'set',
+                    'seq' => ++$seq,
+                    'row' => $key,
+                    'col' => $column->key,
+                    'v' => $raw[$column->key],
+                ];
+                if (isset($raw['_labels'][$column->key])) {
+                    $op['label'] = (string) $raw['_labels'][$column->key];
+                }
+                $ops[] = $op;
+            }
+        }
+
+        $batch = OpBatch::fromPayload(['baseVersion' => $serverVersion, 'ops' => $ops]);
+        $result = app(OpApplier::class)->apply($definition, $rows, $batch, $serverVersion);
+        $wire = $result->toArray();
+        $kept = app(RowSerializer::class)->cleanEditableRows($definition, $result->rows);
+        $finalErrors = [];
+        if (count($kept) < $definition->getMinRows()) {
+            $finalErrors['_grid']['_row'] = 'At least '.$definition->getMinRows().' line(s) required.';
+        }
+        $compiler = app(RuleCompiler::class);
+        foreach (array_slice($result->rows, 0, count($kept)) as $row) {
+            foreach ($definition->getColumns() as $column) {
+                if (! $column->isEditable()) {
+                    continue;
+                }
+                $validator = Validator::make(
+                    $row,
+                    [$column->key => $compiler->serverRules($column, $row)],
+                );
+                $message = $validator->errors()->first($column->key);
+                if ($message !== '') {
+                    $finalErrors[(string) $row['_k']][$column->key] = $message;
+                }
+            }
+        }
+        if ($finalErrors !== []) {
+            $wire['results'][] = [
+                'seq' => ++$seq,
+                'ok' => false,
+                'patch' => [],
+                'errors' => $finalErrors,
+            ];
+        }
+        $this->laraGridVersions[$grid] = $result->version;
+        if ($property !== null) {
+            $this->{$property} = $result->rows;
+        }
+
+        return [
+            ...$wire,
+            'rows' => app(RowSerializer::class)->serializeMany($definition, $result->rows),
+        ];
     }
 
     /**
@@ -591,7 +731,35 @@ trait WithLaraGrid
         /** @var list<array<string, mixed>> $rows */
         $rows = $property !== null ? (array) ($this->{$property} ?? []) : [];
 
-        return app(RowSerializer::class)->cleanEditableRows($definition, $rows);
+        $clean = app(RowSerializer::class)->cleanEditableRows($definition, $rows);
+        if (count($clean) < $definition->getMinRows()) {
+            throw ValidationException::withMessages([
+                $grid => 'At least '.$definition->getMinRows().' line(s) required.',
+            ]);
+        }
+        $messages = [];
+        $compiler = app(RuleCompiler::class);
+
+        foreach ($clean as $index => $row) {
+            foreach ($definition->getColumns() as $column) {
+                if (! $column->isEditable()) {
+                    continue;
+                }
+                $validator = Validator::make(
+                    $row,
+                    [$column->key => $compiler->serverRules($column, $row)],
+                );
+                foreach ($validator->errors()->get($column->key) as $message) {
+                    $messages["{$grid}.{$index}.{$column->key}"][] = (string) $message;
+                }
+            }
+        }
+
+        if ($messages !== []) {
+            throw ValidationException::withMessages($messages);
+        }
+
+        return $clean;
     }
 
     /**
@@ -682,6 +850,7 @@ trait WithLaraGrid
             $footer[$aggregate->column] = $aggregate->compute($serialized);
         }
 
+        $this->laraGridVersions[$grid] = 0;
         $this->dispatch('lgrid:reseed', grid: $grid, rows: $serialized, footer: $footer);
     }
 

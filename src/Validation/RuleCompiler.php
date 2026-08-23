@@ -46,6 +46,12 @@ class RuleCompiler
             $rules[] = $rule;
         }
 
+        // maxLength is an editor constraint and a server invariant. Keeping it out of this
+        // ruleset allowed a forged gridRows()/gridOps payload to bypass the client limit.
+        if (($maxLength = $column->getMaxLength()) !== null) {
+            $rules[] = 'max:'.$maxLength;
+        }
+
         // Type-implicit guards (embedded in: whitelist, boolean, strict date_format) — the
         // server-side floor a client can't opt out of, appended after the author's rules.
         foreach ($column->implicitRules() as $rule) {

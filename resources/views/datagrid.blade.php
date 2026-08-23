@@ -51,10 +51,37 @@
             {{-- Excel-style selection status bar (Sum · Count · Avg). --}}
             <div data-lgrid-ref="statusbar" class="lgrid-statusbar" hidden></div>
 
-            {{-- Editable error summary: count of unresolved cell errors; Ctrl+E jumps to the first. --}}
+            {{-- Editable sync state: explicit retry/offline/failed feedback instead of a frozen UI. --}}
+            <div class="lgrid-syncbar" role="status" aria-live="polite">
+                <span data-lgrid-ref="syncStatus">Saved</span>
+                <button data-lgrid-ref="syncRetry" type="button" class="lgrid-sync-retry" hidden>
+                    {{ __('Retry now') }}
+                </button>
+            </div>
+
+            {{-- Editable error summary + actionable message list. Ctrl+E focuses an error. --}}
             <div class="lgrid-errorbar">
                 <span class="lgrid-errorbar-icon" aria-hidden="true">!</span>
-                <span data-lgrid-ref="errorCount" class="lgrid-errorbar-count" hidden></span>
+                <button data-lgrid-ref="errorReview" type="button" class="lgrid-error-review"
+                        aria-expanded="false" hidden>
+                    <span data-lgrid-ref="errorCount" class="lgrid-errorbar-count">0</span>
+                    <span>{{ __('errors — Review') }}</span>
+                </button>
+                <button data-lgrid-ref="errorPrev" type="button" class="lgrid-error-nav"
+                        aria-label="{{ __('Previous grid error') }}">↑</button>
+                <button data-lgrid-ref="errorNext" type="button" class="lgrid-error-nav"
+                        aria-label="{{ __('Next grid error') }}">↓</button>
+            </div>
+            <div data-lgrid-ref="errorPanel" class="lgrid-error-panel" role="region"
+                 aria-label="{{ __('Grid validation errors') }}" hidden>
+                <ol data-lgrid-ref="errorList" class="lgrid-error-list"></ol>
+            </div>
+
+            {{-- Opt-in IndexedDB draft recovery prompt (->persistDraft()). --}}
+            <div data-lgrid-ref="draftBar" class="lgrid-draftbar" role="status" hidden>
+                <span data-lgrid-ref="draftMessage"></span>
+                <button data-lgrid-ref="draftRestore" type="button">{{ __('Restore') }}</button>
+                <button data-lgrid-ref="draftDiscard" type="button">{{ __('Discard') }}</button>
             </div>
 
             {{-- Screen-reader announcer: active-cell / selection / clipboard changes. --}}

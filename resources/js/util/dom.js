@@ -78,3 +78,9 @@ export function cellDomId(gridName, rowKey, colKey) {
 export function cellMapKey(rowKey, colKey) {
     return `${rowKey}${colKey}`;
 }
+
+/** Reverse cellMapKey without depending on row/column lengths. */
+export function splitCellMapKey(key) {
+    const at = String(key).indexOf('');
+    return at < 0 ? null : { rowKey: key.slice(0, at), colKey: key.slice(at + 1) };
+}

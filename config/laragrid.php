@@ -69,6 +69,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Client row virtualization
+    |--------------------------------------------------------------------------
+    | Above this row count only the visible scroll window plus overscan is mounted
+    | in the DOM. All rows remain in the client store for selection/copy/save.
+    | Set 0 globally (or ->virtualizeRowsAbove(0) per grid) to disable.
+    */
+    'virtualize_above' => 750,
+
+    /** Maximum browser-draft rows accepted by the authoritative restore endpoint. */
+    'max_draft_rows' => 10000,
+
+    /*
+    |--------------------------------------------------------------------------
     | Toolbar defaults
     |--------------------------------------------------------------------------
     | Which package-rendered toolbar controls appear when a grid declares the

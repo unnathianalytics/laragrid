@@ -33,10 +33,13 @@ export default class SelectionPainter {
         this.allSelected = false;
 
         this.subs = [
-            bus.on('active:changed', () => this.paintActive()),
+            bus.on('active:changed', () => this.paintActive(true)),
             bus.on('selection:changed', () => this.paintSelection()),
             // A row replacement (M3 pages) wipes cell DOM — re-assert active/selection onto it.
             bus.on('rows:changed', () => this.reassert()),
+            // A virtual scroll swaps only the mounted row window. Do not force the off-screen
+            // active row back into view; simply repaint it when it belongs to this window.
+            bus.on('body:window-rendered', () => this.reassert(false)),
         ];
     }
 
@@ -46,7 +49,7 @@ export default class SelectionPainter {
 
     // ---- Active cell ---------------------------------------------------------------------
 
-    paintActive() {
+    paintActive(ensure = false) {
         const addr = this.store.active;
         // Clear the previous active cell.
         if (this.activeEl) {
@@ -57,7 +60,9 @@ export default class SelectionPainter {
             this.refs.root.removeAttribute('aria-activedescendant');
             return;
         }
-        const cell = this.renderer.cellElFor(addr.rowKey, addr.colKey);
+        const cell = ensure && this.renderer.ensureCellElFor
+            ? this.renderer.ensureCellElFor(addr.rowKey, addr.colKey)
+            : this.renderer.cellElFor(addr.rowKey, addr.colKey);
         if (!cell) {
             return;
         }
@@ -140,17 +145,29 @@ export default class SelectionPainter {
 
         // Build the next selected id set from the rectangle, then diff against the painted set.
         const next = new Set();
-        for (let r = sel.r0; r <= sel.r1; r++) {
-            const row = this.store.rowAt(r);
-            if (!row) {
-                continue;
+        if (this.renderer.body && this.renderer.body.virtual) {
+            // Only mounted cells need classes; the logical selection remains the full store rect.
+            for (const cell of this.renderer.body.cellElByKey.values()) {
+                const rowEl = cell.closest('.lgrid-row');
+                const row = rowEl ? this.store.rowIndexOf(rowEl.dataset.k) : -1;
+                const col = this.store.colIndexOf(cell.dataset.c);
+                if (row >= sel.r0 && row <= sel.r1 && col >= sel.c0 && col <= sel.c1) {
+                    next.add(cell.id);
+                }
             }
-            for (let c = sel.c0; c <= sel.c1; c++) {
-                const column = this.store.columnAt(c);
-                if (!column) {
+        } else {
+            for (let r = sel.r0; r <= sel.r1; r++) {
+                const row = this.store.rowAt(r);
+                if (!row) {
                     continue;
                 }
-                next.add(cellDomId(this.store.name, row._k, column.key));
+                for (let c = sel.c0; c <= sel.c1; c++) {
+                    const column = this.store.columnAt(c);
+                    if (!column) {
+                        continue;
+                    }
+                    next.add(cellDomId(this.store.name, row._k, column.key));
+                }
             }
         }
 
@@ -197,10 +214,10 @@ export default class SelectionPainter {
     }
 
     /** Re-apply active + selection after the body was re-rendered (row replacement). */
-    reassert() {
+    reassert(ensure = true) {
         this.activeEl = null;
         this.paintedSelected = new Set();
-        this.paintActive();
+        this.paintActive(ensure);
         this.paintSelection();
     }
 }

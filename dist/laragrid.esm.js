@@ -172,6 +172,10 @@ function cellDomId(gridName, rowKey, colKey) {
 function cellMapKey(rowKey, colKey) {
   return `${rowKey}${colKey}`;
 }
+function splitCellMapKey(key) {
+  const at = String(key).indexOf("");
+  return at < 0 ? null : { rowKey: key.slice(0, at), colKey: key.slice(at + 1) };
+}
 
 // resources/js/core/StateStore.js
 function compareCellValues(a, b) {
@@ -232,9 +236,13 @@ var StateStore = class {
     this.localSeedRows = null;
     this.hiddenStash = /* @__PURE__ */ new Map();
     this.seqCounter = 0;
-    this.version = 0;
+    this.version = Number(config.version) || 0;
     this.dirty = /* @__PURE__ */ new Set();
     this.pending = /* @__PURE__ */ new Set();
+    this.pendingSeqs = /* @__PURE__ */ new Map();
+    this.cellRevisions = /* @__PURE__ */ new Map();
+    this.modified = /* @__PURE__ */ new Set();
+    this.structureModified = false;
     this.errors = /* @__PURE__ */ new Map();
     this.opLog = [];
     this.recorder = null;
@@ -881,6 +889,7 @@ var StateStore = class {
       });
     }
     this.bus.emit("rows:changed", { rows: this.rows });
+    this.markStructureModified();
     return blank;
   }
   /**
@@ -919,6 +928,7 @@ var StateStore = class {
     this.clearRowState(rowKey);
     this.reindex();
     this.bus.emit("rows:changed", { rows: this.rows });
+    this.markStructureModified();
     return draft;
   }
   /**
@@ -943,6 +953,7 @@ var StateStore = class {
     this.clearRowState(rowKey);
     this.reindex();
     this.bus.emit("rows:changed", { rows: this.rows });
+    this.markStructureModified();
   }
   /**
    * Duplicate a row's values under a new key, placed right after the source.
@@ -966,6 +977,7 @@ var StateStore = class {
       });
     }
     this.bus.emit("rows:changed", { rows: this.rows });
+    this.markStructureModified();
     return clone;
   }
   /**
@@ -981,6 +993,7 @@ var StateStore = class {
     this.rows.splice(at, 0, row);
     this.reindex();
     this.bus.emit("rows:changed", { rows: this.rows });
+    this.markStructureModified();
     return row;
   }
   /**
@@ -1026,6 +1039,10 @@ var StateStore = class {
     this.clearChecked();
     this.dirty.clear();
     this.pending.clear();
+    this.pendingSeqs.clear();
+    this.cellRevisions.clear();
+    this.modified.clear();
+    this.structureModified = false;
     this.errors.clear();
     this.opLog = [];
     this.version = 0;
@@ -1048,7 +1065,8 @@ var StateStore = class {
         this.bus.emit("selection:changed", { selection: null });
       }
     }
-    this.bus.emit("errors:changed", { errors: this.errors });
+    this.bus.emit("errors:changed", { errors: this.errors, keys: [] });
+    this.emitEditState();
   }
   /**
    * Set (or clear with a null/undefined label) a picker cell's display label in the row's
@@ -1100,6 +1118,9 @@ var StateStore = class {
     const sourceLabel = (source.row._labels || {})[colKey] || null;
     let changed = [];
     for (const key of rowKeys.slice(1)) {
+      if (this.cellLocked(key, colKey)) {
+        continue;
+      }
       changed = changed.concat(this.applyLocalSet(key, colKey, value));
       if (isPicker) {
         this.setRowLabel(key, colKey, value != null ? sourceLabel : null);
@@ -1116,32 +1137,63 @@ var StateStore = class {
   }
   // ---- Dirty / pending / error bookkeeping ---------------------------------------------
   markDirty(rowKey, colKey) {
-    this.dirty.add(cellMapKey(rowKey, colKey));
+    const key = cellMapKey(rowKey, colKey);
+    this.dirty.add(key);
+    this.modified.add(key);
     this.bus.emit("dirty:changed", { rowKey, colKey, dirty: true });
+    this.emitEditState();
   }
-  /** Mark cells as having an op in flight (SyncManager flush). */
-  markPending(cells) {
+  /** Mark cells as covered by a queued op and remember its exact revision. */
+  markPending(cells, seq = 0) {
     for (const { rowKey, colKey } of cells) {
-      this.pending.add(cellMapKey(rowKey, colKey));
+      const key = cellMapKey(rowKey, colKey);
+      this.pending.add(key);
+      if (!this.pendingSeqs.has(key)) {
+        this.pendingSeqs.set(key, /* @__PURE__ */ new Set());
+      }
+      this.pendingSeqs.get(key).add(seq);
+      this.cellRevisions.set(key, Math.max(seq, this.cellRevisions.get(key) || 0));
     }
-    this.bus.emit("sync-state", { pending: this.pending.size, dirty: this.dirty.size });
+    this.bus.emit("sync-state", {
+      pending: this.pending.size,
+      dirty: this.dirty.size,
+      modified: this.modified.size,
+      cells
+    });
+    this.emitEditState();
   }
   /**
    * Reconcile a server op response: clear dirty/pending for acknowledged cells, apply the
    * authoritative write-back patch (unless a newer local edit supersedes it), set/clear errors,
    * and adopt the server version. Emits cells:changed for repainted cells + errors:changed.
    *
+   * `batchItems` is the client-side acknowledgement context. A successful direct SET normally
+   * has an empty server patch, so result.patch can never be used to infer which cells settled.
+   *
    * @param {{version: number, results: Array<object>, footer: object}} response
+   * @param {Array<{op: object, cells: Array<{rowKey: string, colKey: string}>}>} [batchItems]
    */
-  reconcile(response) {
+  reconcile(response, batchItems = []) {
     const repaint = [];
+    const changedErrors = /* @__PURE__ */ new Set();
+    const changedState = /* @__PURE__ */ new Map();
+    const bySeq = new Map(batchItems.map((item) => [item.op.seq, item]));
     if (typeof response.version === "number") {
       this.version = response.version;
     }
     for (const result of response.results || []) {
+      const item = bySeq.get(result.seq);
       for (const [rowKey, cols] of Object.entries(result.errors || {})) {
         for (const [colKey, message] of Object.entries(cols)) {
-          this.errors.set(this.errorKey(rowKey, colKey), message);
+          const key = this.errorKey(rowKey, colKey);
+          const revisionKey = colKey === "_row" ? null : cellMapKey(rowKey, colKey);
+          if (revisionKey && (this.cellRevisions.get(revisionKey) || 0) > result.seq) {
+            continue;
+          }
+          if (this.errors.get(key) !== message) {
+            this.errors.set(key, message);
+            changedErrors.add(key);
+          }
         }
       }
       for (const [rowKey, patch] of Object.entries(result.patch || {})) {
@@ -1158,39 +1210,76 @@ var StateStore = class {
             continue;
           }
           const ck = cellMapKey(rowKey, colKey);
-          if (this.dirty.has(ck) && this.pending.has(ck) === false) {
+          if ((this.cellRevisions.get(ck) || 0) > result.seq) {
             continue;
           }
           hit.row[colKey] = value;
           repaint.push({ rowKey, colKey });
         }
       }
-    }
-    for (const result of response.results || []) {
-      if (result.ok) {
-        this.settleOp(result);
+      for (const cell of this.settleOp(result, item && item.cells || [])) {
+        changedState.set(cellMapKey(cell.rowKey, cell.colKey), cell);
+        if (result.ok) {
+          changedErrors.add(this.errorKey(cell.rowKey, cell.colKey));
+        }
       }
     }
     if (repaint.length) {
       this.bus.emit("cells:changed", { cells: repaint });
     }
-    this.bus.emit("errors:changed", { errors: this.errors });
-    this.bus.emit("sync-state", { pending: this.pending.size, dirty: this.dirty.size });
+    this.bus.emit("errors:changed", { errors: this.errors, keys: [...changedErrors] });
+    this.bus.emit("sync-state", {
+      pending: this.pending.size,
+      dirty: this.dirty.size,
+      modified: this.modified.size,
+      cells: [...changedState.values()]
+    });
+    this.emitEditState();
   }
-  /** Clear dirty/pending/error for the cells an acknowledged op covered. */
-  settleOp(result) {
-    const rowKeys = /* @__PURE__ */ new Set([
-      ...Object.keys(result.patch || {}),
-      ...Object.keys(result.errors || {})
-    ]);
-    for (const rowKey of rowKeys) {
-      for (const colKey of Object.keys((result.patch || {})[rowKey] || {})) {
-        const ck = cellMapKey(rowKey, colKey);
-        this.pending.delete(ck);
+  /** Clear the acknowledged sequence for exact client-known cells. */
+  settleOp(result, cells = []) {
+    for (const { rowKey, colKey } of cells) {
+      const ck = cellMapKey(rowKey, colKey);
+      const seqs = this.pendingSeqs.get(ck);
+      if (seqs) {
+        seqs.delete(result.seq);
+        if (seqs.size === 0) {
+          this.pendingSeqs.delete(ck);
+          this.pending.delete(ck);
+        }
+      }
+      const cellFailed = !!((result.errors || {})[rowKey] && ((result.errors || {})[rowKey][colKey] || (result.errors || {})[rowKey]._row));
+      if (!cellFailed && (this.cellRevisions.get(ck) || 0) <= result.seq) {
         this.dirty.delete(ck);
-        this.errors.delete(ck);
+        this.errors.delete(this.errorKey(rowKey, colKey));
       }
     }
+    return cells;
+  }
+  /** Publish the public, save-gating edit state from one canonical place. */
+  emitEditState() {
+    this.bus.emit("edit-state", {
+      dirty: this.dirty.size,
+      pending: this.pending.size,
+      modified: this.modifiedCount(),
+      errors: this.errors.size
+    });
+  }
+  markStructureModified() {
+    this.structureModified = true;
+    this.emitEditState();
+  }
+  modifiedCount() {
+    return this.modified.size + (this.structureModified ? 1 : 0);
+  }
+  hasUnsavedChanges() {
+    return this.modifiedCount() > 0;
+  }
+  /** Mark the current acknowledged rows as durably saved by the host. */
+  markSaved() {
+    this.modified.clear();
+    this.structureModified = false;
+    this.emitEditState();
   }
   /** Clear all edit bookkeeping for a removed row. */
   clearRowState(rowKey) {
@@ -1203,6 +1292,17 @@ var StateStore = class {
     for (const key of [...this.pending]) {
       if (key.startsWith(prefix)) {
         this.pending.delete(key);
+      }
+    }
+    for (const key of [...this.modified]) {
+      if (key.startsWith(prefix)) {
+        this.modified.delete(key);
+      }
+    }
+    for (const key of [...this.pendingSeqs.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.pendingSeqs.delete(key);
+        this.cellRevisions.delete(key);
       }
     }
     for (const key of [...this.errors.keys()]) {
@@ -1231,7 +1331,8 @@ var StateStore = class {
     } else {
       this.errors.delete(key);
     }
-    this.bus.emit("errors:changed", { errors: this.errors });
+    this.bus.emit("errors:changed", { errors: this.errors, keys: [key] });
+    this.emitEditState();
   }
 };
 
@@ -1945,21 +2046,59 @@ var BodyRenderer = class {
    * @param {import('../core/StateStore').default} store
    * @param {import('./Layout').default} layout
    * @param {HTMLElement} bodyEl
+   * @param {import('../core/EventBus').default} bus
    */
-  constructor(store, layout, bodyEl) {
+  constructor(store, layout, bodyEl, bus) {
     this.store = store;
     this.layout = layout;
     this.bodyEl = bodyEl;
+    this.bus = bus;
     this.striped = !!(store.layout && store.layout.striped);
+    const virtualizeAbove = store.layout && store.layout.virtualizeAbove;
+    this.virtualThreshold = virtualizeAbove === 0 ? Number.POSITIVE_INFINITY : Number(virtualizeAbove) || 750;
+    this.overscan = 20;
+    this.virtual = false;
+    this.windowStart = -1;
+    this.windowEnd = -1;
+    this.scrollFrame = null;
+    this.printing = false;
     this.rowElByKey = /* @__PURE__ */ new Map();
     this.cellElByKey = /* @__PURE__ */ new Map();
+    this.onScroll = () => this.scheduleVirtualWindow();
+    this.onBeforePrint = () => {
+      if (this.virtual) {
+        this.printing = true;
+        this.render();
+      }
+    };
+    this.onAfterPrint = () => {
+      if (this.printing) {
+        this.printing = false;
+        this.render();
+      }
+    };
+    if (this.layout.refs.scroll) {
+      this.layout.refs.scroll.addEventListener("scroll", this.onScroll, { passive: true });
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener("beforeprint", this.onBeforePrint);
+      window.addEventListener("afterprint", this.onAfterPrint);
+    }
   }
   render() {
     const columns = this.store.visibleColumns();
     const rows = this.store.rows;
+    this.virtual = !this.printing && rows.length > this.virtualThreshold;
+    if (this.virtual) {
+      const bounds = this.virtualBounds();
+      this.renderRange(bounds.start, bounds.end, columns);
+      return;
+    }
     const frag = document.createDocumentFragment();
     this.rowElByKey.clear();
     this.cellElByKey.clear();
+    this.windowStart = 0;
+    this.windowEnd = rows.length;
     for (let r = 0; r < rows.length; r++) {
       frag.appendChild(this.buildRow(rows[r], r, columns));
     }
@@ -1969,6 +2108,78 @@ var BodyRenderer = class {
     }
     this.bodyEl.textContent = "";
     this.bodyEl.appendChild(frag);
+  }
+  rowHeightPx() {
+    if (typeof getComputedStyle !== "function") {
+      return 24;
+    }
+    const rootStyle = getComputedStyle(this.layout.refs.root);
+    const token = rootStyle.getPropertyValue("--lgrid-row-h").trim();
+    const amount = parseFloat(token) || 1.5;
+    if (token.endsWith("px")) {
+      return amount;
+    }
+    const font = typeof document !== "undefined" ? parseFloat(getComputedStyle(document.documentElement).fontSize) || 16 : 16;
+    return amount * font;
+  }
+  virtualBounds(centerIndex = null) {
+    const rows = this.store.rows.length;
+    const height = this.rowHeightPx();
+    const scroll = this.layout.refs.scroll;
+    const viewport = scroll ? scroll.clientHeight : height * 30;
+    const visible = Math.max(1, Math.ceil(viewport / height));
+    let first;
+    if (centerIndex !== null) {
+      first = centerIndex - Math.floor(visible / 2);
+    } else {
+      const headHeight = this.layout.refs.head ? this.layout.refs.head.offsetHeight || 0 : 0;
+      first = Math.floor(Math.max(0, (scroll ? scroll.scrollTop : 0) - headHeight) / height);
+    }
+    const start = Math.max(0, Math.min(rows, first - this.overscan));
+    const end = Math.min(rows, start + visible + this.overscan * 2);
+    return { start, end };
+  }
+  renderRange(start, end, columns = this.store.visibleColumns()) {
+    const frag = document.createDocumentFragment();
+    const height = this.rowHeightPx();
+    this.rowElByKey.clear();
+    this.cellElByKey.clear();
+    this.windowStart = start;
+    this.windowEnd = end;
+    if (start > 0) {
+      frag.appendChild(this.spacer(start * height));
+    }
+    for (let index = start; index < end; index++) {
+      frag.appendChild(this.buildRow(this.store.rows[index], index, columns));
+    }
+    if (end < this.store.rows.length) {
+      frag.appendChild(this.spacer((this.store.rows.length - end) * height));
+    }
+    this.bodyEl.textContent = "";
+    this.bodyEl.appendChild(frag);
+  }
+  spacer(height) {
+    const spacer = el("div", "lgrid-virtual-spacer");
+    spacer.style.height = height + "px";
+    spacer.setAttribute("aria-hidden", "true");
+    return spacer;
+  }
+  scheduleVirtualWindow() {
+    if (!this.virtual || this.scrollFrame !== null) {
+      return;
+    }
+    const request = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
+    this.scrollFrame = request(() => {
+      this.scrollFrame = null;
+      const { start, end } = this.virtualBounds();
+      if (start === this.windowStart && end === this.windowEnd) {
+        return;
+      }
+      this.bus.emit("body:will-render");
+      this.renderRange(start, end);
+      this.bus.emit("body:did-render");
+      this.bus.emit("body:window-rendered");
+    });
   }
   buildRow(row, index, columns) {
     const rowEl = el("div", "lgrid-row");
@@ -2049,6 +2260,23 @@ var BodyRenderer = class {
   cellElFor(rowKey, colKey) {
     return this.cellElByKey.get(cellMapKey(rowKey, colKey)) || null;
   }
+  ensureCellElFor(rowKey, colKey) {
+    let cell = this.cellElFor(rowKey, colKey);
+    if (cell || !this.virtual) {
+      return cell;
+    }
+    const hit = this.store.rowByKey.get(rowKey);
+    if (!hit) {
+      return null;
+    }
+    this.bus.emit("body:will-render");
+    const { start, end } = this.virtualBounds(hit.index);
+    this.renderRange(start, end);
+    this.bus.emit("body:did-render");
+    this.bus.emit("body:window-rendered");
+    cell = this.cellElFor(rowKey, colKey);
+    return cell;
+  }
   /**
    * Repaint ONE cell's value in place (M4 hot path): re-run its column painter over the current
    * store value. O(1) — no row/body rebuild, so a cell edit + its formula write-backs touch only
@@ -2073,6 +2301,19 @@ var BodyRenderer = class {
     });
     toggleClass(cellEl, "lgrid-cell--locked", this.store.cellLocked(hit.row, column));
     return cellEl;
+  }
+  destroy() {
+    if (this.layout.refs.scroll) {
+      this.layout.refs.scroll.removeEventListener("scroll", this.onScroll);
+    }
+    if (typeof window !== "undefined") {
+      window.removeEventListener("beforeprint", this.onBeforePrint);
+      window.removeEventListener("afterprint", this.onAfterPrint);
+    }
+    if (this.scrollFrame !== null) {
+      const cancel = typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout;
+      cancel(this.scrollFrame);
+    }
   }
 };
 
@@ -2138,14 +2379,28 @@ var Renderer = class {
     this.layout = layout;
     this.bus = bus;
     this.header = new HeaderRenderer(store, layout, refs.head);
-    this.body = new BodyRenderer(store, layout, refs.body);
+    this.body = new BodyRenderer(store, layout, refs.body, bus);
     this.footer = new FooterRenderer(store, layout, refs.footer);
     this.unsubscribe = bus.on("rows:changed", () => this.renderBody());
+    this.pendingCellPaints = /* @__PURE__ */ new Map();
+    this.cellPaintFrame = null;
     this.unsubscribeCells = bus.on("cells:changed", ({ cells }) => {
       (cells || []).forEach(({ rowKey, colKey }) => {
-        this.body.repaintCell(rowKey, colKey);
-        this.store.lockedDependentsOf(colKey).forEach((dependentKey) => {
-          this.body.repaintCell(rowKey, dependentKey);
+        this.pendingCellPaints.set(rowKey + "" + colKey, { rowKey, colKey });
+      });
+      if (this.cellPaintFrame !== null) {
+        return;
+      }
+      const request = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
+      this.cellPaintFrame = request(() => {
+        this.cellPaintFrame = null;
+        const changed = [...this.pendingCellPaints.values()];
+        this.pendingCellPaints.clear();
+        changed.forEach(({ rowKey, colKey }) => {
+          this.body.repaintCell(rowKey, colKey);
+          this.store.lockedDependentsOf(colKey).forEach((dependentKey) => {
+            this.body.repaintCell(rowKey, dependentKey);
+          });
         });
       });
     });
@@ -2182,6 +2437,10 @@ var Renderer = class {
   cellElFor(rowKey, colKey) {
     return this.body.cellElFor(rowKey, colKey);
   }
+  /** Ensure a virtualized row is mounted before focusing/editing its cell. */
+  ensureCellElFor(rowKey, colKey) {
+    return this.body.ensureCellElFor(rowKey, colKey);
+  }
   /**
    * Repaint one cell in place (M4) — the O(1) seam the editor/store use after an optimistic set.
    * @param {string} rowKey
@@ -2203,6 +2462,11 @@ var Renderer = class {
     if (this.unsubscribePage) {
       this.unsubscribePage();
     }
+    if (this.cellPaintFrame !== null) {
+      const cancel = typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout;
+      cancel(this.cellPaintFrame);
+    }
+    this.body.destroy();
   }
 };
 
@@ -2613,17 +2877,20 @@ var SelectionPainter = class {
     this.paintedSelected = /* @__PURE__ */ new Set();
     this.allSelected = false;
     this.subs = [
-      bus.on("active:changed", () => this.paintActive()),
+      bus.on("active:changed", () => this.paintActive(true)),
       bus.on("selection:changed", () => this.paintSelection()),
       // A row replacement (M3 pages) wipes cell DOM — re-assert active/selection onto it.
-      bus.on("rows:changed", () => this.reassert())
+      bus.on("rows:changed", () => this.reassert()),
+      // A virtual scroll swaps only the mounted row window. Do not force the off-screen
+      // active row back into view; simply repaint it when it belongs to this window.
+      bus.on("body:window-rendered", () => this.reassert(false))
     ];
   }
   destroy() {
     this.subs.forEach((off) => off());
   }
   // ---- Active cell ---------------------------------------------------------------------
-  paintActive() {
+  paintActive(ensure = false) {
     const addr = this.store.active;
     if (this.activeEl) {
       toggleClass(this.activeEl, "lgrid-cell--active", false);
@@ -2633,7 +2900,7 @@ var SelectionPainter = class {
       this.refs.root.removeAttribute("aria-activedescendant");
       return;
     }
-    const cell = this.renderer.cellElFor(addr.rowKey, addr.colKey);
+    const cell = ensure && this.renderer.ensureCellElFor ? this.renderer.ensureCellElFor(addr.rowKey, addr.colKey) : this.renderer.cellElFor(addr.rowKey, addr.colKey);
     if (!cell) {
       return;
     }
@@ -2698,17 +2965,28 @@ var SelectionPainter = class {
       return;
     }
     const next = /* @__PURE__ */ new Set();
-    for (let r = sel.r0; r <= sel.r1; r++) {
-      const row = this.store.rowAt(r);
-      if (!row) {
-        continue;
+    if (this.renderer.body && this.renderer.body.virtual) {
+      for (const cell of this.renderer.body.cellElByKey.values()) {
+        const rowEl = cell.closest(".lgrid-row");
+        const row = rowEl ? this.store.rowIndexOf(rowEl.dataset.k) : -1;
+        const col = this.store.colIndexOf(cell.dataset.c);
+        if (row >= sel.r0 && row <= sel.r1 && col >= sel.c0 && col <= sel.c1) {
+          next.add(cell.id);
+        }
       }
-      for (let c = sel.c0; c <= sel.c1; c++) {
-        const column = this.store.columnAt(c);
-        if (!column) {
+    } else {
+      for (let r = sel.r0; r <= sel.r1; r++) {
+        const row = this.store.rowAt(r);
+        if (!row) {
           continue;
         }
-        next.add(cellDomId(this.store.name, row._k, column.key));
+        for (let c = sel.c0; c <= sel.c1; c++) {
+          const column = this.store.columnAt(c);
+          if (!column) {
+            continue;
+          }
+          next.add(cellDomId(this.store.name, row._k, column.key));
+        }
       }
     }
     for (const id of this.paintedSelected) {
@@ -2748,10 +3026,10 @@ var SelectionPainter = class {
     this.allSelected = on;
   }
   /** Re-apply active + selection after the body was re-rendered (row replacement). */
-  reassert() {
+  reassert(ensure = true) {
     this.activeEl = null;
     this.paintedSelected = /* @__PURE__ */ new Set();
-    this.paintActive();
+    this.paintActive(ensure);
     this.paintSelection();
   }
 };
@@ -3859,154 +4137,421 @@ var PaginationBar = class {
 
 // resources/js/sync/SyncManager.js
 var SyncManager = class {
-  /**
-   * @param {import('../core/StateStore').default} store
-   * @param {import('../core/EventBus').default} bus
-   * @param {object} wire the Livewire $wire proxy (async gridOps)
-   */
-  constructor(store, bus, wire) {
+  constructor(store, bus, wire, options = {}) {
     this.store = store;
     this.bus = bus;
     this.wire = wire;
     this.policy = store.layout && store.layout.sync || "per-cell";
     this.queue = [];
     this.inFlight = false;
+    this.inFlightBatch = [];
+    this.flushPromise = null;
+    this.retryTimer = null;
+    this.retryAttempts = 0;
     this.retryDelay = 0;
+    this.retryBaseDelay = options.retryBaseDelay || 300;
+    this.retryMaxDelay = options.retryMaxDelay || 5e3;
+    this.maxRetryAttempts = options.maxRetryAttempts || 5;
+    this.random = options.random || Math.random;
+    this.setTimer = options.setTimer || ((fn, delay) => setTimeout(fn, delay));
+    this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
+    this.isOnline = options.isOnline || (() => typeof navigator === "undefined" || navigator.onLine !== false);
+    this.status = "idle";
+    this.blocked = false;
+    this.lastError = null;
     this.destroyed = false;
     this.epoch = 0;
+    this.waiters = [];
+    this.recoveryTask = null;
+    this.onOffline = () => this.pauseOffline();
+    this.onOnline = () => this.retryNow();
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("offline", this.onOffline);
+      window.addEventListener("online", this.onOnline);
+    }
   }
-  /**
-   * Enqueue an op (recorded in the store's op log too — the undo/redo spine) and trigger a flush
-   * per policy. `cells` are the cell addresses this op marks pending, for reconciliation.
-   *
-   * @param {object} op the wire op ({seq, t, row?, col?, v?, after?, as?, rows?})
-   * @param {Array<{rowKey: string, colKey: string}>} [cells]
-   * @param {{flush?: boolean}} [opts] force a flush regardless of policy (row ops flush now)
-   */
   enqueue(op, cells = [], opts = {}) {
     this.queue.push({ op, cells });
     this.store.opLog.push(op);
     if (cells.length) {
-      this.store.markPending(cells);
+      this.store.markPending(cells, op.seq);
     }
-    if (opts.flush || this.policy === "per-cell" || this.policy === "per-row") {
+    this.emitState();
+    if (opts.flush || this.policy === "per-cell") {
       this.flush();
     }
   }
-  /**
-   * Enqueue MANY staged ops as one unit (a TSV paste: row inserts + cell sets) and flush them
-   * in a single round-trip. Each item is {op, cells} exactly as enqueue() takes; the batch
-   * always flushes immediately (like the M4 row ops) — a paste is a deliberate bulk action,
-   * not a keystroke to defer.
-   *
-   * @param {Array<{op: object, cells: Array<{rowKey: string, colKey: string}>}>} items
-   */
   enqueueBatch(items) {
-    for (const { op, cells } of items) {
+    for (const { op, cells = [] } of items) {
       this.queue.push({ op, cells });
       this.store.opLog.push(op);
-      if (cells && cells.length) {
-        this.store.markPending(cells);
+      if (cells.length) {
+        this.store.markPending(cells, op.seq);
       }
     }
+    this.emitState();
     if (items.length) {
       this.flush();
     }
   }
-  /**
-   * Flush all queued ops as one batch to gridOps and reconcile the response. Coalesces rapid
-   * calls: if a request is already in flight, the new ops stay queued for the next flush.
-   */
-  async flush() {
-    if (this.destroyed || this.inFlight || this.queue.length === 0 || !this.wire) {
-      return;
+  /** Flush once. Further ops drain only after this request succeeds. */
+  flush(options = {}) {
+    const force = options.force === true;
+    if (this.destroyed || !this.wire) {
+      return Promise.resolve(false);
+    }
+    if (this.recoveryTask) {
+      return this.runRecovery();
+    }
+    if (this.inFlight) {
+      return this.flushPromise || Promise.resolve(false);
+    }
+    if ((this.blocked || this.retryTimer) && !force) {
+      return this.flushPromise || Promise.resolve(false);
+    }
+    if (!this.isOnline()) {
+      this.status = "offline";
+      this.emitState();
+      return Promise.resolve(false);
+    }
+    if (this.queue.length === 0) {
+      this.status = "idle";
+      this.emitState();
+      this.notifyWaiters();
+      return Promise.resolve(true);
+    }
+    if (force) {
+      this.clearRetryTimer();
+      this.blocked = false;
     }
     const batchItems = this.queue.splice(0, this.queue.length);
-    const ops = batchItems.map((b) => b.op);
+    const ops = batchItems.map((item) => item.op);
     const epoch = this.epoch;
     this.inFlight = true;
-    this.bus.emit("sync-state", { flushing: true, pending: this.store.pending.size });
-    try {
-      const response = await this.wire.gridOps(this.store.name, {
-        baseVersion: this.store.version,
-        ops
-      });
-      if (epoch !== this.epoch) {
-        return;
-      }
-      this.retryDelay = 0;
-      this.store.reconcile(response || { version: this.store.version, results: [], footer: {} });
-      const rollback = (response && response.results || []).find(
-        (result) => !result.ok && Array.isArray(result.rows)
-      );
-      if (rollback) {
-        this.reset();
-        this.store.reseed(rollback.rows);
-        let message = "Change refused \u2014 grid resynced.";
-        for (const cols of Object.values(rollback.errors || {})) {
-          const first = Object.values(cols || {})[0];
-          if (first) {
-            message = first;
-            break;
-          }
+    this.inFlightBatch = batchItems;
+    this.status = "syncing";
+    this.emitState();
+    const run = (async () => {
+      let succeeded = false;
+      try {
+        const response = await this.wire.gridOps(this.store.name, {
+          baseVersion: this.store.version,
+          ops
+        });
+        if (epoch !== this.epoch) {
+          return false;
         }
-        this.bus.emit("rows:rolled-back", { message });
+        const results = response && response.results || [];
+        const returned = new Set(results.map((result) => result.seq));
+        const missing = ops.find((op) => !returned.has(op.seq));
+        if (missing) {
+          const protocolError = new Error(`Grid sync response omitted operation ${missing.seq}.`);
+          protocolError.retryable = false;
+          throw protocolError;
+        }
+        if (results.some((result) => result.conflict === true)) {
+          this.store.version = Number(response.version) || this.store.version;
+          const conflict = new Error("Grid changed in another request. Review and retry your changes.");
+          conflict.status = 409;
+          conflict.retryable = false;
+          throw conflict;
+        }
+        succeeded = true;
+        this.retryAttempts = 0;
+        this.retryDelay = 0;
+        this.lastError = null;
+        this.blocked = false;
+        this.store.reconcile(
+          response || { version: this.store.version, results: [], footer: {} },
+          batchItems
+        );
+        const rollback = results.find((result) => !result.ok && Array.isArray(result.rows));
+        if (rollback) {
+          this.reset();
+          this.store.reseed(rollback.rows);
+          this.store.version = Number(response.version) || 0;
+          let message = "Change refused \u2014 grid resynced.";
+          for (const cols of Object.values(rollback.errors || {})) {
+            const first = Object.values(cols || {})[0];
+            if (first) {
+              message = first;
+              break;
+            }
+          }
+          this.bus.emit("rows:rolled-back", { message });
+        }
+        if (response && response.footer) {
+          this.bus.emit("footer:changed", { footer: response.footer });
+        }
+        return true;
+      } catch (error) {
+        if (epoch !== this.epoch) {
+          return false;
+        }
+        this.queue.unshift(...batchItems);
+        this.lastError = error instanceof Error ? error : new Error(String(error));
+        if (!this.isOnline()) {
+          this.status = "offline";
+        } else if (this.isRetryable(this.lastError) && this.retryAttempts < this.maxRetryAttempts) {
+          this.retryAttempts += 1;
+          this.retryDelay = this.nextRetryDelay();
+          this.status = "retrying";
+          this.scheduleRetry();
+        } else {
+          this.status = "failed";
+          this.blocked = true;
+        }
+        return false;
+      } finally {
+        this.inFlight = false;
+        this.inFlightBatch = [];
+        this.flushPromise = null;
+        if (succeeded) {
+          this.status = this.queue.length ? "syncing" : "idle";
+        }
+        this.emitState();
+        if (succeeded && this.queue.length && !this.destroyed) {
+          this.flush();
+        } else {
+          this.notifyWaiters();
+        }
       }
-      if (response && response.footer) {
-        this.bus.emit("footer:changed", { footer: response.footer });
+    })();
+    this.flushPromise = run;
+    return run;
+  }
+  isRetryable(error) {
+    if (error && typeof error.retryable === "boolean") {
+      return error.retryable;
+    }
+    const status = Number(
+      error && (error.status || error.statusCode) || error && error.response && error.response.status || 0
+    );
+    if (status === 0) {
+      return true;
+    }
+    return [408, 425, 429, 502, 503, 504].includes(status);
+  }
+  nextRetryDelay() {
+    const raw = Math.min(
+      this.retryBaseDelay * 2 ** Math.max(0, this.retryAttempts - 1),
+      this.retryMaxDelay
+    );
+    return Math.max(1, Math.round(raw * (0.8 + this.random() * 0.4)));
+  }
+  scheduleRetry() {
+    if (this.destroyed || this.retryTimer) {
+      return;
+    }
+    this.retryTimer = this.setTimer(() => {
+      this.retryTimer = null;
+      if (this.recoveryTask) {
+        this.runRecovery();
+      } else {
+        this.flush({ force: true });
       }
-    } catch (error) {
-      if (epoch !== this.epoch) {
-        return;
-      }
-      this.queue.unshift(...batchItems);
-      this.retryDelay = Math.min(this.retryDelay ? this.retryDelay * 2 : 300, 5e3);
-      this.bus.emit("sync-state", { error: true });
-      if (!this.destroyed) {
-        this.retryTimer = setTimeout(() => this.flush(), this.retryDelay);
-      }
-    } finally {
-      this.inFlight = false;
-      this.bus.emit("sync-state", { flushing: false, pending: this.store.pending.size });
-      if (this.queue.length && !this.destroyed) {
-        this.flush();
-      }
+    }, this.retryDelay);
+  }
+  clearRetryTimer() {
+    if (this.retryTimer) {
+      this.clearTimer(this.retryTimer);
+      this.retryTimer = null;
     }
   }
-  /**
-   * Called when the active ROW changes (PerRow policy) — flushes the queue so a completed row's
-   * edits reach the server together. A no-op under PerCell (already flushed) / Deferred (waits).
-   */
+  pauseOffline() {
+    if (this.destroyed || !this.hasPending()) {
+      return;
+    }
+    this.clearRetryTimer();
+    this.status = "offline";
+    this.emitState();
+  }
+  retryNow() {
+    if (this.destroyed || !this.hasPending() && !this.blocked) {
+      return Promise.resolve(true);
+    }
+    this.clearRetryTimer();
+    this.retryAttempts = 0;
+    this.retryDelay = 0;
+    this.blocked = false;
+    this.lastError = null;
+    if (this.recoveryTask) {
+      return this.runRecovery();
+    }
+    return this.flush({ force: true });
+  }
+  /** Run a non-op synchronization task (currently authoritative IndexedDB draft hydration). */
+  beginRecovery(task) {
+    this.recoveryTask = task;
+    this.blocked = false;
+    this.lastError = null;
+    return this.runRecovery();
+  }
+  runRecovery() {
+    if (!this.recoveryTask || this.inFlight || this.destroyed) {
+      return this.flushPromise || Promise.resolve(false);
+    }
+    if (!this.isOnline()) {
+      this.status = "offline";
+      this.emitState();
+      return Promise.resolve(false);
+    }
+    this.inFlight = true;
+    this.status = "syncing";
+    this.emitState();
+    const task = this.recoveryTask;
+    const run = (async () => {
+      let succeeded = false;
+      try {
+        await task();
+        succeeded = true;
+        this.recoveryTask = null;
+        this.retryAttempts = 0;
+        this.retryDelay = 0;
+        this.blocked = false;
+        this.lastError = null;
+        this.status = "idle";
+        return true;
+      } catch (error) {
+        this.lastError = error instanceof Error ? error : new Error(String(error));
+        if (!this.isOnline()) {
+          this.status = "offline";
+        } else if (this.isRetryable(this.lastError) && this.retryAttempts < this.maxRetryAttempts) {
+          this.retryAttempts += 1;
+          this.retryDelay = this.nextRetryDelay();
+          this.status = "retrying";
+          this.scheduleRetry();
+        } else {
+          this.status = "failed";
+          this.blocked = true;
+        }
+        return false;
+      } finally {
+        this.inFlight = false;
+        this.flushPromise = null;
+        this.emitState();
+        if (succeeded && this.queue.length) {
+          this.flush();
+        } else {
+          this.notifyWaiters();
+        }
+      }
+    })();
+    this.flushPromise = run;
+    return run;
+  }
   onActiveRowChanged() {
     if (this.policy === "per-row") {
       this.flush();
     }
   }
-  /** True when there are unsynced ops (dirty). Used by the host to decide whether to flush pre-save. */
   hasPending() {
-    return this.queue.length > 0 || this.inFlight;
+    return this.queue.length > 0 || this.inFlight || this.retryTimer !== null || !!this.recoveryTask;
   }
-  /**
-   * Drop every queued (unflushed) op and orphan any in-flight batch (epoch bump): a host
-   * reseed (`lgrid:reseed`) supersedes the rows those ops describe, so applying — or
-   * retrying — them against the reseeded store would only manufacture "row no longer
-   * exists" errors.
-   */
-  reset() {
-    this.epoch++;
-    this.queue = [];
-    this.retryDelay = 0;
-    if (this.retryTimer) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
+  canSave() {
+    return !this.hasPending() && !this.blocked && this.store.errors.size === 0;
+  }
+  /** Resolve only when every queued/in-flight operation is acknowledged and no errors remain. */
+  whenSettled() {
+    if (this.blocked) {
+      return Promise.reject(this.lastError || new Error("Grid synchronization failed."));
     }
-    this.bus.emit("sync-state", { flushing: false, pending: 0 });
+    if (this.status === "offline") {
+      return Promise.reject(new Error("Grid is offline. Changes are kept locally until connectivity returns."));
+    }
+    if (!this.hasPending()) {
+      return this.store.errors.size ? Promise.reject(new Error(`${this.store.errors.size} grid error(s) must be corrected.`)) : Promise.resolve(this.state());
+    }
+    return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
+  }
+  notifyWaiters() {
+    if (!this.waiters.length) {
+      return;
+    }
+    if (this.blocked) {
+      const waiters2 = this.waiters.splice(0);
+      waiters2.forEach(({ reject }) => reject(this.lastError || new Error("Grid synchronization failed.")));
+      return;
+    }
+    if (this.hasPending()) {
+      return;
+    }
+    const waiters = this.waiters.splice(0);
+    if (this.store.errors.size) {
+      const error = new Error(`${this.store.errors.size} grid error(s) must be corrected.`);
+      waiters.forEach(({ reject }) => reject(error));
+    } else {
+      const state = this.state();
+      waiters.forEach(({ resolve }) => resolve(state));
+    }
+  }
+  state() {
+    return {
+      status: this.status,
+      queued: this.queue.length,
+      inFlight: this.inFlightBatch.length,
+      pending: this.store.pending.size,
+      dirty: this.store.dirty.size,
+      modified: this.store.modifiedCount ? this.store.modifiedCount() : 0,
+      errors: this.store.errors.size,
+      attempts: this.retryAttempts,
+      retryIn: this.retryTimer ? this.retryDelay : 0,
+      canSave: this.canSave(),
+      error: this.lastError ? this.lastError.message : null
+    };
+  }
+  emitState() {
+    this.bus.emit("sync-state", this.state());
+  }
+  /** Serializable unacknowledged work for DraftStore (includes the request currently in flight). */
+  snapshotQueue() {
+    const bySeq = /* @__PURE__ */ new Map();
+    [...this.inFlightBatch, ...this.queue].forEach((item) => bySeq.set(item.op.seq, item));
+    return [...bySeq.values()].map((item) => ({
+      op: { ...item.op },
+      cells: (item.cells || []).map((cell) => ({ ...cell }))
+    }));
+  }
+  /** Restore draft ops without duplicating already-live sequences. */
+  restoreQueue(items = []) {
+    const existing = new Set(this.snapshotQueue().map((item) => item.op.seq));
+    for (const item of items) {
+      if (!item || !item.op || existing.has(item.op.seq)) {
+        continue;
+      }
+      const cells = Array.isArray(item.cells) ? item.cells : [];
+      this.queue.push({ op: { ...item.op }, cells: cells.map((cell) => ({ ...cell })) });
+      this.store.opLog.push({ ...item.op });
+      this.store.seqCounter = Math.max(this.store.seqCounter, Number(item.op.seq) || 0);
+      if (cells.length) {
+        this.store.markPending(cells, item.op.seq);
+      }
+    }
+    this.emitState();
+  }
+  reset() {
+    this.epoch += 1;
+    this.queue = [];
+    this.inFlightBatch = [];
+    this.recoveryTask = null;
+    this.retryAttempts = 0;
+    this.retryDelay = 0;
+    this.blocked = false;
+    this.lastError = null;
+    this.status = "idle";
+    this.clearRetryTimer();
+    this.emitState();
+    this.notifyWaiters();
   }
   destroy() {
     this.destroyed = true;
-    if (this.retryTimer) {
-      clearTimeout(this.retryTimer);
+    this.clearRetryTimer();
+    if (typeof window !== "undefined" && window.removeEventListener) {
+      window.removeEventListener("offline", this.onOffline);
+      window.removeEventListener("online", this.onOnline);
     }
+    const waiters = this.waiters.splice(0);
+    waiters.forEach(({ reject }) => reject(new Error("Grid was destroyed before synchronization completed.")));
   }
 };
 
@@ -4521,7 +5066,7 @@ var EditorManager = class {
    */
   commit(opts) {
     if (this.mode !== "EDIT" || !this.editor) {
-      return;
+      return true;
     }
     const rowKey = this.editorRow;
     const colKey = this.editorCol;
@@ -4531,14 +5076,14 @@ var EditorManager = class {
     if (parsed === void 0) {
       this.store.setError(rowKey, colKey, "Not a recognisable date.");
       this.editor.focus(true);
-      return;
+      return false;
     }
     const clientRules = column.validate && column.validate.client || [];
     const message = this.validator.validate(clientRules, parsed, column.label || colKey);
     if (message) {
       this.store.setError(rowKey, colKey, message);
       this.editor.focus(true);
-      return;
+      return false;
     }
     const label = this.pickLabel;
     this.pickLabel = null;
@@ -4551,6 +5096,7 @@ var EditorManager = class {
     if (opts.advance) {
       this.panelOrAdvance(column, rowKey, opts.advance);
     }
+    return true;
   }
   /**
    * Either hand this forward advance off to a HOST panel (the column's opensPanel) or perform the
@@ -4959,104 +5505,308 @@ var ClientValidator = class {
 };
 
 // resources/js/render/ErrorPainter.js
+var errorPainterInstance = 0;
 var ErrorPainter = class {
-  /**
-   * @param {import('../core/StateStore').default} store
-   * @param {import('../render/Renderer').default} renderer
-   * @param {import('../core/EventBus').default} bus
-   * @param {{root: HTMLElement, errorCount?: HTMLElement}} refs
-   */
   constructor(store, renderer, bus, refs) {
     this.store = store;
     this.renderer = renderer;
     this.bus = bus;
     this.refs = refs;
-    this.offErrors = bus.on("errors:changed", () => this.paintErrors());
-    this.offDirty = bus.on("dirty:changed", ({ rowKey, colKey }) => this.paintDirty(rowKey, colKey));
-    this.offSync = bus.on("sync-state", () => this.paintPending());
+    this.paintedErrors = /* @__PURE__ */ new Set();
+    this.paintedDirty = /* @__PURE__ */ new Set();
+    this.paintedPending = /* @__PURE__ */ new Set();
+    this.changedKeys = /* @__PURE__ */ new Set();
+    this.frame = null;
+    this.errorEntries = [];
+    this.errorIds = /* @__PURE__ */ new Map();
+    this.currentError = 0;
+    this.lastErrorCount = 0;
+    this.instanceId = ++errorPainterInstance;
+    this.offErrors = bus.on("errors:changed", () => this.errorsChanged());
+    this.offDirty = bus.on("dirty:changed", ({ rowKey, colKey }) => {
+      this.schedule([cellMapKey(rowKey, colKey)]);
+    });
+    this.offSync = bus.on("sync-state", ({ cells = [] } = {}) => {
+      this.schedule(cells.map(({ rowKey, colKey }) => cellMapKey(rowKey, colKey)));
+    });
     this.offRows = bus.on("rows:changed", () => this.reassert());
-    this.onKeyDown = (e) => this.handleKey(e);
+    this.offWindow = bus.on("body:window-rendered", () => this.reassert());
+    this.offEditor = bus.on("editor:opened", () => this.paintEditorError());
+    this.onKeyDown = (event) => this.handleKey(event);
+    this.onReview = () => this.togglePanel();
+    this.onPrev = () => this.moveError(-1);
+    this.onNext = () => this.moveError(1);
+    this.onListClick = (event) => {
+      const button = event.target.closest("[data-lgrid-error-index]");
+      if (button) {
+        this.focusError(Number(button.dataset.lgridErrorIndex));
+      }
+    };
     this.refs.root.addEventListener("keydown", this.onKeyDown);
+    if (this.refs.errorReview) {
+      this.refs.errorReview.addEventListener("click", this.onReview);
+    }
+    if (this.refs.errorPrev) {
+      this.refs.errorPrev.addEventListener("click", this.onPrev);
+    }
+    if (this.refs.errorNext) {
+      this.refs.errorNext.addEventListener("click", this.onNext);
+    }
+    if (this.refs.errorList) {
+      this.refs.errorList.addEventListener("click", this.onListClick);
+    }
+    this.errorsChanged();
+    this.reassert();
   }
-  /** Ctrl+E → jump to the first errored cell. */
-  handleKey(e) {
-    if ((e.ctrlKey || e.metaKey) && (e.key === "e" || e.key === "E")) {
-      e.preventDefault();
-      this.jumpToFirstError();
+  handleKey(event) {
+    if ((event.ctrlKey || event.metaKey) && (event.key === "e" || event.key === "E")) {
+      event.preventDefault();
+      this.focusError(this.currentError);
     }
   }
-  /**
-   * Toggle the error ring/corner on each cell from the store's error map. Iterates the visible
-   * grid directly (the same shape paintPending uses) rather than reverse-deriving a cell from a
-   * mapKey — the store owns the truth (errorFor), the painter just reflects it onto the cells.
-   */
-  paintErrors() {
-    for (const row of this.store.rows) {
-      for (const col of this.store.visibleColumns()) {
-        const el2 = this.renderer.cellElFor(row._k, col.key);
-        if (el2) {
-          toggleClass(el2, "lgrid-cell--error", !!this.store.errorFor(row._k, col.key));
-        }
+  schedule(keys = []) {
+    keys.forEach((key) => key && this.changedKeys.add(key));
+    if (this.frame !== null) {
+      return;
+    }
+    const request = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
+    this.frame = request(() => {
+      this.frame = null;
+      const changed = [...this.changedKeys];
+      this.changedKeys.clear();
+      changed.forEach((key) => this.paintKey(key));
+    });
+  }
+  paintKey(key) {
+    const address = splitCellMapKey(key);
+    if (!address) {
+      return;
+    }
+    const cell = this.renderer.cellElFor(address.rowKey, address.colKey);
+    if (!cell) {
+      return;
+    }
+    const error = this.store.errors.get(key) || null;
+    const dirty = this.store.dirty.has(key);
+    const pending = this.store.pending.has(key);
+    toggleClass(cell, "lgrid-cell--error", !!error);
+    toggleClass(cell, "lgrid-cell--dirty", dirty);
+    toggleClass(cell, "lgrid-cell--pending", pending);
+    this.track(this.paintedErrors, key, !!error);
+    this.track(this.paintedDirty, key, dirty);
+    this.track(this.paintedPending, key, pending);
+    if (error) {
+      cell.setAttribute("aria-invalid", "true");
+      cell.setAttribute("title", error);
+      const id = this.errorIds.get(key);
+      if (id) {
+        cell.setAttribute("aria-errormessage", id);
+        cell.setAttribute("aria-describedby", id);
       }
+    } else {
+      cell.removeAttribute("aria-invalid");
+      cell.removeAttribute("aria-errormessage");
+      cell.removeAttribute("aria-describedby");
+      cell.removeAttribute("title");
     }
+  }
+  track(set, key, on) {
+    if (on) {
+      set.add(key);
+    } else {
+      set.delete(key);
+    }
+  }
+  errorsChanged() {
+    const next = new Set([...this.store.errors.keys()].filter((key) => splitCellMapKey(key)));
+    this.renderErrorPanel();
+    this.schedule(/* @__PURE__ */ new Set([...this.paintedErrors, ...next]));
     this.updateFooterCount();
+    this.paintEditorError();
   }
-  paintDirty(rowKey, colKey) {
-    const el2 = this.renderer.cellElFor(rowKey, colKey);
-    if (el2) {
-      toggleClass(el2, "lgrid-cell--dirty", this.store.dirty.has(cellMapKey(rowKey, colKey)));
-    }
-  }
-  /** Toggle pending shimmer on cells with an op in flight. */
-  paintPending() {
-    for (const row of this.store.rows) {
-      for (const col of this.store.visibleColumns()) {
-        const key = cellMapKey(row._k, col.key);
-        const el2 = this.renderer.cellElFor(row._k, col.key);
-        if (el2) {
-          toggleClass(el2, "lgrid-cell--pending", this.store.pending.has(key));
-          toggleClass(el2, "lgrid-cell--dirty", this.store.dirty.has(key));
-        }
+  orderedErrors() {
+    const entries = [];
+    for (const [key, message] of this.store.errors) {
+      const address = splitCellMapKey(key);
+      if (address) {
+        const hit2 = this.store.rowByKey.get(address.rowKey);
+        const column = this.store.columnByKey(address.colKey);
+        entries.push({
+          key,
+          rowKey: hit2 ? address.rowKey : null,
+          colKey: hit2 && column ? address.colKey : null,
+          row: hit2 ? hit2.index + 1 : "?",
+          rowIndex: hit2 ? hit2.index : Number.MAX_SAFE_INTEGER,
+          colIndex: column ? this.store.colIndexOf(address.colKey) : Number.MAX_SAFE_INTEGER,
+          column: column ? column.label || column.key : address.colKey,
+          message
+        });
+        continue;
       }
+      const rowKey = key.endsWith("_row") ? key.slice(0, -4) : null;
+      const hit = rowKey ? this.store.rowByKey.get(rowKey) : null;
+      const first = this.store.visibleColumns()[0];
+      entries.push({
+        key,
+        rowKey: hit ? rowKey : null,
+        colKey: hit && first ? first.key : null,
+        row: hit ? hit.index + 1 : "?",
+        rowIndex: hit ? hit.index : Number.MAX_SAFE_INTEGER,
+        colIndex: -1,
+        column: hit ? "Row" : "Grid",
+        message
+      });
     }
+    return entries.sort((a, b) => a.rowIndex - b.rowIndex || a.colIndex - b.colIndex);
   }
-  /** Re-apply error/dirty classes after a full body repaint (rows:changed). */
-  reassert() {
-    this.paintErrors();
-    this.paintPending();
+  renderErrorPanel() {
+    this.errorEntries = this.orderedErrors();
+    this.errorIds.clear();
+    if (!this.refs.errorList) {
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    this.errorEntries.forEach((entry, index) => {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      const id = this.errorId(entry.key);
+      button.type = "button";
+      button.id = id;
+      button.dataset.lgridErrorIndex = String(index);
+      button.className = "lgrid-error-item";
+      button.textContent = "Row " + entry.row + " \xB7 " + entry.column + " \u2014 " + entry.message;
+      item.appendChild(button);
+      fragment.appendChild(item);
+      this.errorIds.set(entry.key, id);
+    });
+    this.refs.errorList.textContent = "";
+    this.refs.errorList.appendChild(fragment);
+    if (this.refs.errorPanel && !this.refs.errorPanel.id) {
+      this.refs.errorPanel.id = "lgrid-errors-" + this.instanceId + "-" + this.safeId(this.store.name);
+    }
+    if (this.refs.errorReview && this.refs.errorPanel) {
+      this.refs.errorReview.setAttribute("aria-controls", this.refs.errorPanel.id);
+    }
+    this.currentError = Math.min(this.currentError, Math.max(0, this.errorEntries.length - 1));
+  }
+  errorId(key) {
+    return "lgrid-error-" + this.instanceId + "-" + this.safeId(this.store.name + "-" + key);
+  }
+  safeId(value) {
+    return encodeURIComponent(String(value)).replace(/%/g, "").replace(/[^a-zA-Z0-9_-]/g, "-");
   }
   updateFooterCount() {
     const count = this.store.errors.size;
     this.refs.root.classList.toggle("lgrid--has-errors", count > 0);
     if (this.refs.errorCount) {
-      this.refs.errorCount.textContent = count > 0 ? String(count) : "";
-      this.refs.errorCount.hidden = count === 0;
+      this.refs.errorCount.textContent = String(count);
     }
+    if (this.refs.errorReview) {
+      this.refs.errorReview.hidden = count === 0;
+      this.refs.errorReview.setAttribute(
+        "aria-label",
+        count + (count === 1 ? " grid error. Review error." : " grid errors. Review errors.")
+      );
+    }
+    if (this.refs.errorPrev) {
+      this.refs.errorPrev.disabled = count === 0;
+    }
+    if (this.refs.errorNext) {
+      this.refs.errorNext.disabled = count === 0;
+    }
+    if (count === 0 && this.refs.errorPanel) {
+      this.refs.errorPanel.hidden = true;
+    }
+    if (count > this.lastErrorCount && this.refs.announcer) {
+      this.refs.announcer.textContent = count + (count === 1 ? " validation error. Open Review errors for details." : " validation errors. Open Review errors for details.");
+    }
+    this.lastErrorCount = count;
   }
-  /** Focus the first errored cell (Ctrl+E). */
-  jumpToFirstError() {
-    for (const row of this.store.rows) {
-      for (const col of this.store.visibleColumns()) {
-        if (this.store.errors.has(cellMapKey(row._k, col.key))) {
-          this.store.setActive({ rowKey: row._k, colKey: col.key });
-          return;
-        }
+  togglePanel() {
+    if (!this.refs.errorPanel || !this.errorEntries.length) {
+      return;
+    }
+    const opening = this.refs.errorPanel.hidden;
+    this.refs.errorPanel.hidden = !opening;
+    if (this.refs.errorReview) {
+      this.refs.errorReview.setAttribute("aria-expanded", opening ? "true" : "false");
+    }
+    if (opening) {
+      const first = this.refs.errorList && this.refs.errorList.querySelector("button");
+      if (first) {
+        first.focus();
       }
     }
   }
+  moveError(delta) {
+    if (!this.errorEntries.length) {
+      return;
+    }
+    this.currentError = (this.currentError + delta + this.errorEntries.length) % this.errorEntries.length;
+    this.focusError(this.currentError);
+  }
+  focusError(index = 0) {
+    if (!this.errorEntries.length) {
+      return;
+    }
+    this.currentError = Math.max(0, Math.min(index, this.errorEntries.length - 1));
+    const entry = this.errorEntries[this.currentError];
+    if (entry.rowKey && entry.colKey) {
+      this.store.setActive({ rowKey: entry.rowKey, colKey: entry.colKey });
+      this.refs.root.focus({ preventScroll: true });
+    }
+  }
+  jumpToFirstError() {
+    this.focusError(0);
+  }
+  paintEditorError() {
+    if (!this.refs.editor || this.refs.editor.hidden) {
+      return;
+    }
+    const key = cellMapKey(this.store.active?.rowKey || "", this.store.active?.colKey || "");
+    const message = this.store.errors.get(key);
+    const input = this.refs.editor.querySelector('input, select, textarea, [contenteditable="true"]');
+    const old = this.refs.editor.querySelector(".lgrid-cell-editor-error");
+    if (old) {
+      old.remove();
+    }
+    if (!input) {
+      return;
+    }
+    if (!message) {
+      input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby");
+      return;
+    }
+    const error = document.createElement("div");
+    error.className = "lgrid-cell-editor-error";
+    error.id = this.errorId(key) + "-editor";
+    error.textContent = message;
+    this.refs.editor.appendChild(error);
+    input.setAttribute("aria-invalid", "true");
+    input.setAttribute("aria-describedby", error.id);
+  }
+  /** Re-apply state after BodyRenderer replaces cell DOM, touching state keys only. */
+  reassert() {
+    this.paintedErrors.clear();
+    this.paintedDirty.clear();
+    this.paintedPending.clear();
+    this.schedule(/* @__PURE__ */ new Set([
+      ...this.store.errors.keys(),
+      ...this.store.dirty,
+      ...this.store.pending
+    ]));
+  }
   destroy() {
     this.refs.root.removeEventListener("keydown", this.onKeyDown);
-    if (this.offErrors) {
-      this.offErrors();
-    }
-    if (this.offDirty) {
-      this.offDirty();
-    }
-    if (this.offSync) {
-      this.offSync();
-    }
-    if (this.offRows) {
-      this.offRows();
+    if (this.refs.errorReview) this.refs.errorReview.removeEventListener("click", this.onReview);
+    if (this.refs.errorPrev) this.refs.errorPrev.removeEventListener("click", this.onPrev);
+    if (this.refs.errorNext) this.refs.errorNext.removeEventListener("click", this.onNext);
+    if (this.refs.errorList) this.refs.errorList.removeEventListener("click", this.onListClick);
+    [this.offErrors, this.offDirty, this.offSync, this.offRows, this.offWindow, this.offEditor].filter(Boolean).forEach((off) => off());
+    if (this.frame !== null) {
+      const cancel = typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout;
+      cancel(this.frame);
     }
   }
 };
@@ -5226,6 +5976,321 @@ var LayoutStore = class {
     try {
       window.localStorage.removeItem(this.key);
     } catch {
+    }
+  }
+};
+
+// resources/js/persist/DraftStore.js
+var DraftStore = class {
+  constructor(spec, store, sync, bus, refs, options = {}) {
+    this.spec = spec && spec.mode === "local" && spec.key ? spec : null;
+    this.store = store;
+    this.sync = sync;
+    this.bus = bus;
+    this.refs = refs;
+    this.key = this.spec ? `lgrid:draft:${this.spec.key}` : null;
+    this.dbName = options.dbName || "laragrid";
+    this.maxAge = options.maxAge || 30 * 24 * 60 * 60 * 1e3;
+    this.debounceMs = options.debounceMs || 150;
+    this.backend = options.backend || null;
+    this.timer = null;
+    this.dbPromise = null;
+    this.destroyed = false;
+    this.restoring = false;
+    this.candidate = null;
+    this.subscriptions = [];
+    this.onRestore = () => this.restoreCandidate();
+    this.onDiscard = () => this.discardCandidate();
+    this.onVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        this.saveNow();
+      }
+    };
+    this.onPageHide = () => this.saveNow();
+    this.onBeforeUnload = (event) => {
+      if (!this.store.hasUnsavedChanges() && !this.sync.hasPending()) {
+        return;
+      }
+      event.preventDefault();
+      event.returnValue = "";
+    };
+  }
+  async init() {
+    if (typeof window !== "undefined") {
+      window.addEventListener("beforeunload", this.onBeforeUnload);
+      this.unloadInstalled = true;
+    }
+    if (!this.key || !this.backend && typeof indexedDB === "undefined") {
+      return false;
+    }
+    this.subscriptions = [
+      this.bus.on("edit-state", () => this.schedule()),
+      this.bus.on("rows:changed", () => this.schedule()),
+      this.bus.on("errors:changed", () => this.schedule()),
+      this.bus.on("sync-state", () => this.schedule()),
+      this.bus.on("active:changed", () => this.schedule())
+    ];
+    if (this.refs.draftRestore) {
+      this.refs.draftRestore.addEventListener("click", this.onRestore);
+    }
+    if (this.refs.draftDiscard) {
+      this.refs.draftDiscard.addEventListener("click", this.onDiscard);
+    }
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.onVisibility);
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener("pagehide", this.onPageHide);
+    }
+    try {
+      const draft = await this.read();
+      if (!draft) {
+        return true;
+      }
+      if (draft.schema !== this.schemaFingerprint() || Date.now() - Number(draft.updatedAt || 0) > this.maxAge) {
+        await this.remove();
+        return true;
+      }
+      if (this.store.hasUnsavedChanges() || this.sync.hasPending()) {
+        this.schedule();
+        return true;
+      }
+      this.candidate = draft;
+      this.showCandidate(draft);
+      return true;
+    } catch (error) {
+      this.bus.emit("draft-state", { status: "unavailable", error: String(error) });
+      return false;
+    }
+  }
+  schemaFingerprint() {
+    const shape = this.store.columns.map((column) => ({
+      key: column.key,
+      editable: !!column.editable,
+      kind: column.parse && column.parse.kind
+    }));
+    const input = JSON.stringify(shape);
+    let hash = 2166136261;
+    for (let i = 0; i < input.length; i++) {
+      hash ^= input.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${this.store.name}:${(hash >>> 0).toString(16)}`;
+  }
+  snapshot() {
+    return {
+      key: this.key,
+      schema: this.schemaFingerprint(),
+      updatedAt: Date.now(),
+      rows: this.store.rows.map((row) => ({
+        ...row,
+        _labels: row._labels ? { ...row._labels } : void 0
+      })),
+      active: this.store.active ? { ...this.store.active } : null,
+      dirty: [...this.store.dirty],
+      modified: [...this.store.modified],
+      structureModified: this.store.structureModified,
+      errors: [...this.store.errors.entries()],
+      cellRevisions: [...this.store.cellRevisions.entries()],
+      seqCounter: this.store.seqCounter,
+      version: this.store.version,
+      queue: this.sync.snapshotQueue()
+    };
+  }
+  schedule() {
+    if (!this.key || this.destroyed || this.restoring) {
+      return;
+    }
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.saveNow();
+    }, this.debounceMs);
+  }
+  async saveNow() {
+    if (!this.key || this.destroyed || this.restoring) {
+      return;
+    }
+    try {
+      if (!this.store.hasUnsavedChanges() && !this.sync.hasPending()) {
+        await this.remove();
+        this.bus.emit("draft-state", { status: "clear" });
+        return;
+      }
+      const draft = this.snapshot();
+      await this.write(draft);
+      this.bus.emit("draft-state", { status: "saved", updatedAt: draft.updatedAt });
+    } catch (error) {
+      this.bus.emit("draft-state", { status: "failed", error: String(error) });
+    }
+  }
+  async restoreCandidate() {
+    const draft = this.candidate;
+    if (!draft || draft.schema !== this.schemaFingerprint()) {
+      return false;
+    }
+    this.restoring = true;
+    const mountVersion = this.store.version;
+    try {
+      this.sync.reset();
+      this.store.reseed(Array.isArray(draft.rows) ? draft.rows : []);
+      this.store.dirty = new Set(draft.dirty || []);
+      this.store.modified = new Set(draft.modified || []);
+      this.store.structureModified = !!draft.structureModified;
+      this.store.errors = new Map(draft.errors || []);
+      this.store.cellRevisions = new Map(draft.cellRevisions || []);
+      this.store.seqCounter = Number(draft.seqCounter) || 0;
+      this.store.version = mountVersion;
+      if (draft.active && this.store.rowByKey.has(draft.active.rowKey)) {
+        this.store.setActive(draft.active);
+      }
+      this.bus.emit("errors:changed", { errors: this.store.errors, keys: [...this.store.errors.keys()] });
+      this.store.emitEditState();
+      this.candidate = null;
+      this.hideCandidate();
+      this.bus.emit("draft-state", { status: "restored", updatedAt: draft.updatedAt });
+      await this.sync.beginRecovery(async () => {
+        if (!this.sync.wire || typeof this.sync.wire.gridRestoreDraft !== "function") {
+          const error = new Error("The Livewire host does not expose gridRestoreDraft().");
+          error.retryable = false;
+          throw error;
+        }
+        const response = await this.sync.wire.gridRestoreDraft(this.store.name, {
+          baseVersion: this.store.version,
+          rows: draft.rows || []
+        });
+        this.applyServerRestore(response || {}, draft);
+      });
+    } finally {
+      this.restoring = false;
+    }
+    this.schedule();
+    return true;
+  }
+  applyServerRestore(response, draft) {
+    const rows = Array.isArray(response.rows) ? response.rows : draft.rows || [];
+    const active = this.store.active ? { ...this.store.active } : null;
+    this.store.reseed(rows);
+    this.store.version = Number(response.version) || 0;
+    this.store.modified = new Set(draft.modified || []);
+    this.store.structureModified = !!draft.structureModified;
+    if (this.store.modified.size === 0 && !this.store.structureModified) {
+      this.store.structureModified = true;
+    }
+    this.store.errors.clear();
+    for (const result of response.results || []) {
+      for (const [rowKey, columns] of Object.entries(result.errors || {})) {
+        for (const [colKey, message] of Object.entries(columns || {})) {
+          this.store.errors.set(this.store.errorKey(rowKey, colKey), message);
+        }
+      }
+    }
+    if (active && this.store.rowByKey.has(active.rowKey)) {
+      this.store.setActive(active);
+    }
+    this.bus.emit("errors:changed", { errors: this.store.errors, keys: [...this.store.errors.keys()] });
+    if (response.footer) {
+      this.bus.emit("footer:changed", { footer: response.footer });
+    }
+    this.store.emitEditState();
+  }
+  async discardCandidate() {
+    this.candidate = null;
+    this.hideCandidate();
+    await this.remove();
+    this.bus.emit("draft-state", { status: "discarded" });
+  }
+  showCandidate(draft) {
+    if (!this.refs.draftBar) {
+      return;
+    }
+    const time = new Date(Number(draft.updatedAt) || Date.now()).toLocaleString();
+    if (this.refs.draftMessage) {
+      this.refs.draftMessage.textContent = `Unsaved grid changes from ${time} were found.`;
+    }
+    this.refs.draftBar.hidden = false;
+  }
+  hideCandidate() {
+    if (this.refs.draftBar) {
+      this.refs.draftBar.hidden = true;
+    }
+  }
+  openDb() {
+    if (this.dbPromise) {
+      return this.dbPromise;
+    }
+    this.dbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(this.dbName, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains("drafts")) {
+          db.createObjectStore("drafts", { keyPath: "key" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Could not open draft storage."));
+    });
+    return this.dbPromise;
+  }
+  async read() {
+    if (this.backend) {
+      return this.backend.get(this.key);
+    }
+    return this.transaction("readonly", (store) => store.get(this.key));
+  }
+  async write(draft) {
+    if (this.backend) {
+      return this.backend.put(this.key, draft);
+    }
+    return this.transaction("readwrite", (store) => store.put(draft));
+  }
+  async remove() {
+    if (!this.key || !this.backend && typeof indexedDB === "undefined") {
+      return;
+    }
+    if (this.backend) {
+      return this.backend.delete(this.key);
+    }
+    return this.transaction("readwrite", (store) => store.delete(this.key));
+  }
+  async transaction(mode, operation) {
+    const db = await this.openDb();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("drafts", mode);
+      const request = operation(transaction.objectStore("drafts"));
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error("Draft storage operation failed."));
+      transaction.onabort = () => reject(transaction.error || new Error("Draft storage transaction aborted."));
+    });
+  }
+  async clear() {
+    this.candidate = null;
+    this.hideCandidate();
+    await this.remove();
+    this.bus.emit("draft-state", { status: "clear" });
+  }
+  destroy() {
+    this.destroyed = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+    this.subscriptions.forEach((off) => off());
+    if (this.refs.draftRestore) {
+      this.refs.draftRestore.removeEventListener("click", this.onRestore);
+    }
+    if (this.refs.draftDiscard) {
+      this.refs.draftDiscard.removeEventListener("click", this.onDiscard);
+    }
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.onVisibility);
+    }
+    if (typeof window !== "undefined") {
+      window.removeEventListener("pagehide", this.onPageHide);
+      if (this.unloadInstalled) {
+        window.removeEventListener("beforeunload", this.onBeforeUnload);
+      }
     }
   }
 };
@@ -7427,6 +8492,20 @@ var GridCore = class {
       picker
     );
     this.errorPainter = new ErrorPainter(this.store, this.renderer, this.bus, this.refs);
+    this.draftStore = new DraftStore(
+      this.store.layout.draft || null,
+      this.store,
+      this.sync,
+      this.bus,
+      this.refs
+    );
+    this.draftStore.init();
+    this.offSyncStateDom = this.bus.on("sync-state", (state) => this.publishSyncState(state));
+    this.onSyncRetry = () => this.sync.retryNow();
+    if (this.refs.syncRetry) {
+      this.refs.syncRetry.addEventListener("click", this.onSyncRetry);
+    }
+    this.publishSyncState(this.sync.state());
     this.onDblClick = (e) => {
       const cell = e.target.closest(".lgrid-cell");
       if (cell && this.refs.body.contains(cell) && !cell.closest(".lgrid-row--pad")) {
@@ -7662,6 +8741,9 @@ var GridCore = class {
         this.sync.reset();
       }
       this.store.reseed(d.rows);
+      if (this.draftStore) {
+        this.draftStore.clear();
+      }
       this.applyFooter(d.footer || {});
       if (hadFocus) {
         this.refs.root.focus();
@@ -7840,10 +8922,15 @@ var GridCore = class {
     if (rowKeys.length < 2) {
       return;
     }
-    this.store.fillDown(colKey, rowKeys);
+    const changed = this.store.fillDown(colKey, rowKeys);
+    const touched = new Set(changed.filter((cell) => cell.colKey === colKey).map((cell) => cell.rowKey));
+    const appliedRows = [rowKeys[0], ...rowKeys.slice(1).filter((rowKey) => touched.has(rowKey))];
+    if (appliedRows.length < 2) {
+      return;
+    }
     this.sync.enqueue(
-      { seq: this.store.nextSeq(), t: "fill", col: colKey, rows: rowKeys },
-      rowKeys.slice(1).map((rowKey) => ({ rowKey, colKey })),
+      { seq: this.store.nextSeq(), t: "fill", col: colKey, rows: appliedRows },
+      appliedRows.slice(1).map((rowKey) => ({ rowKey, colKey })),
       { flush: true }
     );
   }
@@ -7877,6 +8964,81 @@ var GridCore = class {
     if (this.sync) {
       return this.sync.flush();
     }
+    return Promise.resolve(true);
+  }
+  /** Commit the editor and wait until every queued operation is acknowledged. */
+  async whenSettled() {
+    if (!this.sync) {
+      return { status: "idle", canSave: true };
+    }
+    if (this.editorManager && this.editorManager.isEditing() && !this.editorManager.commit({ advance: null })) {
+      throw new Error("The active cell must be corrected before saving.");
+    }
+    this.sync.flush();
+    return this.sync.whenSettled();
+  }
+  /** Safely run a Livewire host save after commit + full queue settlement. */
+  async commitAndSave(method = "save", ...args) {
+    await this.whenSettled();
+    if (!this.refs.wire || typeof this.refs.wire.invoke !== "function") {
+      throw new Error("LaraGrid could not resolve the Livewire save action.");
+    }
+    this.refs.root.classList.add("lgrid--saving-host");
+    try {
+      const result = await this.refs.wire.invoke(method, ...args);
+      await this.markSaved();
+      return result;
+    } catch (error) {
+      if (this.announcer) {
+        this.announcer.message("Save failed. Your grid changes are still available.");
+      }
+      throw error;
+    } finally {
+      this.refs.root.classList.remove("lgrid--saving-host");
+    }
+  }
+  /** Mark a confirmed host save durable when the host does not issue an authoritative reseed. */
+  async markSaved() {
+    this.store.markSaved();
+    if (this.draftStore) {
+      await this.draftStore.clear();
+    }
+    this.lastSavedAt = Date.now();
+    this.publishSyncState(this.sync ? this.sync.state() : { status: "idle", canSave: true });
+  }
+  /** Render and publish one stable state surface for host Save buttons and diagnostics. */
+  publishSyncState(state) {
+    const full = {
+      ...state,
+      dirty: this.store.dirty.size,
+      pending: this.store.pending.size,
+      modified: this.store.modifiedCount(),
+      errors: this.store.errors.size,
+      canSave: this.sync ? this.sync.canSave() : true,
+      lastSavedAt: this.lastSavedAt || null
+    };
+    if (this.refs.syncStatus) {
+      const count = full.pending || full.queued || 0;
+      let label = full.modified ? "Changes ready to save" : "Saved";
+      if (full.status === "syncing") {
+        label = "Syncing " + (count || "changes") + "\u2026";
+      } else if (full.status === "retrying") {
+        label = "Sync interrupted \u2014 retrying in " + Math.ceil((full.retryIn || 0) / 1e3) + "s";
+      } else if (full.status === "offline") {
+        label = "Offline \u2014 " + (count || full.modified || 0) + " change(s) kept locally";
+      } else if (full.status === "failed") {
+        label = "Sync failed \u2014 changes are still in this grid";
+      }
+      this.refs.syncStatus.textContent = label;
+      this.refs.syncStatus.dataset.state = full.status || "idle";
+    }
+    if (this.refs.syncRetry) {
+      this.refs.syncRetry.hidden = !["failed", "offline", "retrying"].includes(full.status);
+    }
+    this.refs.root.dispatchEvent(new CustomEvent("lgrid:statechange", {
+      bubbles: true,
+      detail: { grid: this.store.name, ...full }
+    }));
   }
   /** Toggle the loading overlay (server fetch in flight). */
   setLoading(on) {
@@ -7990,6 +9152,15 @@ var GridCore = class {
     if (this.errorPainter) {
       this.errorPainter.destroy();
     }
+    if (this.draftStore) {
+      this.draftStore.destroy();
+    }
+    if (this.offSyncStateDom) {
+      this.offSyncStateDom();
+    }
+    if (this.refs.syncRetry && this.onSyncRetry) {
+      this.refs.syncRetry.removeEventListener("click", this.onSyncRetry);
+    }
     if (this.sync) {
       this.sync.destroy();
     }
@@ -8073,6 +9244,17 @@ function resolveRefs(root) {
     emptyTemplate: ref("emptyTemplate"),
     editor: ref("editor"),
     errorCount: ref("errorCount"),
+    errorReview: ref("errorReview"),
+    errorPanel: ref("errorPanel"),
+    errorList: ref("errorList"),
+    errorPrev: ref("errorPrev"),
+    errorNext: ref("errorNext"),
+    syncStatus: ref("syncStatus"),
+    syncRetry: ref("syncRetry"),
+    draftBar: ref("draftBar"),
+    draftMessage: ref("draftMessage"),
+    draftRestore: ref("draftRestore"),
+    draftDiscard: ref("draftDiscard"),
     popup: ref("popup"),
     wire: resolveWire(root)
   };
@@ -8120,12 +9302,14 @@ function resolveWire(root) {
   return {
     gridFetch: call2("gridFetch"),
     gridOps: call2("gridOps"),
+    gridRestoreDraft: call2("gridRestoreDraft"),
     gridOptions: call2("gridOptions"),
     gridAction: call2("gridAction"),
     gridExport: call2("gridExport"),
     gridViews: call2("gridViews"),
     gridViewSave: call2("gridViewSave"),
-    gridViewDelete: call2("gridViewDelete")
+    gridViewDelete: call2("gridViewDelete"),
+    invoke: (method, ...args) => call2(method)(...args)
   };
 }
 function readConfig(root) {

@@ -169,11 +169,19 @@ export default class StateStore {
         this.hiddenStash = new Map();
         /** Monotonic op sequence + the last server-acknowledged grid version. */
         this.seqCounter = 0;
-        this.version = 0;
+        this.version = Number(config.version) || 0;
         /** @type {Set<string>} dirty cell keys (cellMapKey) awaiting server acknowledgement. */
         this.dirty = new Set();
-        /** @type {Set<string>} pending cell keys with an op in flight. */
+        /** @type {Set<string>} pending cell keys with a queued or in-flight op. */
         this.pending = new Set();
+        /** @type {Map<string, Set<number>>} exact unacknowledged op sequences per cell. */
+        this.pendingSeqs = new Map();
+        /** @type {Map<string, number>} newest optimistic op sequence touching each cell. */
+        this.cellRevisions = new Map();
+        /** Cells changed since the host last saved/reseeded; server acknowledgement does not clear it. */
+        this.modified = new Set();
+        /** True when row insertion/removal/reordering changed since the last host save/reseed. */
+        this.structureModified = false;
         /** @type {Map<string, string>} error message by cellMapKey (or `${_k}_row` for row errors). */
         this.errors = new Map();
         /** @type {Array<object>} the recorded op log (the sync spine). */
@@ -921,6 +929,7 @@ export default class StateStore {
             });
         }
         this.bus.emit('rows:changed', { rows: this.rows });
+        this.markStructureModified();
         return blank;
     }
 
@@ -957,6 +966,7 @@ export default class StateStore {
         this.clearRowState(rowKey);
         this.reindex();
         this.bus.emit('rows:changed', { rows: this.rows });
+        this.markStructureModified();
 
         return draft;
     }
@@ -981,6 +991,7 @@ export default class StateStore {
         this.clearRowState(rowKey);
         this.reindex();
         this.bus.emit('rows:changed', { rows: this.rows });
+        this.markStructureModified();
     }
 
     /**
@@ -1003,6 +1014,7 @@ export default class StateStore {
             });
         }
         this.bus.emit('rows:changed', { rows: this.rows });
+        this.markStructureModified();
         return clone;
     }
 
@@ -1019,6 +1031,7 @@ export default class StateStore {
         this.rows.splice(at, 0, row);
         this.reindex();
         this.bus.emit('rows:changed', { rows: this.rows });
+        this.markStructureModified();
         return row;
     }
 
@@ -1069,6 +1082,10 @@ export default class StateStore {
         this.clearChecked();
         this.dirty.clear();
         this.pending.clear();
+        this.pendingSeqs.clear();
+        this.cellRevisions.clear();
+        this.modified.clear();
+        this.structureModified = false;
         this.errors.clear();
         this.opLog = [];
         this.version = 0;
@@ -1096,7 +1113,8 @@ export default class StateStore {
             }
         }
 
-        this.bus.emit('errors:changed', { errors: this.errors });
+        this.bus.emit('errors:changed', { errors: this.errors, keys: [] });
+        this.emitEditState();
     }
 
     /**
@@ -1153,6 +1171,9 @@ export default class StateStore {
 
         let changed = [];
         for (const key of rowKeys.slice(1)) {
+            if (this.cellLocked(key, colKey)) {
+                continue;
+            }
             changed = changed.concat(this.applyLocalSet(key, colKey, value));
             if (isPicker) {
                 this.setRowLabel(key, colKey, value != null ? sourceLabel : null);
@@ -1172,16 +1193,31 @@ export default class StateStore {
     // ---- Dirty / pending / error bookkeeping ---------------------------------------------
 
     markDirty(rowKey, colKey) {
-        this.dirty.add(cellMapKey(rowKey, colKey));
+        const key = cellMapKey(rowKey, colKey);
+        this.dirty.add(key);
+        this.modified.add(key);
         this.bus.emit('dirty:changed', { rowKey, colKey, dirty: true });
+        this.emitEditState();
     }
 
-    /** Mark cells as having an op in flight (SyncManager flush). */
-    markPending(cells) {
+    /** Mark cells as covered by a queued op and remember its exact revision. */
+    markPending(cells, seq = 0) {
         for (const { rowKey, colKey } of cells) {
-            this.pending.add(cellMapKey(rowKey, colKey));
+            const key = cellMapKey(rowKey, colKey);
+            this.pending.add(key);
+            if (!this.pendingSeqs.has(key)) {
+                this.pendingSeqs.set(key, new Set());
+            }
+            this.pendingSeqs.get(key).add(seq);
+            this.cellRevisions.set(key, Math.max(seq, this.cellRevisions.get(key) || 0));
         }
-        this.bus.emit('sync-state', { pending: this.pending.size, dirty: this.dirty.size });
+        this.bus.emit('sync-state', {
+            pending: this.pending.size,
+            dirty: this.dirty.size,
+            modified: this.modified.size,
+            cells,
+        });
+        this.emitEditState();
     }
 
     /**
@@ -1189,19 +1225,35 @@ export default class StateStore {
      * authoritative write-back patch (unless a newer local edit supersedes it), set/clear errors,
      * and adopt the server version. Emits cells:changed for repainted cells + errors:changed.
      *
+     * `batchItems` is the client-side acknowledgement context. A successful direct SET normally
+     * has an empty server patch, so result.patch can never be used to infer which cells settled.
+     *
      * @param {{version: number, results: Array<object>, footer: object}} response
+     * @param {Array<{op: object, cells: Array<{rowKey: string, colKey: string}>}>} [batchItems]
      */
-    reconcile(response) {
+    reconcile(response, batchItems = []) {
         const repaint = [];
+        const changedErrors = new Set();
+        const changedState = new Map();
+        const bySeq = new Map(batchItems.map((item) => [item.op.seq, item]));
         if (typeof response.version === 'number') {
             this.version = response.version;
         }
 
         for (const result of response.results || []) {
-            // Errors: set the cell/row error; a failed op leaves the cell dirty (unsaved) + errored.
+            const item = bySeq.get(result.seq);
+            // Errors: accept only when a newer optimistic edit has not superseded this result.
             for (const [rowKey, cols] of Object.entries(result.errors || {})) {
                 for (const [colKey, message] of Object.entries(cols)) {
-                    this.errors.set(this.errorKey(rowKey, colKey), message);
+                    const key = this.errorKey(rowKey, colKey);
+                    const revisionKey = colKey === '_row' ? null : cellMapKey(rowKey, colKey);
+                    if (revisionKey && (this.cellRevisions.get(revisionKey) || 0) > result.seq) {
+                        continue;
+                    }
+                    if (this.errors.get(key) !== message) {
+                        this.errors.set(key, message);
+                        changedErrors.add(key);
+                    }
                 }
             }
             // Write-backs: adopt authoritative values (formula results, hook enrichments).
@@ -1220,48 +1272,95 @@ export default class StateStore {
                         }
                         continue;
                     }
-                    // Skip a cell the user has since re-edited (a newer local dirty flag) or is
-                    // actively editing — the server value is stale relative to the client (R4/reconcile).
+                    // A per-cell sequence, rather than a boolean dirty/pending pair, makes this
+                    // safe when edit N+1 is queued while response N is still in flight.
                     const ck = cellMapKey(rowKey, colKey);
-                    if (this.dirty.has(ck) && this.pending.has(ck) === false) {
+                    if ((this.cellRevisions.get(ck) || 0) > result.seq) {
                         continue;
                     }
                     hit.row[colKey] = value;
                     repaint.push({ rowKey, colKey });
                 }
             }
-        }
 
-        // Clear pending/dirty for cells that succeeded (no error survived on them).
-        for (const result of response.results || []) {
-            if (result.ok) {
-                // Clear any cells this op marked pending; success removes dirty + error.
-                this.settleOp(result);
+            // Every acknowledged result settles its exact submitted cells. Failed validation
+            // clears pending but deliberately keeps dirty + error so it remains fixable.
+            for (const cell of this.settleOp(result, (item && item.cells) || [])) {
+                changedState.set(cellMapKey(cell.rowKey, cell.colKey), cell);
+                if (result.ok) {
+                    changedErrors.add(this.errorKey(cell.rowKey, cell.colKey));
+                }
             }
         }
 
         if (repaint.length) {
             this.bus.emit('cells:changed', { cells: repaint });
         }
-        this.bus.emit('errors:changed', { errors: this.errors });
-        this.bus.emit('sync-state', { pending: this.pending.size, dirty: this.dirty.size });
+        this.bus.emit('errors:changed', { errors: this.errors, keys: [...changedErrors] });
+        this.bus.emit('sync-state', {
+            pending: this.pending.size,
+            dirty: this.dirty.size,
+            modified: this.modified.size,
+            cells: [...changedState.values()],
+        });
+        this.emitEditState();
     }
 
-    /** Clear dirty/pending/error for the cells an acknowledged op covered. */
-    settleOp(result) {
-        // For a set/fill, the patch/error keys name the touched cells; clear their state.
-        const rowKeys = new Set([
-            ...Object.keys(result.patch || {}),
-            ...Object.keys(result.errors || {}),
-        ]);
-        for (const rowKey of rowKeys) {
-            for (const colKey of Object.keys((result.patch || {})[rowKey] || {})) {
-                const ck = cellMapKey(rowKey, colKey);
-                this.pending.delete(ck);
+    /** Clear the acknowledged sequence for exact client-known cells. */
+    settleOp(result, cells = []) {
+        for (const { rowKey, colKey } of cells) {
+            const ck = cellMapKey(rowKey, colKey);
+            const seqs = this.pendingSeqs.get(ck);
+            if (seqs) {
+                seqs.delete(result.seq);
+                if (seqs.size === 0) {
+                    this.pendingSeqs.delete(ck);
+                    this.pending.delete(ck);
+                }
+            }
+
+            // Only the latest edit may clear dirty/error. An older acknowledgement still removes
+            // its own pending sequence but otherwise leaves the newer optimistic state alone.
+            const cellFailed = !!(
+                (result.errors || {})[rowKey]
+                && ((result.errors || {})[rowKey][colKey] || (result.errors || {})[rowKey]._row)
+            );
+            if (!cellFailed && (this.cellRevisions.get(ck) || 0) <= result.seq) {
                 this.dirty.delete(ck);
-                this.errors.delete(ck);
+                this.errors.delete(this.errorKey(rowKey, colKey));
             }
         }
+        return cells;
+    }
+
+    /** Publish the public, save-gating edit state from one canonical place. */
+    emitEditState() {
+        this.bus.emit('edit-state', {
+            dirty: this.dirty.size,
+            pending: this.pending.size,
+            modified: this.modifiedCount(),
+            errors: this.errors.size,
+        });
+    }
+
+    markStructureModified() {
+        this.structureModified = true;
+        this.emitEditState();
+    }
+
+    modifiedCount() {
+        return this.modified.size + (this.structureModified ? 1 : 0);
+    }
+
+    hasUnsavedChanges() {
+        return this.modifiedCount() > 0;
+    }
+
+    /** Mark the current acknowledged rows as durably saved by the host. */
+    markSaved() {
+        this.modified.clear();
+        this.structureModified = false;
+        this.emitEditState();
     }
 
     /** Clear all edit bookkeeping for a removed row. */
@@ -1275,6 +1374,17 @@ export default class StateStore {
         for (const key of [...this.pending]) {
             if (key.startsWith(prefix)) {
                 this.pending.delete(key);
+            }
+        }
+        for (const key of [...this.modified]) {
+            if (key.startsWith(prefix)) {
+                this.modified.delete(key);
+            }
+        }
+        for (const key of [...this.pendingSeqs.keys()]) {
+            if (key.startsWith(prefix)) {
+                this.pendingSeqs.delete(key);
+                this.cellRevisions.delete(key);
             }
         }
         for (const key of [...this.errors.keys()]) {
@@ -1306,6 +1416,7 @@ export default class StateStore {
         } else {
             this.errors.delete(key);
         }
-        this.bus.emit('errors:changed', { errors: this.errors });
+        this.bus.emit('errors:changed', { errors: this.errors, keys: [key] });
+        this.emitEditState();
     }
 }

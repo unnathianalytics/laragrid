@@ -30,6 +30,7 @@ import ClientValidator from '../validate/ClientValidator.js';
 import ErrorPainter from '../render/ErrorPainter.js';
 import PopupManager from '../popup/PopupManager.js';
 import LayoutStore from '../persist/LayoutStore.js';
+import DraftStore from '../persist/DraftStore.js';
 import ResizeManager from '../resize/ResizeManager.js';
 import ColumnChooser from '../render/ColumnChooser.js';
 import HeaderFilters from '../render/HeaderFilters.js';
@@ -462,6 +463,22 @@ export default class GridCore {
         );
         this.errorPainter = new ErrorPainter(this.store, this.renderer, this.bus, this.refs);
 
+        this.draftStore = new DraftStore(
+            this.store.layout.draft || null,
+            this.store,
+            this.sync,
+            this.bus,
+            this.refs,
+        );
+        this.draftStore.init();
+
+        this.offSyncStateDom = this.bus.on('sync-state', (state) => this.publishSyncState(state));
+        this.onSyncRetry = () => this.sync.retryNow();
+        if (this.refs.syncRetry) {
+            this.refs.syncRetry.addEventListener('click', this.onSyncRetry);
+        }
+        this.publishSyncState(this.sync.state());
+
         // Open the editor on a double-click of an editable cell. Pad rows (Busy dedicated
         // blanks) are inert — without the guard the editor would open at the PREVIOUS active
         // cell, which reads as a misfire.
@@ -737,6 +754,9 @@ export default class GridCore {
                 this.sync.reset();
             }
             this.store.reseed(d.rows);
+            if (this.draftStore) {
+                this.draftStore.clear();
+            }
             this.applyFooter(d.footer || {});
             if (hadFocus) {
                 // Focus-return: the reseed replaced the DOM under the operator's cursor —
@@ -948,10 +968,17 @@ export default class GridCore {
         if (rowKeys.length < 2) {
             return;
         }
-        this.store.fillDown(colKey, rowKeys);
+        const changed = this.store.fillDown(colKey, rowKeys);
+        const touched = new Set(changed
+            .filter((cell) => cell.colKey === colKey)
+            .map((cell) => cell.rowKey));
+        const appliedRows = [rowKeys[0], ...rowKeys.slice(1).filter((rowKey) => touched.has(rowKey))];
+        if (appliedRows.length < 2) {
+            return;
+        }
         this.sync.enqueue(
-            { seq: this.store.nextSeq(), t: 'fill', col: colKey, rows: rowKeys },
-            rowKeys.slice(1).map((rowKey) => ({ rowKey, colKey })),
+            { seq: this.store.nextSeq(), t: 'fill', col: colKey, rows: appliedRows },
+            appliedRows.slice(1).map((rowKey) => ({ rowKey, colKey })),
             { flush: true },
         );
     }
@@ -988,6 +1015,87 @@ export default class GridCore {
         if (this.sync) {
             return this.sync.flush();
         }
+        return Promise.resolve(true);
+    }
+
+    /** Commit the editor and wait until every queued operation is acknowledged. */
+    async whenSettled() {
+        if (!this.sync) {
+            return { status: 'idle', canSave: true };
+        }
+        if (this.editorManager && this.editorManager.isEditing()
+            && !this.editorManager.commit({ advance: null })) {
+            throw new Error('The active cell must be corrected before saving.');
+        }
+        this.sync.flush();
+        return this.sync.whenSettled();
+    }
+
+    /** Safely run a Livewire host save after commit + full queue settlement. */
+    async commitAndSave(method = 'save', ...args) {
+        await this.whenSettled();
+        if (!this.refs.wire || typeof this.refs.wire.invoke !== 'function') {
+            throw new Error('LaraGrid could not resolve the Livewire save action.');
+        }
+        this.refs.root.classList.add('lgrid--saving-host');
+        try {
+            const result = await this.refs.wire.invoke(method, ...args);
+            await this.markSaved();
+            return result;
+        } catch (error) {
+            if (this.announcer) {
+                this.announcer.message('Save failed. Your grid changes are still available.');
+            }
+            throw error;
+        } finally {
+            this.refs.root.classList.remove('lgrid--saving-host');
+        }
+    }
+
+    /** Mark a confirmed host save durable when the host does not issue an authoritative reseed. */
+    async markSaved() {
+        this.store.markSaved();
+        if (this.draftStore) {
+            await this.draftStore.clear();
+        }
+        this.lastSavedAt = Date.now();
+        this.publishSyncState(this.sync ? this.sync.state() : { status: 'idle', canSave: true });
+    }
+
+    /** Render and publish one stable state surface for host Save buttons and diagnostics. */
+    publishSyncState(state) {
+        const full = {
+            ...state,
+            dirty: this.store.dirty.size,
+            pending: this.store.pending.size,
+            modified: this.store.modifiedCount(),
+            errors: this.store.errors.size,
+            canSave: this.sync ? this.sync.canSave() : true,
+            lastSavedAt: this.lastSavedAt || null,
+        };
+        if (this.refs.syncStatus) {
+            const count = full.pending || full.queued || 0;
+            let label = full.modified ? 'Changes ready to save' : 'Saved';
+            if (full.status === 'syncing') {
+                label = 'Syncing ' + (count || 'changes') + '…';
+            } else if (full.status === 'retrying') {
+                label = 'Sync interrupted — retrying in '
+                    + Math.ceil((full.retryIn || 0) / 1000) + 's';
+            } else if (full.status === 'offline') {
+                label = 'Offline — ' + (count || full.modified || 0) + ' change(s) kept locally';
+            } else if (full.status === 'failed') {
+                label = 'Sync failed — changes are still in this grid';
+            }
+            this.refs.syncStatus.textContent = label;
+            this.refs.syncStatus.dataset.state = full.status || 'idle';
+        }
+        if (this.refs.syncRetry) {
+            this.refs.syncRetry.hidden = !['failed', 'offline', 'retrying'].includes(full.status);
+        }
+        this.refs.root.dispatchEvent(new CustomEvent('lgrid:statechange', {
+            bubbles: true,
+            detail: { grid: this.store.name, ...full },
+        }));
     }
 
     /** Toggle the loading overlay (server fetch in flight). */
@@ -1111,6 +1219,15 @@ export default class GridCore {
         }
         if (this.errorPainter) {
             this.errorPainter.destroy();
+        }
+        if (this.draftStore) {
+            this.draftStore.destroy();
+        }
+        if (this.offSyncStateDom) {
+            this.offSyncStateDom();
+        }
+        if (this.refs.syncRetry && this.onSyncRetry) {
+            this.refs.syncRetry.removeEventListener('click', this.onSyncRetry);
         }
         if (this.sync) {
             this.sync.destroy();

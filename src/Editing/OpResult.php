@@ -23,7 +23,7 @@ final class OpResult
 {
     /**
      * @param  int  $version  The grid version after this batch.
-     * @param  list<array{seq: int, ok: bool, patch: array<string, array<string, mixed>>, errors: array<string, array<string, string>>}>  $results
+     * @param  list<array{seq: int, ok: bool, conflict?: bool, patch: array<string, array<string, mixed>>, errors: array<string, array<string, string>>, rows?: list<array<string, mixed>>}>  $results
      * @param  array<string, int|float|string>  $footer  Recomputed footer aggregate values by column.
      * @param  list<array<string, mixed>>  $rows  The applied rows (host writes back; NOT serialized to the wire).
      * @param  bool  $refreshHost  Whether any op touched a refreshesHost column (drop Renderless).

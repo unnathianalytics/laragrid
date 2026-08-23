@@ -772,6 +772,60 @@
         border-color: transparent var(--lgrid-error) transparent transparent;
     }
 
+    .lgrid-cell-editor-error {
+        position: absolute;
+        z-index: 2;
+        top: 100%;
+        left: 0;
+        min-width: 100%;
+        max-width: 22rem;
+        padding: 0.25rem 0.4rem;
+        border: 1px solid var(--lgrid-error);
+        border-radius: 0 0 0.25rem 0.25rem;
+        background: var(--lgrid-error-bg);
+        color: var(--lgrid-error);
+        font-size: var(--lgrid-font-size);
+        white-space: normal;
+    }
+
+    .lgrid-syncbar {
+        display: none;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.5rem;
+        min-height: 1.75rem;
+        padding: 0.2rem 0.5rem;
+        color: var(--lgrid-muted);
+        font-size: var(--lgrid-font-size);
+    }
+
+    .lgrid[aria-readonly="false"] .lgrid-syncbar {
+        display: flex;
+    }
+
+    .lgrid-syncbar [data-state="failed"],
+    .lgrid-syncbar [data-state="offline"] {
+        color: var(--lgrid-error);
+    }
+
+    .lgrid-sync-retry,
+    .lgrid-error-review,
+    .lgrid-error-nav,
+    .lgrid-draftbar button,
+    .lgrid-error-item {
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+    }
+
+    .lgrid-sync-retry,
+    .lgrid-error-review {
+        text-decoration: underline;
+        text-underline-offset: 0.15rem;
+    }
+
     /* Error summary bar — hidden unless the grid has errors (root class toggled by ErrorPainter). */
     .lgrid-errorbar {
         display: none;
@@ -797,6 +851,79 @@
         color: var(--lgrid-cell-bg);
         font-weight: 700;
         line-height: 1;
+    }
+
+    .lgrid-error-review {
+        display: inline-flex;
+        gap: 0.25rem;
+        padding: 0;
+        font-weight: 600;
+    }
+
+    .lgrid-error-nav {
+        width: 1.5rem;
+        height: 1.5rem;
+        border: 1px solid currentColor;
+        border-radius: 0.25rem;
+        line-height: 1;
+    }
+
+    .lgrid-error-nav:disabled {
+        opacity: 0.45;
+        cursor: default;
+    }
+
+    .lgrid-error-panel {
+        max-height: 12rem;
+        overflow: auto;
+        border-top: 1px solid var(--lgrid-error);
+        background: var(--lgrid-error-bg);
+        color: var(--lgrid-error);
+        font-size: var(--lgrid-font-size);
+    }
+
+    .lgrid-error-list {
+        margin: 0;
+        padding: 0.35rem 0.5rem 0.35rem 1.75rem;
+    }
+
+    .lgrid-error-item {
+        width: 100%;
+        padding: 0.2rem;
+        text-align: left;
+    }
+
+    .lgrid-error-item:hover,
+    .lgrid-error-item:focus-visible {
+        text-decoration: underline;
+    }
+
+    .lgrid-draftbar {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.45rem 0.5rem;
+        border-top: 1px solid var(--lgrid-dirty);
+        background: var(--lgrid-error-bg);
+        color: var(--lgrid-text);
+        font-size: var(--lgrid-font-size);
+    }
+
+    .lgrid-draftbar[hidden] {
+        display: none;
+    }
+
+    .lgrid-draftbar button {
+        padding: 0.15rem 0.4rem;
+        border: 1px solid var(--lgrid-border);
+        border-radius: 0.25rem;
+        background: var(--lgrid-cell-bg);
+    }
+
+    .lgrid-virtual-spacer {
+        width: 1px;
+        min-width: 1px;
+        pointer-events: none;
     }
 
     /* ---- M5 pickers — layered popup, option list, checkbox, paste confirm ----------- */
@@ -1268,6 +1395,9 @@
         .lgrid-pagination,
         .lgrid-statusbar,
         .lgrid-errorbar,
+        .lgrid-error-panel,
+        .lgrid-syncbar,
+        .lgrid-draftbar,
         .lgrid-loading,
         .lgrid-popup,
         .lgrid-cell-editor,

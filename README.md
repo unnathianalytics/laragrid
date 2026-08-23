@@ -209,6 +209,7 @@ class BookingEntry extends Component
             ->newRowUsing(fn () => ['nights' => 1])     // template for seeded AND inserted rows
             ->minRows(1)
             ->autoAppend()                              // Enter past the last cell grows the grid
+            ->persistDraft('local', 'booking:new')      // opt-in IndexedDB crash/reload recovery
             ->focusOnMount()
             ->focusOutTo('[data-save]')                 // Tab past the last cell lands on Save
             ->columns([
@@ -235,7 +236,7 @@ class BookingEntry extends Component
 
     public function save(): void
     {
-        $rows = $this->gridRows('lines');       // cleaned: blank trailing rows + bookkeeping stripped
+        $rows = $this->gridRows('lines');       // cleaned AND whole-grid server validated
 
         Booking::createFromLines($rows);        // your persistence — the grid never owns it
 
@@ -250,6 +251,29 @@ streams typed ops to the server, where each write is authorized, cast, validated
 your hooks, and formula columns are recomputed — the response reconciles authoritative values
 back into the grid. Rows are addressed by stable keys, never positions. Blank trailing rows
 (the auto-append artifact) are invisible to validation, totals, and `gridRows()`.
+
+For a Save button, use the public safe boundary instead of racing a `wire:click` against an
+open editor or queued request:
+
+```js
+const grid = window.LaraGrid.find(document.querySelector('[data-lgrid]'))
+await grid.commitAndSave('save') // commit editor → flush → await stable queue → $wire.save()
+```
+
+`commitAndSave()` refuses while validation errors, offline state, or a terminal sync failure
+remain. `lgrid:statechange` bubbles from the root with `canSave`, `pending`, `modified`,
+`errors`, and the current sync status for declarative host buttons. If the host invokes Save
+some other way, call `await grid.whenSettled()` first and `await grid.markSaved()` only after
+the database transaction succeeds.
+
+`->persistDraft()` is deliberately opt-in because it stores row data in browser IndexedDB.
+Scope its key by tenant/operator/document on shared browsers. A reload offers Restore/Discard;
+queued ops resume safely, and the draft is retained after acknowledgement until the host save is
+confirmed. Every editable grid also installs a dirty-navigation warning.
+
+Validation errors are available from the footer's **Review errors** control with their row,
+column and server message. Entries, previous/next buttons and `Ctrl+E` focus the affected cell;
+cells expose `aria-invalid` and the message through `aria-describedby`.
 
 ## Row lifecycle & blank rows
 
@@ -499,6 +523,7 @@ DateColumn::make('vch_date')
 
 **Editable** — `editable()` · `rowsFrom('prop')` · `defaultRows(n)` · `newRowUsing(fn)` ·
 `minRows(n)` · `autoAppend()` · `padRows(n)` · `sync(SyncPolicy::PerCell|PerRow|Deferred)` ·
+`persistDraft('local', key)` · `virtualizeRowsAbove(n)` ·
 `refreshesHost([...])` (re-render host chrome when listed columns change) ·
 `completeWhenBalanced('dr', 'cr')` · `afterCellChange(fn)` · `afterRowRemove(fn)`.
 
@@ -785,6 +810,7 @@ $this->forgetGridQuery('items');      // no-op on a grid without ->persistQuery(
 | --- | --- | --- | --- | --- |
 | `persistQuery()` | search, filters, sort, per-page | Laravel session | the session | automatic |
 | `persistWidths()` | column widths + hidden columns | `localStorage` | until cleared | automatic |
+| `persistDraft()` | editable rows + queued ops + errors + focus | IndexedDB | until host save/discard | Restore/Discard prompt |
 | `savedViews()` | all of the above, by name | `laragrid_views` table | permanent | operator saves |
 
 All three compose on one grid. Storage is swappable the same way: rebind
@@ -905,7 +931,7 @@ instead of moving. Per-row locked cells are skipped by horizontal and wrapping m
 | `Tab` / `Shift+Tab` | Commit and move to the next / previous navigable cell | While editing |
 | `Escape` | Cancel the edit and restore the committed value | While editing |
 | `Delete` | Clear every editable, unlocked cell in the current selection | Editable grids |
-| `Ctrl+E` | Jump to the first cell with a validation error | Editable grids |
+| `Ctrl+E` | Focus a validation error; footer Review/↑/↓ exposes every message | Editable grids |
 
 While editing text, Left/Right/Home/End control the caret and Up/Down commit and move.
 For number cells, every arrow commits and moves. Date cells use Left/Right for the caret

@@ -329,7 +329,7 @@ export default class EditorManager {
      */
     commit(opts) {
         if (this.mode !== 'EDIT' || !this.editor) {
-            return;
+            return true;
         }
         const rowKey = this.editorRow;
         const colKey = this.editorCol;
@@ -341,7 +341,7 @@ export default class EditorManager {
         if (parsed === undefined) {
             this.store.setError(rowKey, colKey, 'Not a recognisable date.');
             this.editor.focus(true);
-            return;
+            return false;
         }
 
         // Client-side instant validation (a strict subset; server is authoritative).
@@ -350,7 +350,7 @@ export default class EditorManager {
         if (message) {
             this.store.setError(rowKey, colKey, message);
             this.editor.focus(true);
-            return; // stay in EDIT; the operator fixes the value
+            return false; // stay in EDIT; the operator fixes the value
         }
 
         const label = this.pickLabel;
@@ -368,6 +368,7 @@ export default class EditorManager {
             // column declares one and the advance is forward — see panelOrAdvance().
             this.panelOrAdvance(column, rowKey, opts.advance);
         }
+        return true;
     }
 
     /**

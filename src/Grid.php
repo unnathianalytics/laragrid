@@ -88,6 +88,13 @@ class Grid
     protected ?array $persist = null;
 
     /**
+     * Editable working-draft persistence declaration: browser IndexedDB key, or null when off.
+     *
+     * @var array{mode: string, key: string}|null
+     */
+    protected ?array $persistDraft = null;
+
+    /**
      * Live query persistence declaration (v1.11): ['mode' => 'session', 'key' => string], or
      * null when the grid does not remember the operator's search/filters/sort/per-page.
      *
@@ -210,6 +217,9 @@ class Grid
     /** When ops leave the client for the server (plan G5). Default: per cell commit. */
     protected SyncPolicy $sync = SyncPolicy::PerCell;
 
+    /** Component-scoped authoritative op-stream revision (injected by WithLaraGrid). */
+    protected int $protocolVersion = 0;
+
     /**
      * Auto-append a blank trailing row so Enter past the last editable cell grows the grid
      * (Tally behaviour, plan G4). Blank trailing rows are excluded from validation and from
@@ -301,6 +311,9 @@ class Grid
     /** Rows gridMountRows() seeds for a fresh editable grid (0 = host seeds manually). */
     protected int $defaultRows = 0;
 
+    /** Row count above which the client mounts a bounded DOM window; null uses shipped 750. */
+    protected ?int $virtualizeAbove = null;
+
     /**
      * Factory for a fresh row's default values (no `_k`; keys are merged over the
      * all-columns-null template). Used by gridMountRows() seeding AND the server's op INSERT.
@@ -332,6 +345,11 @@ class Grid
         $theme = config('laragrid.theme');
         if (is_string($theme) && in_array($theme, self::THEMES, true)) {
             $this->themeClass = 'lgrid--theme-'.$theme;
+        }
+
+        $virtualize = (int) config('laragrid.virtualize_above', 750);
+        if ($virtualize !== 750) {
+            $this->virtualizeAbove = $virtualize;
         }
     }
 
@@ -482,6 +500,31 @@ class Grid
         }
 
         $this->persist = ['mode' => 'local', 'key' => $key ?? $this->name];
+
+        return $this;
+    }
+
+    /**
+     * Recover acknowledged and queued editable work after a refresh/crash.
+     *
+     * Browser storage is opt-in because row data may be sensitive. Scope the key by tenant,
+     * operator and document when those can vary on one browser (for example
+     * "voucher:{$companyId}:{$voucherId}"). Drafts are deleted only after markSaved()/
+     * commitAndSave() or an authoritative reseed.
+     *
+     * @throws InvalidArgumentException On the reserved server mode or an unknown mode.
+     */
+    public function persistDraft(string $mode = 'local', ?string $key = null): static
+    {
+        if ($mode !== 'local') {
+            throw new InvalidArgumentException(
+                $mode === 'server'
+                    ? "Grid [{$this->name}]: persistDraft('server') is reserved and not implemented — use 'local'."
+                    : "Grid [{$this->name}]: unknown persistDraft mode [{$mode}] — use 'local'."
+            );
+        }
+
+        $this->persistDraft = ['mode' => 'local', 'key' => $key ?? $this->name];
 
         return $this;
     }
@@ -783,6 +826,22 @@ class Grid
     public function autoAppend(bool $autoAppend = true): static
     {
         $this->autoAppend = $autoAppend;
+
+        return $this;
+    }
+
+    /**
+     * Mount only a scroll window once the grid reaches this many rows. Pass 0 to disable.
+     */
+    public function virtualizeRowsAbove(int $rowCount = 750): static
+    {
+        if ($rowCount !== 0 && $rowCount < 100) {
+            throw new InvalidArgumentException(
+                "Grid [{$this->name}]: virtualizeRowsAbove() must be 0 (disabled) or at least 100 rows."
+            );
+        }
+
+        $this->virtualizeAbove = $rowCount;
 
         return $this;
     }
@@ -1246,6 +1305,19 @@ class Grid
         return $this->sync;
     }
 
+    /** @internal WithLaraGrid hydrates this before serialization/application. */
+    public function protocolVersion(int $version): static
+    {
+        $this->protocolVersion = max(0, $version);
+
+        return $this;
+    }
+
+    public function getProtocolVersion(): int
+    {
+        return $this->protocolVersion;
+    }
+
     public function autoAppends(): bool
     {
         return $this->autoAppend;
@@ -1259,6 +1331,11 @@ class Grid
     public function getPadRows(): int
     {
         return $this->padRows;
+    }
+
+    public function getVirtualizeAbove(): ?int
+    {
+        return $this->virtualizeAbove;
     }
 
     /**
@@ -1575,6 +1652,14 @@ class Grid
     /**
      * @return array{mode: string, key: string}|null
      */
+    public function getPersistDraft(): ?array
+    {
+        return $this->persistDraft;
+    }
+
+    /**
+     * @return array{mode: string, key: string}|null
+     */
     public function getPersistQuery(): ?array
     {
         return $this->persistQuery;
@@ -1826,6 +1911,11 @@ class Grid
     protected function assertReadonlyValid(array $keySet): void
     {
         if (! $this->isServerSide()) {
+            if ($this->persistDraft !== null && ! $this->editable) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] declares persistDraft() but is not editable(); draft recovery is only available for editable grids."
+                );
+            }
             if ($this->export !== null && ! $this->hasExportRowResolver()) {
                 throw new InvalidArgumentException(
                     "Grid [{$this->name}] declares exportable() but no query() or exportRows(); exports need a server-side readonly grid or explicit export row resolver."
