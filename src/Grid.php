@@ -305,6 +305,9 @@ class Grid
     /** Fill the parent box (100% height flex mode); pair with a sized container. */
     protected bool $fillParent = false;
 
+    /** Scale every visible column into the grid width and suppress horizontal scrolling. */
+    protected bool $fitColumns = false;
+
     /** Empty-state text override (default: the package translation). */
     protected ?string $emptyState = null;
 
@@ -1060,6 +1063,20 @@ class Grid
         return $this;
     }
 
+    /**
+     * Keep all visible columns inside the grid's current width.
+     *
+     * Declared and operator-resized pixel widths become proportional sizing weights while
+     * this mode is active. The fit guarantee therefore takes precedence over an individual
+     * column's fixed/min/max width whenever the two cannot both be satisfied.
+     */
+    public function fitColumns(bool $fit = true): static
+    {
+        $this->fitColumns = $fit;
+
+        return $this;
+    }
+
     /** Override the zero-rows message. */
     public function emptyState(string $text): static
     {
@@ -1229,6 +1246,11 @@ class Grid
     public function getFillParent(): bool
     {
         return $this->fillParent;
+    }
+
+    public function fitsColumns(): bool
+    {
+        return $this->fitColumns;
     }
 
     public function getEmptyState(): ?string

@@ -537,7 +537,13 @@ DateColumn::make('vch_date')
 
 **Layout** — `columnGroups([ColumnGroup::make('GST', ['cgst', 'sgst'])])` (two-tier grouped headers) · `stickyHeader()` · `freezeColumns(n)` · `striped()` ·
 `density(GridDensity::Compact|Normal|Comfortable)` · `height('420px')` · `minHeight('300px')` ·
-`maxHeight('60vh')` · `fillParent()` · `themeClass('my-theme')` · `rowClass(fn)` · `cellClass(fn)`.
+`maxHeight('60vh')` · `fillParent()` · `fitColumns()` · `themeClass('my-theme')` · `rowClass(fn)` · `cellClass(fn)`.
+
+Use `->fitColumns()` when every visible column must stay inside the grid and the horizontal
+scrollbar must be suppressed. The grid redistributes space after a container resize or a column
+is hidden/revealed. A column's `width()` (including an operator-resized width) becomes its relative
+weight, so wider columns still receive more room, but the grid-level fit guarantee takes precedence
+over individual fixed/min/max pixel widths. Dragging a column rebalances the other visible columns.
 
 ## Actions
 

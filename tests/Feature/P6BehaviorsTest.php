@@ -39,6 +39,16 @@ it('serializes the P6 behavior chains into layout only when declared', function 
             ->minHeight('300px')
     );
     expect($minimum['sizing'])->toBe(['minHeight' => '300px']);
+
+    $fitted = p6Layout(
+        Grid::make('fitted')->columns([TextColumn::make('name')])->fitColumns()
+    );
+    expect($fitted['sizing'])->toBe(['fitColumns' => true]);
+
+    $disabled = p6Layout(
+        Grid::make('not-fitted')->columns([TextColumn::make('name')])->fitColumns(false)
+    );
+    expect($disabled)->not->toHaveKey('sizing');
 });
 
 it('resolves toolbar config defaults, per-grid overrides, and suppression', function () {

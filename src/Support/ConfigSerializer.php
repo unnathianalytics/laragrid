@@ -328,6 +328,7 @@ class ConfigSerializer
             'minHeight' => $grid->getMinHeight(),
             'maxHeight' => $grid->getMaxHeight(),
             'fill' => $grid->getFillParent() ?: null,
+            'fitColumns' => $grid->fitsColumns() ?: null,
         ]);
         if ($sizing !== []) {
             $layout['sizing'] = $sizing;

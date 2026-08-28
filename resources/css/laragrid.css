@@ -74,6 +74,13 @@
         -webkit-overflow-scrolling: touch;
     }
 
+    /* ->fitColumns(): JS makes the concrete tracks total exactly the scroll viewport; hiding
+       horizontal overflow is the final guarantee against browser sub-pixel/paint rounding. */
+    .lgrid--fit-columns .lgrid-scroll {
+        overflow-x: hidden;
+        touch-action: pan-y;
+    }
+
     /* Sized grids are flex columns so the scroll region can consume their spare height while
        pagination/status chrome remains visible. ->fillParent() pairs with a sized ancestor;
        ->minHeight() establishes only a floor and still lets the grid grow with its content. */
@@ -1370,7 +1377,8 @@
         }
 
         /* The scroll clip becomes the page: everything flows, nothing sticks or floats. */
-        .lgrid-scroll {
+        .lgrid-scroll,
+        .lgrid--fit-columns .lgrid-scroll {
             max-height: none;
             overflow: visible;
         }

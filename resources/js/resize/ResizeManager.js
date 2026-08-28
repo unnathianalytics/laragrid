@@ -113,9 +113,15 @@ export default class ResizeManager {
         return Math.round(Math.min(Math.max(width, min), max));
     }
 
-    /** Apply a clamped width override and re-set the ONE template var (the per-move hot path). */
+    /**
+     * Apply a clamped width override and re-set the ONE template var (the per-move hot path).
+     * Fitted grids rebalance peer columns so the requested width never creates overflow.
+     */
     applyWidth(column, width) {
-        this.store.widthOverrides[column.key] = this.clamp(column, width);
+        const clamped = this.clamp(column, width);
+        if (!this.layout.resizeFittedColumn(column, clamped)) {
+            this.store.widthOverrides[column.key] = clamped;
+        }
         this.layout.setTemplate(this.store.visibleColumns());
     }
 
@@ -127,7 +133,7 @@ export default class ResizeManager {
         this.layout.refreshFrozen();
         this.persist();
 
-        const width = this.store.widthOverrides[column.key];
+        const width = Math.round(this.layout.columnWidth(column) || this.store.widthOverrides[column.key]);
         this.bus.emit('column:resized', { col: column.key, width });
         this.refs.root.dispatchEvent(
             new CustomEvent('lgrid:column-resized', {

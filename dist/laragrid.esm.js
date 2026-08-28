@@ -1346,6 +1346,12 @@ var Layout = class {
   constructor(store, refs) {
     this.store = store;
     this.refs = refs;
+    this.resolvedWidths = /* @__PURE__ */ new Map();
+  }
+  /** Whether the grid-level fit-to-width contract is active. */
+  isFitColumns() {
+    const layout = this.store.layout || {};
+    return !!(layout.sizing && layout.sizing.fitColumns);
   }
   /**
    * An operator width override for a column (drag-resize, M7), or null. An override wins
@@ -1356,8 +1362,25 @@ var Layout = class {
     const width = overrides[column.key];
     return Number.isFinite(width) && width > 0 ? width : null;
   }
-  /** The pixel width used for a column, honouring override/width/grow/default. */
+  /**
+   * The preferred width before fit-to-grid scaling. In fit mode this is a proportional
+   * weight, not a hard pixel constraint; a grow column uses its declared minimum/default.
+   */
+  preferredWidth(column) {
+    const override = this.overrideFor(column);
+    if (override !== null) {
+      return override;
+    }
+    if (column.grow) {
+      return column.minWidth || DEFAULT_WIDTH;
+    }
+    return column.width || DEFAULT_WIDTH;
+  }
+  /** The currently resolved pixel width used for a column. */
   columnWidth(column) {
+    if (this.resolvedWidths.has(column.key)) {
+      return this.resolvedWidths.get(column.key);
+    }
     const override = this.overrideFor(column);
     if (override !== null) {
       return override;
@@ -1374,6 +1397,7 @@ var Layout = class {
     const columns = this.store.visibleColumns();
     const layout = this.store.layout || {};
     this.setTemplate(columns);
+    toggleClass(this.refs.root, "lgrid--fit-columns", this.isFitColumns());
     toggleClass(this.refs.root, "lgrid--sticky-head", layout.stickyHeader !== false && layout.stickyHeader);
     toggleClass(this.refs.root, "lgrid--striped", !!layout.striped);
     toggleClass(this.refs.root, "lgrid--compact", layout.density === "compact");
@@ -1397,10 +1421,13 @@ var Layout = class {
    * @param {object[]} columns visible columns
    */
   setTemplate(columns) {
+    if (this.isFitColumns()) {
+      this.setFittedTemplate(columns);
+      return;
+    }
     const growCols = columns.filter((c) => c.grow && this.overrideFor(c) === null);
-    const fixedTotal = columns.filter((c) => !growCols.includes(c)).reduce((sum, c) => sum + (this.columnWidth(c) || DEFAULT_WIDTH), 0);
-    const box = this.refs.scroll || this.refs.root;
-    const available = box && box.clientWidth || 0;
+    const fixedTotal = columns.filter((c) => !growCols.includes(c)).reduce((sum, c) => sum + this.preferredWidth(c), 0);
+    const available = this.availableWidth();
     let growPx = 0;
     if (growCols.length > 0) {
       const slack = available - fixedTotal;
@@ -1408,22 +1435,94 @@ var Layout = class {
       const minGrow = Math.max(...growCols.map((c) => c.minWidth || DEFAULT_WIDTH));
       growPx = Math.max(minGrow, Math.floor(per));
     }
-    const tracks = columns.map((c) => {
-      const width = this.columnWidth(c);
-      return width !== null ? `${width}px` : `${growPx}px`;
-    });
+    const widths = columns.map((c) => c.grow && this.overrideFor(c) === null ? growPx : this.preferredWidth(c));
+    const tracks = widths.map((width) => `${width}px`);
+    this.resolvedWidths = new Map(columns.map((c, index) => [c.key, widths[index]]));
     tracks.push("minmax(0, 1fr)");
     this.refs.root.style.setProperty("--lgrid-cols", tracks.join(" "));
   }
   /**
-   * Re-split grow width when the scroll box resizes, so alignment survives a window/panel resize.
+   * Resolve proportional column weights to integer tracks whose sum is exactly the scroll
+   * viewport. Exact pixels keep the three independent CSS grids aligned and avoid fractional
+   * rounding producing a one-pixel horizontal scrollbar.
+   *
+   * Individual width/min/max declarations cannot remain hard constraints here: a set of
+   * minimums wider than the viewport is mathematically incompatible with the no-overflow
+   * contract. Widths and resize overrides are retained as relative weights instead.
+   */
+  setFittedTemplate(columns) {
+    const available = this.availableWidth();
+    if (available <= 0 || columns.length === 0) {
+      this.commitTemplate(columns, columns.map((c) => this.preferredWidth(c)));
+      return;
+    }
+    const weights = columns.map((c) => Math.max(1, this.preferredWidth(c)));
+    const total = weights.reduce((sum, width) => sum + width, 0);
+    const raw = weights.map((weight) => available * weight / total);
+    const widths = raw.map((width) => Math.floor(width));
+    const remainder = available - widths.reduce((sum, width) => sum + width, 0);
+    const order = raw.map((width, index) => ({ index, fraction: width - Math.floor(width) })).sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+    for (let i = 0; i < remainder; i++) {
+      widths[order[i % order.length].index] += 1;
+    }
+    this.commitTemplate(columns, widths);
+  }
+  /** Current usable width of the shared header/body/footer scroll viewport. */
+  availableWidth() {
+    const scrollWidth = this.refs.scroll && this.refs.scroll.clientWidth || 0;
+    const rootWidth = this.refs.root && this.refs.root.clientWidth || 0;
+    return Math.max(0, Math.floor(scrollWidth || rootWidth));
+  }
+  /** Store resolved geometry and publish the one shared grid-template variable. */
+  commitTemplate(columns, widths) {
+    this.resolvedWidths = new Map(columns.map((c, index) => [c.key, widths[index]]));
+    const tracks = widths.map((width) => `${width}px`);
+    tracks.push("minmax(0, 1fr)");
+    this.refs.root.style.setProperty("--lgrid-cols", tracks.join(" "));
+  }
+  /**
+   * Rebalance fitted columns around a requested visible pixel width. All resulting widths
+   * become overrides so the dragged column follows the pointer while every other column
+   * gives/takes space proportionally and the total remains the viewport width.
+   */
+  resizeFittedColumn(column, requestedWidth) {
+    if (!this.isFitColumns()) {
+      return false;
+    }
+    const columns = this.store.visibleColumns();
+    const available = this.availableWidth();
+    if (available <= 0 || !columns.some((c) => c.key === column.key)) {
+      return false;
+    }
+    if (columns.length === 1) {
+      this.store.widthOverrides[column.key] = available;
+      return true;
+    }
+    const target = Math.min(
+      Math.max(1, Math.round(requestedWidth)),
+      Math.max(1, available - (columns.length - 1))
+    );
+    const peers = columns.filter((c) => c.key !== column.key);
+    const peerWidths = peers.map((c) => Math.max(0, this.columnWidth(c) || 0));
+    const peerTotal = peerWidths.reduce((sum, width) => sum + width, 0);
+    const peerSpace = available - target;
+    peers.forEach((peer, index) => {
+      const share = peerTotal > 0 ? peerWidths[index] / peerTotal * peerSpace : peerSpace / peers.length;
+      this.store.widthOverrides[peer.key] = Math.max(Number.EPSILON, share);
+    });
+    this.store.widthOverrides[column.key] = target;
+    return true;
+  }
+  /**
+   * Re-split grow or fitted widths when the scroll box resizes, so alignment survives a
+   * window/panel resize.
    * @param {object[]} columns
    */
   installResizeSync(columns) {
     if (this.resizeObserver || typeof ResizeObserver === "undefined") {
       return;
     }
-    if (!columns.some((c) => c.grow)) {
+    if (!this.isFitColumns() && !columns.some((c) => c.grow)) {
       return;
     }
     const box = this.refs.scroll || this.refs.root;
@@ -1435,6 +1534,7 @@ var Layout = class {
       if (box.clientWidth !== last) {
         last = box.clientWidth;
         this.setTemplate(this.store.visibleColumns());
+        this.refreshFrozen();
       }
     });
     this.resizeObserver.observe(box);
@@ -6376,9 +6476,15 @@ var ResizeManager = class {
     const max = Math.min(column.maxWidth || HARD_MAX, HARD_MAX);
     return Math.round(Math.min(Math.max(width, min), max));
   }
-  /** Apply a clamped width override and re-set the ONE template var (the per-move hot path). */
+  /**
+   * Apply a clamped width override and re-set the ONE template var (the per-move hot path).
+   * Fitted grids rebalance peer columns so the requested width never creates overflow.
+   */
   applyWidth(column, width) {
-    this.store.widthOverrides[column.key] = this.clamp(column, width);
+    const clamped = this.clamp(column, width);
+    if (!this.layout.resizeFittedColumn(column, clamped)) {
+      this.store.widthOverrides[column.key] = clamped;
+    }
     this.layout.setTemplate(this.store.visibleColumns());
   }
   /**
@@ -6388,7 +6494,7 @@ var ResizeManager = class {
   commit(column) {
     this.layout.refreshFrozen();
     this.persist();
-    const width = this.store.widthOverrides[column.key];
+    const width = Math.round(this.layout.columnWidth(column) || this.store.widthOverrides[column.key]);
     this.bus.emit("column:resized", { col: column.key, width });
     this.refs.root.dispatchEvent(
       new CustomEvent("lgrid:column-resized", {
