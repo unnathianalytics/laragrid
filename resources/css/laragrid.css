@@ -346,7 +346,12 @@
     .lgrid-row {
         display: grid;
         grid-template-columns: var(--lgrid-cols);
+        box-sizing: border-box;
         min-height: var(--lgrid-row-h);
+        /* Paint the separator on the row itself. At fractional zoom, content-visibility
+           can clip a cell's bottom border at the row edge. Include the border in the
+           row height so virtual scrolling keeps the same row spacing. */
+        border-bottom: 1px solid var(--lgrid-border);
         background: var(--lgrid-cell-bg);
     }
 
@@ -378,9 +383,12 @@
         overflow: hidden;
         text-overflow: ellipsis;
         border-right: 1px solid var(--lgrid-border);
-        border-bottom: 1px solid var(--lgrid-border);
         color: var(--lgrid-text);
         background: inherit;
+    }
+
+    .lgrid-footcell {
+        border-bottom: 1px solid var(--lgrid-border);
     }
 
     .lgrid-cell--right {
