@@ -20,6 +20,7 @@ import { editorFor } from './EditorRegistry.js';
 import { parseValue, editTextFor } from '../format/parse.js';
 import { firstNavigable } from '../util/geometry.js';
 import Lru from '../util/lru.js';
+import { optionCacheKey } from './optionCacheKey.js';
 
 export default class EditorManager {
     /**
@@ -208,8 +209,10 @@ export default class EditorManager {
     /**
      * Search a column's server options for a term, through a per-column LRU. The monotonic-seq
      * stale-discard lives in the CALLER (the editor owns "which term am I showing"); this layer
-     * only avoids re-fetching a term it has already resolved. The single shared editor means at
-     * most one search editor exists at a time — ≤ 1 in-flight search grid-wide by construction.
+     * only avoids re-fetching a term it has already resolved. The cache key also carries the row
+     * values the column declares in optionsDependOn, so a row-dependent search is never answered
+     * from another row's list. The single shared editor means at most one search editor exists
+     * at a time — ≤ 1 in-flight search grid-wide by construction.
      *
      * @returns {Promise<Array<{value: string, label: string}>>}
      */
@@ -222,11 +225,12 @@ export default class EditorManager {
             cache = new Lru(32);
             this.optionCaches.set(column.key, cache);
         }
-        const key = String(term == null ? '' : term);
+        const searchTerm = String(term == null ? '' : term);
+        const key = optionCacheKey(column, row, searchTerm);
         if (cache.has(key)) {
             return Promise.resolve(cache.get(key));
         }
-        return this.search(column.key, key, row).then((options) => {
+        return this.search(column.key, searchTerm, row).then((options) => {
             const list = Array.isArray(options) ? options : [];
             cache.set(key, list);
             return list;

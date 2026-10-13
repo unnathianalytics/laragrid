@@ -58,6 +58,13 @@ final class SearchSelectColumn extends Column
     protected int $limit = 10;
 
     /**
+     * Row keys the server option search reads from its $row argument (->optionsDependOn()).
+     *
+     * @var list<string>
+     */
+    protected array $optionsDependOn = [];
+
+    /**
      * Bind the tenant-scoped server option search. Declaring one puts the column in server mode
      * (any embedded ->options() are then ignored client-side).
      *
@@ -106,6 +113,36 @@ final class SearchSelectColumn extends Column
         $this->limit = max(1, min($limit, self::MAX_LIMIT));
 
         return $this;
+    }
+
+    /**
+     * Declare the row keys the ->optionsUsing() closure reads from its $row argument.
+     *
+     * What: The client keys its per-column option cache by the typed term PLUS these row values,
+     *       so two rows with the same term but a different dependency (a D/C side, a party, a
+     *       material centre) each fetch their own option list.
+     * Why:  Without it the cache is keyed by term alone: the first row's list is reused for every
+     *       later row that searches the same term, even when the server would answer differently
+     *       for that row. Declaring the dependency keeps the cache (one fetch per term per
+     *       dependency value) instead of disabling it. The server still re-runs the closure with
+     *       the client row, so authorization and filtering stay server-side.
+     * When: Declared at grid build time on a server-mode picker whose options vary by row.
+     *
+     * @param  string|list<string>  $columns
+     */
+    public function optionsDependOn(string|array $columns): static
+    {
+        $this->optionsDependOn = array_values(array_unique(array_map('strval', (array) $columns)));
+
+        return $this;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function getOptionsDependOn(): array
+    {
+        return $this->optionsDependOn;
     }
 
     public function hasServerOptions(): bool
@@ -203,6 +240,7 @@ final class SearchSelectColumn extends Column
             'minChars' => $this->minChars,
             'debounceMs' => $this->debounceMs,
             'limit' => $this->limit,
+            'optionsDependOn' => $this->optionsDependOn,
         ];
     }
 }

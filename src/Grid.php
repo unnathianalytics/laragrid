@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use InvalidArgumentException;
 use LaraGrid\Actions\Action;
 use LaraGrid\Columns\Column;
+use LaraGrid\Columns\SearchSelectColumn;
 use LaraGrid\Editing\RowContext;
 use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Filters\Filter;
@@ -2114,6 +2115,29 @@ class Grid
                 if ($spec !== null && ! isset($keySet[$spec['column']])) {
                     throw new InvalidArgumentException(
                         "Grid [{$this->name}] column [{$column->key}] {$rule}() references unknown column [{$spec['column']}]."
+                    );
+                }
+            }
+        }
+
+        // optionsDependOn() keys must be real columns other than the picker itself, on a
+        // server-mode picker — a typo would leave the client cache keyed by a phantom value and
+        // silently reuse one row's options for another; a client-mode list has no cache to key.
+        foreach ($this->columns as $column) {
+            if (! $column instanceof SearchSelectColumn || $column->getOptionsDependOn() === []) {
+                continue;
+            }
+
+            if (! $column->hasServerOptions()) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] column [{$column->key}] declares optionsDependOn() but no optionsUsing(); only server options are cached per row."
+                );
+            }
+
+            foreach ($column->getOptionsDependOn() as $dependency) {
+                if ($dependency === $column->key || ! isset($keySet[$dependency])) {
+                    throw new InvalidArgumentException(
+                        "Grid [{$this->name}] column [{$column->key}] optionsDependOn() references unknown column [{$dependency}]."
                     );
                 }
             }

@@ -441,6 +441,21 @@ SearchSelectColumn::make('item_id')
 The hooks are the *authoritative* half of the optimistic model: the client already painted the
 keystroke; the server decides the truth and patches back anything the hooks changed.
 
+### Row-dependent picker options
+
+The client caches each `SearchSelectColumn`'s server options per typed term. When the
+`->optionsUsing()` closure reads `$row` (a D/C side, a party, a material centre), declare those
+keys with `->optionsDependOn()`; the cache is then keyed by the term **and** those row values, so
+one row's list is never reused for another. Keys must be other declared columns of the grid, on a
+server-mode picker; the build fails loud otherwise. The server still re-runs the closure with the
+row, so filtering and authorization stay server-side.
+
+```php
+SearchSelectColumn::make('account_id')
+    ->optionsUsing(fn (string $term, array $row): array => $this->searchAccounts($term, side: $row['dc'] ?? null))
+    ->optionsDependOn(['dc'])
+```
+
 ## Display-only mode
 
 ```blade
@@ -461,7 +476,7 @@ To refresh a display grid's data later, call `$this->reseedGrid('name', $freshRo
 | `DecimalColumn` | number | fixed-scale string | `->scale(n)`; precision never rides a float |
 | `DateColumn` | date | ISO `Y-m-d` | fuzzy typed input (`31/12`, `311226`); display pattern configurable; financial-year inference opt-in |
 | `SelectColumn` | dropdown | option id | `->options([...])` embedded whitelist |
-| `SearchSelectColumn` | async picker | option id | `->optionsUsing(fn ($term, $row))`, `->onSelect()` enrichment, `->minChars()`, `->debounce()`, `->limit()`; an option row may carry `'meta' => …` — painted right-aligned and muted (e.g. stock on hand) |
+| `SearchSelectColumn` | async picker | option id | `->optionsUsing(fn ($term, $row))`, `->optionsDependOn([...])`, `->onSelect()` enrichment, `->minChars()`, `->debounce()`, `->limit()`; an option row may carry `'meta' => …` — painted right-aligned and muted (e.g. stock on hand) |
 | `CheckboxColumn` | instant toggle | bool | Space/double-click toggle in place; Enter just advances |
 | `YesNoColumn` | typed Y/N | bool | painted `Y`/`N` (blank until answered); typing `Y`/`N` commits and advances like Enter — the Tally Yes/No flow; Space still toggles in place |
 | `FormulaColumn` | — | computed | `->formula('qty * rate')` — evaluated live client-side, authoritatively server-side |
