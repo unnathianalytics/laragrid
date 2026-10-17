@@ -937,8 +937,8 @@ instead of moving. Per-row locked cells are skipped by horizontal and wrapping m
 |---|---|---|
 | `Shift+Arrow` | Extend the selection in that direction | All grids |
 | `Ctrl+A` | Select all navigable grid cells | All grids |
-| `Ctrl+C` | Copy the selection as TSV for Excel or another grid | All grids |
-| `Ctrl+V` | Paste TSV starting at the active cell; may add rows when `->autoAppend()` is enabled | Editable grids |
+| `Ctrl+C` | Copy the selection as TSV for Excel or another grid; after `Ctrl+A`, the copy starts with the column headers | All grids |
+| `Ctrl+V` | Paste TSV starting at the active cell; may add rows when `->autoAppend()` is enabled. A first row equal to the grid's headers is skipped | Editable grids |
 | `Escape` | Collapse a range selection to the active cell | All grids |
 
 #### Cell editing

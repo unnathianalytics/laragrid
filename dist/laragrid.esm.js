@@ -3508,6 +3508,9 @@ function htmlDisplayText(html) {
   template.innerHTML = String(html == null ? "" : html);
   return (template.content.textContent || "").replace(/\s+/g, " ").trim();
 }
+function labelText(text) {
+  return String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+}
 function displayTextFor(column, value) {
   const display = formatValue(column.format, value);
   return column.html ? htmlDisplayText(display) : display;
@@ -3525,11 +3528,44 @@ var _ClipboardManager = class _ClipboardManager {
   /**
    * Serialize the current selection to a TSV string — display values (readonly) or canonical
    * edit text (editable), so an editable copy → paste round-trips to identical model values.
+   * A select-all selection starts with the header rows, as a spreadsheet copy of a whole table.
    */
   selectionToTsv() {
     const grid = this.store.selectedCells();
     const editable = this.store.editable;
-    return grid.map((cells) => cells.map((cell) => editable ? editTextFor(cell.column, cell.value) : displayTextFor(cell.column, cell.value)).join("	")).join("\n");
+    const rows = grid.map((cells) => cells.map((cell) => editable ? editTextFor(cell.column, cell.value) : displayTextFor(cell.column, cell.value)));
+    const sel = this.store.selection;
+    const header = this.copiesHeader() && rows.length ? this.headerRows(sel.c0, sel.c1) : [];
+    return header.concat(rows).map((fields) => fields.join("	")).join("\n");
+  }
+  /** Whether a copy now carries the header: only a select-all (Ctrl+A) selection does. */
+  copiesHeader() {
+    const sel = this.store.selection;
+    return !!(sel && sel.kind === "all");
+  }
+  /**
+   * The header of visible columns c0..c1 as TSV field rows: the leaf column labels, preceded by
+   * a group row when any of those columns sits under a header group. The group label goes on
+   * the group's first copied member and the rest stay blank, like a merged spreadsheet cell.
+   *
+   * @returns {string[][]}
+   */
+  headerRows(c0, c1) {
+    const groups = this.store.visibleGroups();
+    const top = [];
+    const leaf = [];
+    let grouped = false;
+    for (let c = c0; c <= c1; c++) {
+      const column = this.store.columnAt(c);
+      if (!column) {
+        continue;
+      }
+      const group = groups.find((g) => c >= g.start && c < g.start + g.span);
+      grouped = grouped || !!group;
+      top.push(group && c === Math.max(group.start, c0) ? labelText(group.label) : "");
+      leaf.push(labelText(column.label));
+    }
+    return grouped ? [top, leaf] : [leaf];
   }
   /** Copy the current selection to the clipboard; announce the shape. */
   copy() {
@@ -3541,7 +3577,8 @@ var _ClipboardManager = class _ClipboardManager {
     this.write(tsv);
     const rows = grid.length;
     const cols = grid[0] ? grid[0].length : 0;
-    this.announce(`Copied ${rows} ${rows === 1 ? "row" : "rows"} by ${cols} ${cols === 1 ? "column" : "columns"}.`);
+    const header = this.copiesHeader() ? " with headers" : "";
+    this.announce(`Copied ${rows} ${rows === 1 ? "row" : "rows"} by ${cols} ${cols === 1 ? "column" : "columns"}${header}.`);
   }
   // ---- Paste (M5) -------------------------------------------------------------------------
   /**
@@ -3559,7 +3596,7 @@ var _ClipboardManager = class _ClipboardManager {
     if (!this.store.editable || !anchor || !ctx.editor || !ctx.sync) {
       return;
     }
-    const matrix = parseTsv(text);
+    const matrix = this.withoutCopiedHeader(parseTsv(text));
     if (matrix.length === 0) {
       return;
     }
@@ -3573,6 +3610,25 @@ var _ClipboardManager = class _ClipboardManager {
       return;
     }
     this.applyPaste(plan, ctx);
+  }
+  /**
+   * Drop a leading block equal to this grid's own select-all header (see selectionToTsv), so a
+   * Ctrl+A copy pastes back — here or into a grid with the same columns — as data rows only.
+   * Every header field must match, so a real data row is never taken for the header. Missing
+   * trailing fields count as blank (a spreadsheet range can end before a blank-label column).
+   */
+  withoutCopiedHeader(matrix) {
+    const mask = this.store.navigabilityMask();
+    const c0 = firstNavigable(mask);
+    if (c0 < 0) {
+      return matrix;
+    }
+    const header = this.headerRows(c0, lastNavigable(mask));
+    if (matrix.length < header.length || !header[header.length - 1].some(Boolean)) {
+      return matrix;
+    }
+    const matches = header.every((labels, i) => matrix[i].length <= labels.length && labels.every((label, j) => labelText(matrix[i][j]) === label));
+    return matches ? matrix.slice(header.length) : matrix;
   }
   /**
    * Map the TSV matrix onto grid cells: fields land on consecutive EDITABLE visible columns
