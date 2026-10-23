@@ -17,8 +17,10 @@ use Symfony\Component\HttpFoundation\Response;
  *       (manual @laragridScripts/@laragridStyles present), and it can be disabled wholesale
  *       via config('laragrid.inject_assets'). config('laragrid.asset_url') redirects the
  *       tags at a CDN; with no asset_url a published copy under public/vendor/laragrid is
- *       preferred automatically (a static file, no Laravel boot per asset request), and the
- *       internal route is the fallback that makes `composer require` alone sufficient.
+ *       preferred automatically (a static file, no Laravel boot per asset request) when it
+ *       is from this release, and the internal route is the fallback that makes
+ *       `composer require` alone sufficient. A copy left behind by an older release is
+ *       ignored: an upgrade must never pair the old JavaScript with the new PHP.
  *
  * When: inject() runs on Laravel's RequestHandled event (registered by the service
  *       provider); the tag builders also back the Blade directives.
@@ -37,6 +39,9 @@ class Assets
      * @var array<string, bool>
      */
     private static array $published = [];
+
+    /** Per-process memo of "does the published copy carry this release's version stamp?". */
+    private static ?bool $publishedCurrent = null;
 
     public static function scriptTag(): string
     {
@@ -98,10 +103,29 @@ class Assets
         return dirname(__DIR__, 2).'/dist/'.$file;
     }
 
-    /** Whether `vendor:publish --tag=laragrid-assets` placed this file under public/. */
+    /**
+     * Whether `vendor:publish --tag=laragrid-assets` placed this file under public/ and that
+     * copy is from this release. The publish copies dist/ whole, so a current copy carries a
+     * version.txt equal to the package's own; a copy with no stamp (releases before 1.45) or
+     * another build's stamp is stale and the route serves the current bundle instead.
+     */
     protected static function isPublished(string $file): bool
     {
-        return self::$published[$file] ??= is_file(public_path(self::PUBLISHED_DIR.'/'.$file));
+        return self::$published[$file] ??= self::publishedIsCurrent()
+            && is_file(public_path(self::PUBLISHED_DIR.'/'.$file));
+    }
+
+    /** Whether public/vendor/laragrid/version.txt matches this package's dist/version.txt. */
+    private static function publishedIsCurrent(): bool
+    {
+        if (self::$publishedCurrent !== null) {
+            return self::$publishedCurrent;
+        }
+
+        $stamp = public_path(self::PUBLISHED_DIR.'/version.txt');
+        $published = is_file($stamp) ? trim((string) file_get_contents($stamp)) : '';
+
+        return self::$publishedCurrent = $published !== '' && $published === self::version();
     }
 
     /** Test seam: forget the per-process memos (published copies, version). */
@@ -109,6 +133,7 @@ class Assets
     {
         self::$version = null;
         self::$published = [];
+        self::$publishedCurrent = null;
     }
 
     /**

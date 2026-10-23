@@ -115,8 +115,10 @@ Asset delivery is configurable: set `laragrid.inject_assets => false` to place
 Asset URLs carry a content hash, so upgrades bust browser caches automatically.
 
 For production, publish the assets (`--tag=laragrid-assets`): once `public/vendor/laragrid`
-exists the tags point there automatically (no `asset_url` needed), so each asset request is a
-static file instead of a Laravel boot. Re-run the publish after every upgrade. Without a
+holds a copy of the current release the tags point there automatically (no `asset_url`
+needed), so each asset request is a static file instead of a Laravel boot. Re-run the publish
+after every upgrade; a copy left behind by an older release (its `version.txt` is missing or
+differs) is ignored, so an upgrade never pairs old JavaScript with new PHP. Without a current
 published copy the internal `/laragrid/{file}` route serves the bundle itself, with the
 precompressed brotli/gzip body for browsers that accept it; a published copy relies on your
 web server's own compression. Consumers with their own Vite build import

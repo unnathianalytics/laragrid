@@ -95,6 +95,8 @@ it('prefers a published copy under public/vendor/laragrid over the internal rout
 
     File::ensureDirectoryExists(public_path(Assets::PUBLISHED_DIR));
     File::put(public_path(Assets::PUBLISHED_DIR.'/laragrid.min.js'), '// published');
+    // The publish copies dist/ whole, so a real copy carries the release's version stamp.
+    File::put(public_path(Assets::PUBLISHED_DIR.'/version.txt'), Assets::version()."\n");
     Assets::flush();
 
     expect(Assets::url('laragrid.min.js'))
@@ -106,6 +108,39 @@ it('prefers a published copy under public/vendor/laragrid over the internal rout
     // An explicit asset_url still wins over the auto-detected copy.
     config()->set('laragrid.asset_url', 'https://cdn.example.com/laragrid');
     expect(Assets::url('laragrid.min.js'))->toStartWith('https://cdn.example.com/laragrid/');
+});
+
+it('ignores a published copy left behind by an older release', function () {
+    File::ensureDirectoryExists(public_path(Assets::PUBLISHED_DIR));
+    File::put(public_path(Assets::PUBLISHED_DIR.'/laragrid.min.js'), '// published by an old release');
+    File::put(public_path(Assets::PUBLISHED_DIR.'/laragrid.min.css'), '/* published by an old release */');
+    Assets::flush();
+
+    // No version stamp at all (releases before 1.45 shipped none): the route serves the current bundle.
+    expect(Assets::url('laragrid.min.js'))->toStartWith('/laragrid/laragrid.min.js');
+    expect(Assets::url('laragrid.min.css'))->toStartWith('/laragrid/laragrid.min.css');
+
+    // A stamp from another build: still the route.
+    File::put(public_path(Assets::PUBLISHED_DIR.'/version.txt'), "000000000000\n");
+    Assets::flush();
+    expect(Assets::url('laragrid.min.js'))->toStartWith('/laragrid/laragrid.min.js');
+
+    // Re-publishing (stamp included) switches the tags over.
+    File::put(public_path(Assets::PUBLISHED_DIR.'/version.txt'), Assets::version()."\n");
+    Assets::flush();
+    expect(Assets::url('laragrid.min.js'))->toContain('/vendor/laragrid/laragrid.min.js?v='.Assets::version());
+});
+
+it('switches to the copy that vendor:publish --tag=laragrid-assets produces', function () {
+    $this->artisan('vendor:publish', ['--tag' => 'laragrid-assets', '--force' => true])->assertSuccessful();
+    Assets::flush();
+
+    expect(file_get_contents(public_path(Assets::PUBLISHED_DIR.'/version.txt')))
+        ->toBe(file_get_contents(Assets::distPath('version.txt')));
+    expect(Assets::url('laragrid.min.js'))->toContain('/vendor/laragrid/laragrid.min.js?v='.Assets::version());
+    expect(Assets::url('laragrid.min.css'))->toContain('/vendor/laragrid/laragrid.min.css?v='.Assets::version());
+    // The precompressed siblings ride along for a web server that serves them itself.
+    expect(public_path(Assets::PUBLISHED_DIR.'/laragrid.min.js.br'))->toBeFile();
 });
 
 it('renders the blade directives as real tags', function () {
