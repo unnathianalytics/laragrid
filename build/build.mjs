@@ -12,7 +12,8 @@
  *       ~37 KB instead of ~160 KB; the version file saves a 160 KB md5 per PHP request.
  *       Consumers with their own Vite build import resources/js/index.js directly — the old
  *       ESM bundle was never documented and is no longer built.
- * When: `npm run build` before tagging a release; CI verifies dist/ is in sync with source.
+ * When: `npm run build` before tagging a release; CI verifies dist/ is in sync with source
+ *       (a byte diff for the text files, a decode check for the compressed siblings).
  */
 import * as esbuild from 'esbuild';
 import { createHash } from 'node:crypto';
@@ -56,9 +57,11 @@ const builds = [
 const compressed = ['dist/laragrid.min.js', 'dist/laragrid.min.css'];
 
 /**
- * Write the precompressed siblings and the version stamp. Deterministic by construction
- * (brotli has no header timestamp; Node's gzip writes MTIME 0), so a rebuild of unchanged
- * source leaves `git diff dist/` empty.
+ * Write the precompressed siblings and the version stamp. The bundle, stylesheet, map and
+ * stamp rebuild byte for byte on any platform, so a rebuild of unchanged source leaves them
+ * untouched. The siblings carry no timestamp (brotli has none; Node's gzip writes MTIME 0),
+ * but their bytes still depend on the zlib build: Linux and Windows Node disagree on gzip.
+ * CI therefore checks them by decoding (build/check-compressed.mjs) rather than by diff.
  */
 function finalize() {
     for (const file of compressed) {

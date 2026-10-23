@@ -18,14 +18,17 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          # Exact version: the committed .br/.gz siblings must match byte for byte, and Node
-          # bundles its own zlib/brotli. No npm cache — package-lock.json is not committed.
-          node-version: '24.19.0'
+          # The line the maintainers build with. No npm cache: package-lock.json is not committed.
+          node-version: '26'
       - run: npm install --no-audit --no-fund
+      # The committed .br/.gz siblings must decode to the committed bundle. They are checked
+      # by content, not by bytes: gzip output differs between zlib builds (Linux and Windows
+      # Node disagree) and brotli may too, so a byte diff would fail a correct commit.
+      - run: node build/check-compressed.mjs
       - run: npm run build
-      # The committed dist/ must be exactly what the source builds (the service provider
-      # serves it; consumers never run the build).
-      - run: git diff --exit-code -- dist/
+      # The committed bundle, stylesheet, map and version stamp must be exactly what the
+      # source builds (the service provider serves them; consumers never run the build).
+      - run: git diff --exit-code -- dist/ ':!dist/*.br' ':!dist/*.gz'
       - run: npm test
 
   php:
@@ -35,10 +38,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Laravel 10 is end of life, so Composer's security-advisory block refuses every
+          # release of it. The row turns the block off: it exists to prove the oldest line
+          # the package declares still passes, not to audit it.
           - php: '8.1'
             laravel: '10.*'
             testbench: '8.*'
             lint: false
+            eol: true
           - php: '8.3'
             laravel: '12.*'
             testbench: '10.*'
@@ -54,12 +61,14 @@ jobs:
       # Some Pest tests run the Node vector runners (they import resources/js directly).
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.19.0'
+          node-version: '26'
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
           extensions: zip, pdo_sqlite
           coverage: none
+      - if: matrix.eol
+        run: composer config --no-interaction policy.advisories.block false
       - name: Pin the Laravel line
         run: |
           composer require --no-update --no-interaction "illuminate/contracts:${{ matrix.laravel }}"

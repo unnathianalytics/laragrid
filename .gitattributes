@@ -17,6 +17,11 @@
 /google4a1d148577db724a.html export-ignore
 /dist/*.map            export-ignore
 
+# dist/ is compared with a fresh build by CI, byte for byte for the text files. Keep them LF
+# on every checkout: core.autocrlf would give a Windows clone CRLF copies that match neither
+# the build output nor the committed blobs, and `git status` would stay dirty after a build.
+/dist/*                text eol=lf
+
 # The precompressed siblings the AssetController serves are byte streams: never diff them
 # and never convert line endings (core.autocrlf would corrupt them on a Windows checkout).
 *.br                   binary
