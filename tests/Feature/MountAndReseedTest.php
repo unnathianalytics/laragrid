@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use InvalidArgumentException;
 use LaraGrid\Columns\TextColumn;
 use LaraGrid\Grid;
 use LaraGrid\Tests\Hosts\DisplayGridComponent;

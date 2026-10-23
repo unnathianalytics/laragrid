@@ -34,5 +34,15 @@ abstract class TestCase extends Orchestra
     {
         // Test-only fixture views (Livewire hosts used to exercise the trait + mount).
         $app['view']->addNamespace('laragrid-tests', __DIR__.'/Hosts/views');
+
+        // One in-memory SQLite database on every supported line. Testbench 8 (Laravel 10)
+        // defaults to MySQL when DB_CONNECTION is unset; Testbench 10+ default to SQLite.
+        $app['config']->set('database.default', 'testing');
+        $app['config']->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+            'foreign_key_constraints' => true,
+        ]);
     }
 }
