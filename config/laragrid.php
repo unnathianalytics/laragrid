@@ -82,6 +82,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Definition self-checks
+    |--------------------------------------------------------------------------
+    | Whether every render runs Grid::assertValid() (duplicate keys, a group
+    | naming a missing column, an un-gated readonly grid, ...). These are
+    | build-time author mistakes, so null means "only in the local and testing
+    | environments"; set true/false to force the check on or off everywhere.
+    */
+    'assert_definitions' => null,
+
+    /*
+    |--------------------------------------------------------------------------
     | Toolbar defaults
     |--------------------------------------------------------------------------
     | Which package-rendered toolbar controls appear when a grid declares the
@@ -104,12 +115,14 @@ return [
     | (or app-registered format) can be chosen per grid: ->exportable(['csv']).
     | `max_rows` caps how many rows a single download may carry (a per-grid
     | ->exportable(limit:) overrides it); `chunk` is the streaming page size
-    | used while building the file.
+    | used while building the file (at least 50). An export with no sort, or
+    | sorted by the primary key, pages by key (`WHERE id > ?`); any other sort
+    | pages with LIMIT/OFFSET.
     */
     'export' => [
         'formats' => ['csv', 'xlsx', 'pdf'],
         'max_rows' => 50000,
-        'chunk' => 500,
+        'chunk' => 2000,
     ],
 
     /*

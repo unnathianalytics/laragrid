@@ -29,6 +29,8 @@ export default class ActionRunner {
         this.deps = deps;
         this.actions = deps.actions || {};
         this.offs = [];
+        /** Whether a mounted selector cell may still carry lgrid-cell--checked. */
+        this.checkedPainted = false;
     }
 
     init() {
@@ -54,14 +56,27 @@ export default class ActionRunner {
         this.offs.push(this.bus.on('body:did-render', () => this.paintChecked()));
     }
 
-    /** Reflect the checked set as cell classes on the selector gutter. */
+    /**
+     * Reflect the checked set as cell classes on the selector gutter. Runs on every
+     * body:did-render (each virtual scroll frame), so it visits only the MOUNTED rows, and
+     * nothing at all while no row is checked and no mounted cell still carries the class.
+     */
     paintChecked() {
-        for (const row of this.store.rows) {
-            const cell = this.renderer.cellElFor(row._k, '_select');
+        const checked = this.store.checked;
+        if (checked.size === 0 && !this.checkedPainted) {
+            return;
+        }
+        const body = this.renderer.body;
+        const keys = body && body.rowElByKey
+            ? body.rowElByKey.keys()
+            : this.store.rows.map((row) => row._k);
+        for (const key of keys) {
+            const cell = this.renderer.cellElFor(key, '_select');
             if (cell) {
-                cell.classList.toggle('lgrid-cell--checked', this.store.checked.has(row._k));
+                cell.classList.toggle('lgrid-cell--checked', checked.has(key));
             }
         }
+        this.checkedPainted = checked.size > 0;
     }
 
     /** Meta for a named row action. */

@@ -10,6 +10,7 @@
 import HeaderRenderer from './HeaderRenderer.js';
 import BodyRenderer from './BodyRenderer.js';
 import FooterRenderer from './FooterRenderer.js';
+import { cellMapKey } from '../util/dom.js';
 
 export default class Renderer {
     /**
@@ -26,9 +27,28 @@ export default class Renderer {
         this.body = new BodyRenderer(store, layout, refs.body, bus);
         this.footer = new FooterRenderer(store, layout, refs.footer);
 
-        // Repaint the body when rows are replaced (initial load today; server pages M3+; and any
-        // structural row op — insert/remove/dup/fill — in M4, which reuses this same seam).
-        this.unsubscribe = bus.on('rows:changed', () => this.renderBody());
+        // Repaint the body when rows are replaced (initial load; server pages; sort/reseed/hide).
+        // A row insert/remove arrives first as rows:inserted / rows:removed, which the body
+        // applies in place when it can (not virtual, no pad rows); the rows:changed that
+        // follows then carries `incremental: true` and the full rebuild is skipped. When the
+        // body declined the delta, that same rows:changed rebuilds as before.
+        // `bodyKept` tells the later rows:changed subscribers (the painters, constructed after
+        // the Renderer) whether the latest change patched the body in place or rebuilt it.
+        this.incrementalApplied = false;
+        this.bodyKept = false;
+        this.unsubscribeInserted = bus.on('rows:inserted', ({ keys, index }) => {
+            this.incrementalApplied = this.applyIncremental(() => this.body.insertRowsAt(keys, index));
+        });
+        this.unsubscribeRemoved = bus.on('rows:removed', ({ keys, index }) => {
+            this.incrementalApplied = this.applyIncremental(() => this.body.removeRows(keys, index));
+        });
+        this.unsubscribe = bus.on('rows:changed', (payload) => {
+            this.bodyKept = !!(payload && payload.incremental && this.incrementalApplied);
+            this.incrementalApplied = false;
+            if (!this.bodyKept) {
+                this.renderBody();
+            }
+        });
         // M4: repaint just the changed cells (a set + its formula write-backs) without a body
         // rebuild — the cell-level hot path. Each entry is {rowKey, colKey}. A changed cell
         // whose column CONTROLS sibling locks (lockedWhen) also repaints those siblings, so
@@ -38,7 +58,7 @@ export default class Renderer {
         this.cellPaintFrame = null;
         this.unsubscribeCells = bus.on('cells:changed', ({ cells }) => {
             (cells || []).forEach(({ rowKey, colKey }) => {
-                this.pendingCellPaints.set(rowKey + '' + colKey, { rowKey, colKey });
+                this.pendingCellPaints.set(cellMapKey(rowKey, colKey), { rowKey, colKey });
             });
             if (this.cellPaintFrame !== null) {
                 return;
@@ -90,6 +110,17 @@ export default class Renderer {
         this.bus.emit('body:did-render');
     }
 
+    /** Run an in-place body mutation inside the same will/did envelope; false when it declined. */
+    applyIncremental(mutate) {
+        if (!this.body.canMutateInPlace()) {
+            return false;
+        }
+        this.bus.emit('body:will-render');
+        const applied = mutate();
+        this.bus.emit('body:did-render');
+        return applied;
+    }
+
     /**
      * Resolve the cell element at a stable (rowKey, colKey) address — the O(1) seam the M2
      * SelectionPainter and active-cell scroller use to touch a single cell without a re-render.
@@ -121,6 +152,12 @@ export default class Renderer {
         }
         if (this.unsubscribeCells) {
             this.unsubscribeCells();
+        }
+        if (this.unsubscribeInserted) {
+            this.unsubscribeInserted();
+        }
+        if (this.unsubscribeRemoved) {
+            this.unsubscribeRemoved();
         }
         if (this.unsubscribeHidden) {
             this.unsubscribeHidden();

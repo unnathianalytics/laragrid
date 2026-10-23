@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use InvalidArgumentException;
 use LaraGrid\Actions\Action;
 use LaraGrid\Columns\Column;
+use LaraGrid\Columns\ComputedColumn;
 use LaraGrid\Columns\SearchSelectColumn;
 use LaraGrid\Editing\RowContext;
 use LaraGrid\Export\ExporterRegistry;
@@ -335,6 +336,33 @@ class Grid
     /** @var list<Action> Toolbar buttons (grid-scoped, no row context). */
     protected array $toolbarActions = [];
 
+    // ---- Per-instance lookup memos --------------------------------------------------------
+    //
+    // A Grid is rebuilt on every request (the host's grids() runs per Livewire call), so these
+    // caches can never outlive the definition they describe. Each is dropped by the mutator(s)
+    // that could change its answer (columns(), filters(), newRowUsing()).
+
+    /**
+     * Column key => Column, built on the first column() lookup.
+     *
+     * @var array<string, Column>|null
+     */
+    private ?array $columnIndex = null;
+
+    /**
+     * The merged grid-level + column-attached filter list (getFilters()).
+     *
+     * @var list<Filter>|null
+     */
+    private ?array $filtersMemo = null;
+
+    /**
+     * The fresh-row value template (newRowTemplate()) — built once, read per blank check.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $templateMemo = null;
+
     final public function __construct(public readonly string $name)
     {
         // App-wide defaults (config/laragrid.php) seed the per-grid state; any chained call
@@ -368,6 +396,9 @@ class Grid
     public function columns(array $columns): static
     {
         $this->columns = array_values($columns);
+        $this->columnIndex = null;
+        $this->filtersMemo = null;
+        $this->templateMemo = null;
 
         return $this;
     }
@@ -709,6 +740,7 @@ class Grid
     public function filters(array $filters): static
     {
         $this->filters = array_values($filters);
+        $this->filtersMemo = null;
 
         return $this;
     }
@@ -1104,6 +1136,7 @@ class Grid
     public function newRowUsing(Closure $factory): static
     {
         $this->newRowUsing = $factory;
+        $this->templateMemo = null;
 
         return $this;
     }
@@ -1301,10 +1334,13 @@ class Grid
      */
     public function newRowTemplate(): array
     {
-        $template = $this->makeNewRow('_template');
-        unset($template['_k']);
+        if ($this->templateMemo === null) {
+            $template = $this->makeNewRow('_template');
+            unset($template['_k']);
+            $this->templateMemo = $template;
+        }
 
-        return $template;
+        return $this->templateMemo;
     }
 
     // ---- Editable accessors (serializer / applier / trait) ------------------------------
@@ -1417,13 +1453,15 @@ class Grid
      */
     public function column(string $key): ?Column
     {
-        foreach ($this->columns as $column) {
-            if ($column->key === $key) {
-                return $column;
+        if ($this->columnIndex === null) {
+            $this->columnIndex = [];
+            foreach ($this->columns as $column) {
+                // First declaration wins, as the linear scan did (assertValid refuses duplicates).
+                $this->columnIndex[$column->key] ??= $column;
             }
         }
 
-        return null;
+        return $this->columnIndex[$key] ?? null;
     }
 
     // ---- Readonly accessors (serializer / pipeline / trait) -----------------------------
@@ -1537,20 +1575,51 @@ class Grid
      */
     public function getFilters(): array
     {
-        $columnFilters = [];
-        foreach ($this->columns as $column) {
-            $filter = $column->getFilter();
-            if ($filter !== null) {
-                $columnFilters[] = $filter;
+        if ($this->filtersMemo === null) {
+            $columnFilters = [];
+            foreach ($this->columns as $column) {
+                $filter = $column->getFilter();
+                if ($filter !== null) {
+                    $columnFilters[] = $filter;
+                }
             }
+
+            $this->filtersMemo = [...$this->filters, ...$columnFilters];
         }
 
-        return [...$this->filters, ...$columnFilters];
+        return $this->filtersMemo;
     }
 
     public function getRowKey(): string
     {
         return $this->rowKey;
+    }
+
+    /**
+     * The relation paths the declared columns read through: for every dot-keyed column
+     * ('itemGroup.name', 'item.group.name') the path without its last segment, de-duplicated.
+     *
+     * Why: The row serializer resolves such keys with data_get() against the model, which lazily
+     *      loads the relation per row unless the host query eager-loaded it. AppliesEagerLoads
+     *      (used by QueryPipeline and ExportBuilder) adds the missing ones before fetching, but
+     *      only as far as the segments really are relations (a JSON attribute path is left alone).
+     *
+     * @return list<string>
+     */
+    public function relationPaths(): array
+    {
+        $paths = [];
+        foreach ($this->columns as $column) {
+            if ($column instanceof ComputedColumn || ! str_contains($column->key, '.')) {
+                continue;
+            }
+            $path = substr($column->key, 0, (int) strrpos($column->key, '.'));
+            if ($path !== '') {
+                $paths[$path] = true;
+            }
+        }
+
+        return array_keys($paths);
     }
 
     /**

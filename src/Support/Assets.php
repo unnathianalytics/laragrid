@@ -16,15 +16,27 @@ use Symfony\Component\HttpFoundation\Response;
  *       no per-request flag hygiene), it skips responses that already carry the assets
  *       (manual @laragridScripts/@laragridStyles present), and it can be disabled wholesale
  *       via config('laragrid.inject_assets'). config('laragrid.asset_url') redirects the
- *       tags at a CDN/published copy instead of the internal route.
+ *       tags at a CDN; with no asset_url a published copy under public/vendor/laragrid is
+ *       preferred automatically (a static file, no Laravel boot per asset request), and the
+ *       internal route is the fallback that makes `composer require` alone sufficient.
  *
  * When: inject() runs on Laravel's RequestHandled event (registered by the service
  *       provider); the tag builders also back the Blade directives.
  */
 class Assets
 {
+    /** The published copy's location under public/ (the laragrid-assets publish tag). */
+    public const PUBLISHED_DIR = 'vendor/laragrid';
+
     /** Cached content-hash version (per process) — busts browser caches on package upgrade. */
     private static ?string $version = null;
+
+    /**
+     * Per-process memo of "is this file published?" so a page with two tags stats once each.
+     *
+     * @var array<string, bool>
+     */
+    private static array $published = [];
 
     public static function scriptTag(): string
     {
@@ -37,22 +49,30 @@ class Assets
     }
 
     /**
-     * The URL for one dist file: the configured asset_url base when set (CDN / published
-     * copy), else the internal serving route — both with the ?v= content hash.
+     * The URL for one dist file — in order of preference: the configured asset_url base
+     * (CDN / any published copy), the auto-detected published copy under public/vendor/laragrid,
+     * else the internal serving route — all with the ?v= content hash.
      */
     public static function url(string $file): string
     {
         $base = config('laragrid.asset_url');
-        $path = is_string($base) && $base !== ''
-            ? rtrim($base, '/').'/'.$file
-            : route('laragrid.asset', ['file' => $file], false);
+
+        if (is_string($base) && $base !== '') {
+            $path = rtrim($base, '/').'/'.$file;
+        } elseif (self::isPublished($file)) {
+            $path = asset(self::PUBLISHED_DIR.'/'.$file);
+        } else {
+            $path = route('laragrid.asset', ['file' => $file], false);
+        }
 
         return $path.'?v='.self::version();
     }
 
     /**
      * A short content hash of the bundled JS — one version stamps both tags (the CSS ships
-     * in the same release, so a JS change is the upgrade signal).
+     * in the same release, so a JS change is the upgrade signal). Read from dist/version.txt
+     * (written by the build) so no request hashes the 160 KB bundle; md5_file is the fallback
+     * for a dist without the stamp, and it yields the same digest.
      */
     public static function version(): string
     {
@@ -60,19 +80,50 @@ class Assets
             return self::$version;
         }
 
-        $path = dirname(__DIR__, 2).'/dist/laragrid.min.js';
+        $stamp = self::distPath('version.txt');
+        $stamped = is_file($stamp) ? trim((string) file_get_contents($stamp)) : '';
+        if (preg_match('/^[0-9a-f]{12}$/', $stamped) === 1) {
+            return self::$version = $stamped;
+        }
+
+        $path = self::distPath('laragrid.min.js');
         $hash = is_file($path) ? md5_file($path) : false;
 
         return self::$version = $hash === false ? 'dev' : substr($hash, 0, 12);
     }
 
+    /** Absolute path of a file in the package's dist/ directory. */
+    public static function distPath(string $file): string
+    {
+        return dirname(__DIR__, 2).'/dist/'.$file;
+    }
+
+    /** Whether `vendor:publish --tag=laragrid-assets` placed this file under public/. */
+    protected static function isPublished(string $file): bool
+    {
+        return self::$published[$file] ??= is_file(public_path(self::PUBLISHED_DIR.'/'.$file));
+    }
+
+    /** Test seam: forget the per-process memos (published copies, version). */
+    public static function flush(): void
+    {
+        self::$version = null;
+        self::$published = [];
+    }
+
     /**
      * Whether this response should receive the tags: an HTML page that rendered at least
-     * one grid mount and doesn't already reference the bundle.
+     * one grid mount and doesn't already reference the bundle. The Content-Type check comes
+     * first so JSON (Livewire updates), downloads and assets are never scanned at all.
      */
     public static function shouldInject(Response $response): bool
     {
         if (! config('laragrid.inject_assets', true)) {
+            return false;
+        }
+
+        $type = (string) $response->headers->get('Content-Type', '');
+        if (! str_starts_with(strtolower($type), 'text/html')) {
             return false;
         }
 

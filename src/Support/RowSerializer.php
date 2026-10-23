@@ -87,8 +87,15 @@ class RowSerializer
             }
         }
 
+        // The array view of a model (toArray walks every attribute, cast and loaded relation) is
+        // built at most once per row, and only when a closure actually asks for it.
+        $asArray = null;
+        $arr = function () use ($row, &$asArray): array {
+            return $asArray ??= $this->toArray($row);
+        };
+
         foreach ($computed as $column) {
-            $serialized[$column->key] = $column->resolveState($this->toArray($row));
+            $serialized[$column->key] = $column->resolveState($arr());
         }
 
         // Per-row activation URL (readonly master lists): resolve the host's route/permission gate
@@ -100,13 +107,13 @@ class RowSerializer
         // re-authorizes on call). Invisible/inert actions emit nothing, so no button paints.
         if ($grid->getActions() !== []) {
             $bag = [];
-            $asArray = $this->toArray($row);
+            $view = $arr();
             foreach ($grid->getActions() as $action) {
-                if (! $action->isVisibleFor($asArray)) {
+                if (! $action->isVisibleFor($view)) {
                     continue;
                 }
                 if ($action->hasUrl()) {
-                    $url = $action->resolveUrl($asArray);
+                    $url = $action->resolveUrl($view);
                     if ($url !== null) {
                         $bag[$action->name] = $url;
                     }
@@ -121,14 +128,14 @@ class RowSerializer
 
         $rowActivate = $grid->getRowActivate();
         if ($rowActivate !== null && ! $grid->isEditable()) {
-            $url = $rowActivate($this->toArray($row));
+            $url = $rowActivate($arr());
             if (is_string($url) && $url !== '') {
                 $serialized['_activateUrl'] = $url;
             }
         }
 
         if ($rowClass !== null) {
-            $class = $rowClass($this->toArray($row));
+            $class = $rowClass($arr());
             if ($class !== null && $class !== '') {
                 $serialized['_rowClass'] = $class;
             }
@@ -206,6 +213,14 @@ class RowSerializer
     protected function resolveValue(Model|array $row, string $key): mixed
     {
         if ($row instanceof Model) {
+            // A loaded attribute goes straight to getAttribute(): data_get() resolves it twice
+            // (offsetExists, then offsetGet). Every other key (a dot path, an accessor, a
+            // relation, a column the query did not select) keeps data_get(), which also never
+            // trips Model::preventAccessingMissingAttributes().
+            if (! str_contains($key, '.') && array_key_exists($key, $row->getAttributes())) {
+                return $row->getAttribute($key);
+            }
+
             return data_get($row, $key);
         }
 
@@ -214,7 +229,8 @@ class RowSerializer
 
     /**
      * A source row as an array, for closures/computed resolvers that expect array access. A model
-     * is turned into its attributes-plus-loaded-relations array (toArray) once, lazily.
+     * is turned into its attributes-plus-loaded-relations array (toArray); serializeOne() calls
+     * this at most once per row.
      *
      * @param  Model|array<string, mixed>  $row
      * @return array<string, mixed>
@@ -240,8 +256,9 @@ class RowSerializer
      */
     public function cleanEditableRows(Grid $grid, array $rows): array
     {
-        // Strip blank trailing rows.
-        while ($rows !== [] && $this->isBlankEditableRow($grid, end($rows))) {
+        // Strip blank trailing rows (one template for the whole walk).
+        $template = $grid->newRowTemplate();
+        while ($rows !== [] && $this->isBlankEditableRow($grid, end($rows), $template)) {
             array_pop($rows);
         }
 
@@ -258,10 +275,11 @@ class RowSerializer
      * Mirrors OpApplier::isBlankRow().
      *
      * @param  array<string, mixed>  $row
+     * @param  array<string, mixed>|null  $template  The grid's fresh-row template, when the caller already holds it.
      */
-    protected function isBlankEditableRow(Grid $grid, array $row): bool
+    protected function isBlankEditableRow(Grid $grid, array $row, ?array $template = null): bool
     {
-        $template = $grid->newRowTemplate();
+        $template ??= $grid->newRowTemplate();
 
         foreach ($grid->getColumns() as $column) {
             if (! $column->isEditable()) {

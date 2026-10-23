@@ -38,10 +38,16 @@ class ViewState
      *      referenced group was deleted) is DROPPED rather than replayed into a WHERE that
      *      silently empties the list.
      *
+     * When: $checkOptions = false skips that accepts() step, for a payload the QueryPipeline has
+     *       just applied in this same request (the gridFetch write path). Filter::accepts() can
+     *       resolve a SelectFilter's options closure, usually a DB lookup, once per active
+     *       filter, and on that path it would only re-check what the operator picked from those
+     *       options a moment ago. Every read of a stored state keeps the default (true).
+     *
      * @param  array<string, mixed>  $state  The raw client / stored payload.
      * @return array{search: string, sort: string|null, dir: string, filters: array<string, string>, perPage: int}
      */
-    public function sanitizeQuery(Grid $grid, array $state): array
+    public function sanitizeQuery(Grid $grid, array $state, bool $checkOptions = true): array
     {
         $columnKeys = array_flip(array_map(fn (Column $c): string => $c->key, $grid->getColumns()));
 
@@ -63,7 +69,7 @@ class ViewState
                 continue;
             }
             $value = mb_substr((string) $value, 0, self::MAX_FILTER_VALUE);
-            if (! $filtersByKey[$key]->accepts($value)) {
+            if ($checkOptions && ! $filtersByKey[$key]->accepts($value)) {
                 continue;
             }
             $filters[$key] = $value;

@@ -42,18 +42,44 @@ export default class StatusBar {
      * @returns {{count: number, numericCount: number, sum: number, format: object|null}}
      */
     aggregate() {
-        const grid = this.store.selectedCells();
         let count = 0;
         let numericCount = 0;
         let sum = 0;
         let format = null;
 
-        for (const cells of grid) {
-            for (const { column, value } of cells) {
+        // Walk the selection rectangle in place (no 2-D cell array): a 700 x 10 range is read
+        // on every Shift+Arrow, so the per-cell work is one property read.
+        const sel = this.store.selection;
+        let r0;
+        let r1;
+        let c0;
+        let c1;
+        if (sel) {
+            ({ r0, r1, c0, c1 } = sel);
+        } else {
+            const a = this.store.indexOf(this.store.active);
+            if (a.row < 0 || a.col < 0) {
+                return { count, numericCount, sum, format };
+            }
+            r0 = a.row;
+            r1 = a.row;
+            c0 = a.col;
+            c1 = a.col;
+        }
+        const rows = this.store.rows;
+        const cols = this.store.visibleColumns();
+        r1 = Math.min(r1, rows.length - 1);
+        c1 = Math.min(c1, cols.length - 1);
+
+        for (let r = Math.max(0, r0); r <= r1; r++) {
+            const row = rows[r];
+            for (let c = Math.max(0, c0); c <= c1; c++) {
+                const column = cols[c];
                 count++;
                 if (!column.selectableNumeric) {
                     continue;
                 }
+                const value = row[column.key];
                 const num = Number(value);
                 if (value === null || value === undefined || value === '' || Number.isNaN(num)) {
                     continue;

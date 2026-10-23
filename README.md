@@ -111,8 +111,21 @@ php artisan vendor:publish --tag=laragrid-migrations  # the saved-views table mi
 ```
 
 Asset delivery is configurable: set `laragrid.inject_assets => false` to place
-`@laragridStyles` / `@laragridScripts` yourself, or point `laragrid.asset_url` at a CDN or the
-published copy. Asset URLs carry a content hash, so upgrades bust browser caches automatically.
+`@laragridStyles` / `@laragridScripts` yourself, or point `laragrid.asset_url` at a CDN.
+Asset URLs carry a content hash, so upgrades bust browser caches automatically.
+
+For production, publish the assets (`--tag=laragrid-assets`): once `public/vendor/laragrid`
+exists the tags point there automatically (no `asset_url` needed), so each asset request is a
+static file instead of a Laravel boot. Re-run the publish after every upgrade. Without a
+published copy the internal `/laragrid/{file}` route serves the bundle itself, with the
+precompressed brotli/gzip body for browsers that accept it; a published copy relies on your
+web server's own compression. Consumers with their own Vite build import
+`vendor/unnathianalytics/laragrid/resources/js/index.js` directly; the undocumented
+`dist/laragrid.esm.js` bundle is no longer built.
+
+Behind a CDN, make sure the query string is part of the cache key (CloudFront's default
+policy drops it): the `?v=` hash is what tells the edge a new release is out, and without it
+the old file would be served for up to a year after an upgrade.
 
 ## Quick start — a readonly list
 
@@ -180,6 +193,15 @@ class ResortsIndex extends Component
 **Search targets**: bare names in `->searchable()` must be declared columns — a typo fails
 loudly at build time instead of silently searching nothing. To search a database column you
 don't display, table-qualify it (`'resorts.slug'`); the dot marks it as an explicit DB column.
+
+**Relation columns**: a dot-keyed column such as `TextColumn::make('itemGroup.name')` reads
+through the model's relation. The grid eager-loads every such relation the query does not
+already load (one query per relation for each page or export chunk, not one per row), so you
+don't need `->with()` for them. You may still pre-load a relation yourself — for example
+`Item::query()->with(['itemGroup' => fn ($q) => $q->select('id', 'name')])` to limit its
+columns — and the grid keeps your constraint and adds only what is missing. A path that is not
+a relation, such as a JSON attribute (`'meta.color'`), is read from the row and never
+eager-loaded.
 
 ## Quick start — an editable entry grid
 
@@ -1114,7 +1136,8 @@ asset injection and asset URL. Any grid overrides any of them through its chaine
 - **"searchable target [x] is not a declared column"** — declare the column, or table-qualify
   the target (`'items.slug'`) to search an undisplayed DB column.
 - **Stale assets after upgrading** — none: tags carry a content hash. If a proxy interferes,
-  hard-refresh once.
+  hard-refresh once. Behind a CDN, confirm its cache key includes the query string (see
+  *Install*); with a published copy, re-run `vendor:publish --tag=laragrid-assets --force`.
 
 ## Testing
 

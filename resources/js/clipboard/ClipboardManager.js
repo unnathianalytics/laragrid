@@ -247,9 +247,12 @@ export default class ClipboardManager {
     applyPaste(plan, ctx) {
         const items = [];
 
-        for (const key of plan.newRowKeys) {
-            this.store.insertRow(key);
-            items.push({ op: { seq: this.store.nextSeq(), t: 'insert', as: key }, cells: [] });
+        // One structural pass for every new row (one reindex, one repaint, one undo step).
+        if (plan.newRowKeys.length) {
+            this.store.insertRows(plan.newRowKeys);
+            for (const key of plan.newRowKeys) {
+                items.push({ op: { seq: this.store.nextSeq(), t: 'insert', as: key }, cells: [] });
+            }
         }
 
         let applied = 0;

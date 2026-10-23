@@ -59,13 +59,41 @@ function paintSelect(cellEl, ctx) {
     const value = ctx.value;
     let label = '';
     if (value != null && value !== '') {
-        const options = ctx.column.options || [];
-        const hit = options.find((o) => String(o.value) === String(value));
-        label = hit
-            ? hit.label
-            : (ctx.row && ctx.row._labels && ctx.row._labels[ctx.column.key]) || String(value);
+        const labels = optionLabels(ctx.column.options);
+        const key = String(value);
+        label = labels.has(key)
+            ? labels.get(key)
+            : (ctx.row && ctx.row._labels && ctx.row._labels[ctx.column.key]) || key;
     }
     setText(cellEl, label);
+}
+
+/**
+ * Embedded options as a value → label Map, built on first use per options array (a select
+ * column paints once per row, so a linear find per cell adds up). Keyed by the array itself:
+ * a replaced options list gets a fresh map. The first option with a given value wins, as
+ * the find it replaces did.
+ * @type {WeakMap<Array<object>, Map<string, string>>}
+ */
+const labelsByOptions = new WeakMap();
+const NO_LABELS = new Map();
+
+function optionLabels(options) {
+    if (!Array.isArray(options) || options.length === 0) {
+        return NO_LABELS;
+    }
+    let labels = labelsByOptions.get(options);
+    if (!labels) {
+        labels = new Map();
+        for (const option of options) {
+            const key = String(option.value);
+            if (!labels.has(key)) {
+                labels.set(key, option.label);
+            }
+        }
+        labelsByOptions.set(options, labels);
+    }
+    return labels;
 }
 
 /**

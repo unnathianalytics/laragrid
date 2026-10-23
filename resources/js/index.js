@@ -139,6 +139,7 @@ function resolveWire(root) {
         gridFetch: call('gridFetch'),
         gridOps: call('gridOps'),
         gridRestoreDraft: call('gridRestoreDraft'),
+        gridReseedRows: call('gridReseedRows'),
         gridOptions: call('gridOptions'),
         gridAction: call('gridAction'),
         gridExport: call('gridExport'),

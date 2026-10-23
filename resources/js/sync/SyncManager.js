@@ -45,7 +45,6 @@ export default class SyncManager {
 
     enqueue(op, cells = [], opts = {}) {
         this.queue.push({ op, cells });
-        this.store.opLog.push(op);
         if (cells.length) {
             this.store.markPending(cells, op.seq);
         }
@@ -58,13 +57,16 @@ export default class SyncManager {
     }
 
     enqueueBatch(items) {
+        // One markPendingBatch for the whole batch: a 100-cell paste emits one sync-state and
+        // one edit-state for its cells, not one of each per cell.
+        const marks = [];
         for (const { op, cells = [] } of items) {
             this.queue.push({ op, cells });
-            this.store.opLog.push(op);
             if (cells.length) {
-                this.store.markPending(cells, op.seq);
+                marks.push({ cells, seq: op.seq });
             }
         }
+        this.store.markPendingBatch(marks);
         this.emitState();
         if (items.length) {
             this.flush();
@@ -425,18 +427,19 @@ export default class SyncManager {
     /** Restore draft ops without duplicating already-live sequences. */
     restoreQueue(items = []) {
         const existing = new Set(this.snapshotQueue().map((item) => item.op.seq));
+        const marks = [];
         for (const item of items) {
             if (!item || !item.op || existing.has(item.op.seq)) {
                 continue;
             }
             const cells = Array.isArray(item.cells) ? item.cells : [];
             this.queue.push({ op: { ...item.op }, cells: cells.map((cell) => ({ ...cell })) });
-            this.store.opLog.push({ ...item.op });
             this.store.seqCounter = Math.max(this.store.seqCounter, Number(item.op.seq) || 0);
             if (cells.length) {
-                this.store.markPending(cells, item.op.seq);
+                marks.push({ cells, seq: item.op.seq });
             }
         }
+        this.store.markPendingBatch(marks);
         this.emitState();
     }
 

@@ -46,13 +46,16 @@ final class XlsxExporter implements Exporter
             );
         }
 
-        // ZipArchive needs a seekable file — build in a temp file, stream it out, delete.
-        $path = tempnam(sys_get_temp_dir(), 'lgrid-xlsx');
-        if ($path === false) {
-            throw new RuntimeException('XLSX export could not create a temporary file.');
-        }
+        // ZipArchive needs a seekable file, so the package is built in a temp file, streamed
+        // out, and deleted. The sheet XML goes to a second temp file row by row, so a
+        // 50,000-row export never holds its sheet as one string.
+        $path = $this->tempFile('lgrid-xlsx');
+        $sheetPath = null;
 
         try {
+            $sheetPath = $this->tempFile('lgrid-sheet');
+            $this->writeSheet($data, $sheetPath);
+
             $zip = new ZipArchive;
             if ($zip->open($path, ZipArchive::OVERWRITE) !== true) {
                 throw new RuntimeException('XLSX export could not open the temporary archive.');
@@ -63,13 +66,29 @@ final class XlsxExporter implements Exporter
             $zip->addFromString('xl/workbook.xml', $this->workbookXml($data->title));
             $zip->addFromString('xl/_rels/workbook.xml.rels', $this->workbookRelsXml());
             $zip->addFromString('xl/styles.xml', $this->stylesXml());
-            $zip->addFromString('xl/worksheets/sheet1.xml', $this->sheetXml($data));
+            // addFile() reads the file at close(), so the sheet file must outlive close().
+            $zip->addFile($sheetPath, 'xl/worksheets/sheet1.xml');
 
-            $zip->close();
+            if (! $zip->close()) {
+                throw new RuntimeException('XLSX export could not write the temporary archive.');
+            }
             readfile($path);
         } finally {
             @unlink($path);
+            if ($sheetPath !== null) {
+                @unlink($sheetPath);
+            }
         }
+    }
+
+    private function tempFile(string $prefix): string
+    {
+        $path = tempnam(sys_get_temp_dir(), $prefix);
+        if ($path === false) {
+            throw new RuntimeException('XLSX export could not create a temporary file.');
+        }
+
+        return $path;
     }
 
     // ---- Package parts ----------------------------------------------------------------------
@@ -132,46 +151,68 @@ final class XlsxExporter implements Exporter
 
     // ---- The worksheet ------------------------------------------------------------------------
 
-    private function sheetXml(ExportData $data): string
+    /**
+     * Write the worksheet XML to $path, one fwrite per row, as the rows stream in.
+     */
+    private function writeSheet(ExportData $data, string $path): void
     {
-        $xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            .'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">';
-
-        // Column widths: grid pixels ≈ 7px per Excel width unit (the Calibri-11 convention);
-        // grow/unsized columns get a readable default.
-        $xml .= '<cols>';
-        foreach ($data->columns as $index => $column) {
-            $units = $column['width'] !== null
-                ? max(6, round($column['width'] / 7, 1))
-                : 22;
-            $n = $index + 1;
-            $xml .= '<col min="'.$n.'" max="'.$n.'" width="'.$units.'" customWidth="1"/>';
-        }
-        $xml .= '</cols><sheetData>';
-
-        // Number-cell eligibility is decided by the COLUMN, never by content sniffing — a
-        // text cell that happens to look numeric ("00123", an item code) must stay a string
-        // or Excel strips its leading zeros.
-        $numeric = array_map(fn (array $column): bool => $column['numeric'], $data->columns);
-
-        $rowNumber = 1;
-        $xml .= $this->rowXml($rowNumber, array_map(
-            fn (array $column): string => $column['label'],
-            $data->columns,
-        ), $numeric, bold: true);
-
-        foreach ($data->rows as $cells) {
-            $rowNumber++;
-            $xml .= $this->rowXml($rowNumber, $cells, $numeric);
+        $handle = fopen($path, 'wb');
+        if ($handle === false) {
+            throw new RuntimeException('XLSX export could not open the temporary sheet file.');
         }
 
-        $totals = $data->totalsRow();
-        if ($totals !== null) {
-            $rowNumber++;
-            $xml .= $this->rowXml($rowNumber, $totals, $numeric, bold: true);
-        }
+        try {
+            $head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                .'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">';
 
-        return $xml.'</sheetData></worksheet>';
+            // Column widths: grid pixels ≈ 7px per Excel width unit (the Calibri-11 convention);
+            // grow/unsized columns get a readable default.
+            $head .= '<cols>';
+            foreach ($data->columns as $index => $column) {
+                $units = $column['width'] !== null
+                    ? max(6, round($column['width'] / 7, 1))
+                    : 22;
+                $n = $index + 1;
+                $head .= '<col min="'.$n.'" max="'.$n.'" width="'.$units.'" customWidth="1"/>';
+            }
+            $head .= '</cols><sheetData>';
+
+            // Number-cell eligibility is decided by the COLUMN, never by content sniffing — a
+            // text cell that happens to look numeric ("00123", an item code) must stay a string
+            // or Excel strips its leading zeros.
+            $numeric = array_map(fn (array $column): bool => $column['numeric'], $data->columns);
+
+            $rowNumber = 1;
+            $this->put($handle, $head.$this->rowXml($rowNumber, array_map(
+                fn (array $column): string => $column['label'],
+                $data->columns,
+            ), $numeric, bold: true));
+
+            foreach ($data->rows as $cells) {
+                $rowNumber++;
+                $this->put($handle, $this->rowXml($rowNumber, $cells, $numeric));
+            }
+
+            $totals = $data->totalsRow();
+            if ($totals !== null) {
+                $rowNumber++;
+                $this->put($handle, $this->rowXml($rowNumber, $totals, $numeric, bold: true));
+            }
+
+            $this->put($handle, '</sheetData></worksheet>');
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * @param  resource  $handle
+     */
+    private function put($handle, string $bytes): void
+    {
+        if (fwrite($handle, $bytes) !== strlen($bytes)) {
+            throw new RuntimeException('XLSX export could not write the temporary sheet file (disk full?).');
+        }
     }
 
     /**

@@ -24,6 +24,26 @@ export default class Layout {
         this.store = store;
         this.refs = refs;
         this.resolvedWidths = new Map();
+        /** The width availableWidth() serves during a column drag; null reads it live. */
+        this.heldWidth = null;
+        /** @type {Set<Function>} listeners told when a class write or a resize may have changed row metrics. */
+        this.metricsListeners = new Set();
+    }
+
+    /**
+     * Subscribe to "the box or the modifier classes changed" (BodyRenderer drops its cached
+     * row pitch on it). Returns the unsubscribe function.
+     * @param {() => void} fn
+     */
+    onMetricsChanged(fn) {
+        this.metricsListeners.add(fn);
+        return () => this.metricsListeners.delete(fn);
+    }
+
+    notifyMetricsChanged() {
+        for (const fn of [...this.metricsListeners]) {
+            fn();
+        }
     }
 
     /** Whether the grid-level fit-to-width contract is active. */
@@ -93,6 +113,9 @@ export default class Layout {
 
         // content-visibility on rows from day one (near-virtual perf; plan §1.4).
         this.refs.body.classList.add('lgrid-rows--cv');
+
+        // The density/theme classes above may have changed --lgrid-row-h.
+        this.notifyMetricsChanged();
 
         this.frozen = this.computeFrozen(columns, layout.freeze || 0);
 
@@ -179,11 +202,28 @@ export default class Layout {
         this.commitTemplate(columns, widths);
     }
 
-    /** Current usable width of the shared header/body/footer scroll viewport. */
+    /**
+     * Current usable width of the shared header/body/footer scroll viewport. While a column
+     * drag holds it (holdAvailableWidth), the width read at drag start is returned, so a
+     * pointer move only writes the template and never forces a layout read.
+     */
     availableWidth() {
+        if (this.heldWidth !== null) {
+            return this.heldWidth;
+        }
         const scrollWidth = (this.refs.scroll && this.refs.scroll.clientWidth) || 0;
         const rootWidth = (this.refs.root && this.refs.root.clientWidth) || 0;
         return Math.max(0, Math.floor(scrollWidth || rootWidth));
+    }
+
+    /** Read the available width once and serve it until releaseAvailableWidth (a resize drag). */
+    holdAvailableWidth() {
+        this.heldWidth = null;
+        this.heldWidth = this.availableWidth();
+    }
+
+    releaseAvailableWidth() {
+        this.heldWidth = null;
     }
 
     /** Store resolved geometry and publish the one shared grid-template variable. */
@@ -255,6 +295,7 @@ export default class Layout {
         }
         let last = box.clientWidth;
         this.resizeObserver = new ResizeObserver(() => {
+            this.notifyMetricsChanged();
             if (box.clientWidth !== last) {
                 last = box.clientWidth;
                 this.setTemplate(this.store.visibleColumns());

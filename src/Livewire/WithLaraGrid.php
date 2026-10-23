@@ -9,6 +9,8 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rules\In;
+use Illuminate\Validation\Rules\NotIn;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use LaraGrid\Columns\SearchSelectColumn;
@@ -19,6 +21,7 @@ use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Grid;
 use LaraGrid\Query\QueryPipeline;
 use LaraGrid\Query\QueryStore;
+use LaraGrid\Support\MountedGrids;
 use LaraGrid\Support\RowSerializer;
 use LaraGrid\Validation\RuleCompiler;
 use LaraGrid\Views\ViewState;
@@ -55,6 +58,16 @@ trait WithLaraGrid
     public array $laraGridVersions = [];
 
     /**
+     * The grids this host's LAST render mounted (grid name => true). A later render re-sends
+     * those as shell configs (perf plan P1). Locked: a client that could add a name here would
+     * receive a shell for a grid it never mounted.
+     *
+     * @var array<string, true>
+     */
+    #[Locked]
+    public array $laraGridMounted = [];
+
+    /**
      * Per-request cache of the resolved grid definitions, so grids() (which may run tenant-scoped
      * option lookups) is built once per Livewire request, not per RPC + per render.
      *
@@ -68,6 +81,32 @@ trait WithLaraGrid
      * @return array<string, Grid>
      */
     abstract protected function grids(): array;
+
+    /**
+     * Livewire trait hook, before the host view renders: open a MountedGrids pass seeded with
+     * the grids the browser already holds, so each <x-laragrid> can ship a shell instead of
+     * re-serializing rows nobody reads.
+     *
+     * Public because Livewire invokes trait hooks as public methods, which also makes it
+     * callable as a client action. A stray call only opens a pass that no render reads.
+     */
+    public function renderingWithLaraGrid(): void
+    {
+        app(MountedGrids::class)->enter($this->laraGridMounted);
+    }
+
+    /**
+     * Livewire trait hook, after the host view rendered: record exactly the grids this pass
+     * mounted. A grid that left the view (an @if turned false) drops out, so its return ships
+     * the full payload. A stray client call finds no open pass and changes nothing.
+     */
+    public function renderedWithLaraGrid(): void
+    {
+        $registry = app(MountedGrids::class);
+        if ($registry->active()) {
+            $this->laraGridMounted = $registry->leave();
+        }
+    }
 
     /**
      * Resolve (and memoise) the host's grids for this request.
@@ -165,8 +204,31 @@ trait WithLaraGrid
         // `filters`) must mean "defaults, plus this filter" — not "and no sort, and no page
         // size", which would both persist a state the operator never chose and defeat the
         // default-equal check below.
-        $state = app(ViewState::class)->sanitizeQuery($definition, array_merge($definition->defaultQuery(), $query));
+        $state = app(ViewState::class)->sanitizeQuery(
+            $definition,
+            array_merge($definition->defaultQuery(), $query),
+            checkOptions: false,
+        );
         $store = app(QueryStore::class);
+
+        // Filter values are offered to Filter::accepts() only when they are NEW or CHANGED versus
+        // the stored state: a value already stored passed that check when it was written, so
+        // paging or sorting under an active filter no longer re-runs its options lookup (often
+        // a DB query) on every fetch. A stale value is still never persisted fresh, and one that
+        // stops resolving later (tenant switch, deleted record) is dropped on the read path
+        // (ConfigSerializer::initialQuery), which always checks.
+        $stored = $store->get($persist['key']);
+        $storedFilters = is_array($stored['filters'] ?? null) ? $stored['filters'] : [];
+        $filtersByKey = [];
+        foreach ($definition->getFilters() as $filter) {
+            $filtersByKey[$filter->key] = $filter;
+        }
+        foreach ($state['filters'] as $key => $value) {
+            $unchanged = array_key_exists($key, $storedFilters) && (string) $storedFilters[$key] === $value;
+            if (! $unchanged && ! $filtersByKey[$key]->accepts($value)) {
+                unset($state['filters'][$key]);
+            }
+        }
 
         if ($state == $definition->defaultQuery()) {
             $store->forget($persist['key']);
@@ -308,7 +370,14 @@ trait WithLaraGrid
 
         $view = $store->save($scope, $key, $name, app(ViewState::class)->sanitize($definition, $state));
 
-        return ['view' => $view, 'views' => $store->list($scope, $key)];
+        // An overwrite keeps the list's membership and order, so the pre-save list is updated in
+        // place (no second read). A new name needs the store's own ordering — its collation
+        // decides where the name sorts — so only then is the list read again.
+        $views = $replaces
+            ? array_map(fn (array $existingView): array => $existingView['name'] === $name ? $view : $existingView, $existing)
+            : $store->list($scope, $key);
+
+        return ['view' => $view, 'views' => $views];
     }
 
     /**
@@ -525,18 +594,8 @@ trait WithLaraGrid
         }
         $compiler = app(RuleCompiler::class);
         foreach (array_slice($result->rows, 0, count($kept)) as $row) {
-            foreach ($definition->getColumns() as $column) {
-                if (! $column->isEditable()) {
-                    continue;
-                }
-                $validator = Validator::make(
-                    $row,
-                    [$column->key => $compiler->serverRules($column, $row)],
-                );
-                $message = $validator->errors()->first($column->key);
-                if ($message !== '') {
-                    $finalErrors[(string) $row['_k']][$column->key] = $message;
-                }
+            foreach ($this->validateGridRow($definition, $compiler, $row) as $key => $columnMessages) {
+                $finalErrors[(string) $row['_k']][$key] = $columnMessages[0];
             }
         }
         if ($finalErrors !== []) {
@@ -741,17 +800,8 @@ trait WithLaraGrid
         $compiler = app(RuleCompiler::class);
 
         foreach ($clean as $index => $row) {
-            foreach ($definition->getColumns() as $column) {
-                if (! $column->isEditable()) {
-                    continue;
-                }
-                $validator = Validator::make(
-                    $row,
-                    [$column->key => $compiler->serverRules($column, $row)],
-                );
-                foreach ($validator->errors()->get($column->key) as $message) {
-                    $messages["{$grid}.{$index}.{$column->key}"][] = (string) $message;
-                }
+            foreach ($this->validateGridRow($definition, $compiler, $row) as $key => $columnMessages) {
+                $messages["{$grid}.{$index}.{$key}"] = $columnMessages;
             }
         }
 
@@ -760,6 +810,91 @@ trait WithLaraGrid
         }
 
         return $clean;
+    }
+
+    /**
+     * Validate one row for the whole-grid passes (gridRows / gridRestoreDraft) and return the
+     * failing columns' messages, in declared column order.
+     *
+     * What: Columns whose rules are plain, self-contained checks share ONE Validator for the
+     *       row; any other column keeps its own Validator, exactly as every column did before.
+     *       Columns whose rules are exactly ['nullable'] cannot fail and build nothing.
+     * Why:  A Validator per cell made a 200-row × 10-column save build 2,000 validators. Sharing
+     *       one is only safe when no rule can see or change another column's outcome: an
+     *       exclude* rule on `meta` also skips every `meta.*` key validated in the same pass,
+     *       and a closure or rule object may fail under another column's key ($fail('rate',
+     *       …)) or inspect the validator. Those columns stay isolated, so every message is
+     *       identical to the per-cell result (pinned by tests/Feature/RowValidationTest).
+     * When: Once per kept row on save (gridRows) and in the draft-restore final pass.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array<string, list<string>> column key => messages (failing columns only)
+     */
+    protected function validateGridRow(Grid $definition, RuleCompiler $compiler, array $row): array
+    {
+        $shared = [];
+        $isolated = [];
+        $order = [];
+        foreach ($definition->getColumns() as $column) {
+            if (! $column->isEditable()) {
+                continue;
+            }
+            $rules = $compiler->serverRules($column, $row);
+            if ($rules === ['nullable']) {
+                continue;
+            }
+            $order[] = $column->key;
+            if ($this->rulesAreSelfContained($rules)) {
+                $shared[$column->key] = $rules;
+            } else {
+                $isolated[$column->key] = $rules;
+            }
+        }
+
+        $found = [];
+        if ($shared !== []) {
+            $errors = Validator::make($row, $shared)->errors();
+            foreach (array_keys($shared) as $key) {
+                $found[$key] = $errors->get($key);
+            }
+        }
+        foreach ($isolated as $key => $rules) {
+            $found[$key] = Validator::make($row, [$key => $rules])->errors()->get($key);
+        }
+
+        $messages = [];
+        foreach ($order as $key) {
+            if (($found[$key] ?? []) !== []) {
+                $messages[$key] = array_values(array_map(
+                    fn ($message): string => is_array($message) ? (string) ($message[0] ?? '') : (string) $message,
+                    $found[$key],
+                ));
+            }
+        }
+
+        return $messages;
+    }
+
+    /**
+     * Whether a column's rules may share a Validator with its row siblings without changing
+     * any outcome: string rules other than exclude*, plus the In/NotIn objects laragrid's own
+     * select columns emit (Laravel string-casts both before validating). A false negative only
+     * costs a separate Validator; it never changes a message.
+     *
+     * @param  list<mixed>  $rules
+     */
+    protected function rulesAreSelfContained(array $rules): bool
+    {
+        foreach ($rules as $rule) {
+            if ($rule instanceof In || $rule instanceof NotIn) {
+                continue;
+            }
+            if (! is_string($rule) || preg_match('/(^|\|)\s*exclude/i', $rule) === 1) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -852,6 +987,60 @@ trait WithLaraGrid
 
         $this->laraGridVersions[$grid] = 0;
         $this->dispatch('lgrid:reseed', grid: $grid, rows: $serialized, footer: $footer);
+    }
+
+    /**
+     * The current rows of an editable grid, for a mount that booted from a shell config.
+     *
+     * What: Serializes the rowsFrom()-bound property (the `config.rows` shape: `_k` and
+     *       `_labels` intact, computeds baked), the footer as the flat {column: total} map,
+     *       and the grid's CURRENT protocol version, which the client adopts so its next op
+     *       batch matches. Unlike reseedGrid() it neither resets the version nor dispatches.
+     * Why:  A host re-render sends a shell (rowsDeferred) for a grid the browser already
+     *       mounted. If the browser nevertheless builds a NEW mount from that shell (a morph
+     *       swapped the element), this is how it gets its rows. Renderless, authorized like
+     *       every grid RPC.
+     * When: Client boot, when the config carries `rowsDeferred: true`.
+     *
+     * @return array{rows: list<array<string, mixed>>, footer: array<string, int|float|string>, version: int}
+     *
+     * @throws AuthorizationException When the grid's ->authorize() gate denies.
+     * @throws InvalidArgumentException When the grid is unknown, server-side, or not an editable rowsFrom() grid.
+     */
+    #[Renderless]
+    public function gridReseedRows(string $grid): array
+    {
+        $definition = $this->gridDefinition($grid);
+
+        if ($definition->isServerSide()) {
+            throw new InvalidArgumentException(
+                "Grid [{$grid}] is server-side; its rows load through gridFetch, not gridReseedRows()."
+            );
+        }
+
+        $property = $definition->getRowsProperty();
+        if (! $definition->isEditable() || $property === null) {
+            throw new InvalidArgumentException(
+                "Grid [{$grid}] is not an editable rowsFrom() grid; gridReseedRows is unavailable."
+            );
+        }
+
+        $this->authorizeGrid($definition);
+
+        /** @var list<array<string, mixed>> $rows */
+        $rows = (array) ($this->{$property} ?? []);
+        $serialized = app(RowSerializer::class)->serializeMany($definition, $rows);
+
+        $footer = [];
+        foreach ($definition->getFooter() as $aggregate) {
+            $footer[$aggregate->column] = $aggregate->compute($serialized);
+        }
+
+        return [
+            'rows' => $serialized,
+            'footer' => $footer,
+            'version' => (int) ($this->laraGridVersions[$grid] ?? 0),
+        ];
     }
 
     /**

@@ -12,7 +12,7 @@
  *       re-render (plan §2.4 Renderer / §1.3 G20 ARIA grid pattern).
  * When: Called by Renderer on paint (and on setRows via the store's change event, M3+).
  */
-import { el, toggleClass, cellDomId, cellMapKey } from '../util/dom.js';
+import { el, toggleClass, cellDomId, cellMapKey, setText } from '../util/dom.js';
 import { painterFor } from './CellPainters.js';
 
 export default class BodyRenderer {
@@ -33,16 +33,29 @@ export default class BodyRenderer {
             : (Number(virtualizeAbove) || 750);
         this.overscan = 20;
         this.virtual = false;
+        /** The mounted row window [windowStart, windowEnd) — every row when not virtual. */
         this.windowStart = -1;
         this.windowEnd = -1;
         this.scrollFrame = null;
         this.printing = false;
+        /**
+         * Cached row pitch in px (rowHeightPx reads two computed styles). Dropped whenever the
+         * Layout reports a metrics change (density/theme class write, container resize).
+         * @type {number|null}
+         */
+        this.rowHeight = null;
+        /** The virtual spacers above and below the mounted window (null when absent). */
+        this.topSpacer = null;
+        this.bottomSpacer = null;
         /** @type {Map<string, HTMLElement>} row element by `_k` (row-level addressing). */
         this.rowElByKey = new Map();
         /** @type {Map<string, HTMLElement>} cell element by cellMapKey(rowKey,colKey). */
         this.cellElByKey = new Map();
 
         this.onScroll = () => this.scheduleVirtualWindow();
+        if (typeof this.layout.onMetricsChanged === 'function') {
+            this.offMetrics = this.layout.onMetricsChanged(() => this.invalidateRowHeight());
+        }
         this.onBeforePrint = () => {
             if (this.virtual) {
                 this.printing = true;
@@ -79,6 +92,8 @@ export default class BodyRenderer {
         this.cellElByKey.clear();
         this.windowStart = 0;
         this.windowEnd = rows.length;
+        this.topSpacer = null;
+        this.bottomSpacer = null;
 
         for (let r = 0; r < rows.length; r++) {
             frag.appendChild(this.buildRow(rows[r], r, columns));
@@ -98,6 +113,14 @@ export default class BodyRenderer {
     }
 
     rowHeightPx() {
+        if (this.rowHeight !== null) {
+            return this.rowHeight;
+        }
+        this.rowHeight = this.measureRowHeight();
+        return this.rowHeight;
+    }
+
+    measureRowHeight() {
         if (typeof getComputedStyle !== 'function') {
             return 24;
         }
@@ -113,24 +136,57 @@ export default class BodyRenderer {
         return amount * font;
     }
 
-    virtualBounds(centerIndex = null) {
-        const rows = this.store.rows.length;
+    /** Forget the cached row pitch (density/theme class change, container resize). */
+    invalidateRowHeight() {
+        this.rowHeight = null;
+    }
+
+    /**
+     * The viewport in row terms: the first row index under the scroll position, how many rows
+     * fit, and the metrics that produced them.
+     */
+    viewportRows() {
         const height = this.rowHeightPx();
         const scroll = this.layout.refs.scroll;
         const viewport = scroll ? scroll.clientHeight : height * 30;
         const visible = Math.max(1, Math.ceil(viewport / height));
-        let first;
-        if (centerIndex !== null) {
-            first = centerIndex - Math.floor(visible / 2);
-        } else {
-            const headHeight = this.layout.refs.head ? this.layout.refs.head.offsetHeight || 0 : 0;
-            first = Math.floor(Math.max(0, (scroll ? scroll.scrollTop : 0) - headHeight) / height);
-        }
-        const start = Math.max(0, Math.min(rows, first - this.overscan));
+        const headHeight = this.layout.refs.head ? this.layout.refs.head.offsetHeight || 0 : 0;
+        const top = Math.max(0, (scroll ? scroll.scrollTop : 0) - headHeight);
+        const first = Math.floor(top / height);
+        return { first, last: first + visible - 1, visible, height, viewport, headHeight };
+    }
+
+    /**
+     * The row window the CURRENT scroll position produces (overscan on both sides). With a
+     * `centerIndex` (no scroll box to position — tests, detached mounts) the window is centred
+     * on that row instead.
+     */
+    virtualBounds(centerIndex = null) {
+        const rows = this.store.rows.length;
+        const { first, visible } = this.viewportRows();
+        const from = centerIndex !== null ? centerIndex - Math.floor(visible / 2) : first;
+        const start = Math.max(0, Math.min(rows, from - this.overscan));
         const end = Math.min(rows, start + visible + (this.overscan * 2));
         return { start, end };
     }
 
+    /**
+     * Position the scroll box so row `index` sits mid-viewport. Set BEFORE the window is
+     * computed, so the window built is the one this scroll position produces — the scroll
+     * event that follows then finds its window already mounted (one render per jump).
+     */
+    scrollToRow(index) {
+        const scroll = this.layout.refs.scroll;
+        if (!scroll) {
+            return false;
+        }
+        const { height, viewport, headHeight } = this.viewportRows();
+        const centre = Math.max(0, Math.floor((viewport - height) / 2));
+        scroll.scrollTop = Math.max(0, headHeight + (index * height) - centre);
+        return true;
+    }
+
+    /** Full build of rows [start, end) between two spacers (the initial virtual paint). */
     renderRange(start, end, columns = this.store.visibleColumns()) {
         const frag = document.createDocumentFragment();
         const height = this.rowHeightPx();
@@ -138,18 +194,206 @@ export default class BodyRenderer {
         this.cellElByKey.clear();
         this.windowStart = start;
         this.windowEnd = end;
+        this.topSpacer = null;
+        this.bottomSpacer = null;
 
         if (start > 0) {
-            frag.appendChild(this.spacer(start * height));
+            this.topSpacer = this.spacer(start * height);
+            frag.appendChild(this.topSpacer);
         }
         for (let index = start; index < end; index++) {
             frag.appendChild(this.buildRow(this.store.rows[index], index, columns));
         }
         if (end < this.store.rows.length) {
-            frag.appendChild(this.spacer((this.store.rows.length - end) * height));
+            this.bottomSpacer = this.spacer((this.store.rows.length - end) * height);
+            frag.appendChild(this.bottomSpacer);
         }
         this.bodyEl.textContent = '';
         this.bodyEl.appendChild(frag);
+    }
+
+    /**
+     * Move the mounted window to [start, end) by DELTA: rows that leave are removed, rows that
+     * enter are built and inserted before/after the kept block, the two spacers are resized.
+     * rowElByKey / cellElByKey receive only the delta and stay sized to the mounted rows. A
+     * kept row's aria-rowindex and stripe class are already right (its index did not change).
+     *
+     * @returns {{added: string[], removed: string[]}} the row keys that entered and left
+     */
+    shiftWindow(start, end, columns = this.store.visibleColumns()) {
+        const rows = this.store.rows;
+        const oldStart = this.windowStart;
+        const oldEnd = this.windowEnd;
+        if (oldStart < 0 || oldEnd <= oldStart || end <= oldStart || start >= oldEnd) {
+            // No window yet, or no overlap: a full range build is the delta.
+            const before = new Set(this.rowElByKey.keys());
+            this.renderRange(start, end, columns);
+            const added = [];
+            const removed = [];
+            for (const key of this.rowElByKey.keys()) {
+                if (!before.delete(key)) {
+                    added.push(key);
+                }
+            }
+            for (const key of before) {
+                removed.push(key);
+            }
+            return { added, removed };
+        }
+
+        const height = this.rowHeightPx();
+        const removed = [];
+        const added = [];
+        const drop = (index) => {
+            const row = rows[index];
+            const key = row && row._k;
+            const rowEl = key !== undefined ? this.rowElByKey.get(key) : null;
+            if (!rowEl) {
+                return;
+            }
+            this.unregisterRow(key, columns);
+            this.bodyEl.removeChild(rowEl);
+            removed.push(key);
+        };
+        for (let index = oldStart; index < Math.min(oldEnd, start); index++) {
+            drop(index);
+        }
+        for (let index = Math.max(oldStart, end); index < oldEnd; index++) {
+            drop(index);
+        }
+
+        if (start < oldStart) {
+            const frag = document.createDocumentFragment();
+            for (let index = start; index < oldStart; index++) {
+                frag.appendChild(this.buildRow(rows[index], index, columns));
+                added.push(rows[index]._k);
+            }
+            const firstKept = this.rowElByKey.get(rows[oldStart]._k) || this.bottomSpacer || null;
+            this.bodyEl.insertBefore(frag, firstKept);
+        }
+        if (end > oldEnd) {
+            const frag = document.createDocumentFragment();
+            for (let index = Math.max(oldEnd, start); index < end; index++) {
+                frag.appendChild(this.buildRow(rows[index], index, columns));
+                added.push(rows[index]._k);
+            }
+            this.bodyEl.insertBefore(frag, this.bottomSpacer || null);
+        }
+
+        this.windowStart = start;
+        this.windowEnd = end;
+        this.setSpacers(start, end, height);
+        return { added, removed };
+    }
+
+    /** Size (create/remove) the two spacers for a window [start, end). */
+    setSpacers(start, end, height) {
+        const rows = this.store.rows.length;
+        if (start > 0) {
+            if (!this.topSpacer) {
+                this.topSpacer = this.spacer(0);
+                this.bodyEl.insertBefore(this.topSpacer, this.bodyEl.firstChild || null);
+            }
+            this.topSpacer.style.height = (start * height) + 'px';
+        } else if (this.topSpacer) {
+            this.bodyEl.removeChild(this.topSpacer);
+            this.topSpacer = null;
+        }
+        if (end < rows) {
+            if (!this.bottomSpacer) {
+                this.bottomSpacer = this.spacer(0);
+                this.bodyEl.appendChild(this.bottomSpacer);
+            }
+            this.bottomSpacer.style.height = ((rows - end) * height) + 'px';
+        } else if (this.bottomSpacer) {
+            this.bodyEl.removeChild(this.bottomSpacer);
+            this.bottomSpacer = null;
+        }
+    }
+
+    /**
+     * Whether a row insert/remove can be applied to the mounted DOM in place. Not while virtual
+     * (the window shift owns that DOM), not with pad rows (they are recomputed per render), not
+     * before the first render, and not when the row count crosses the virtual threshold.
+     */
+    canMutateInPlace() {
+        const padTo = (this.store.layout && this.store.layout.padRows) || 0;
+        return !this.virtual && !this.printing && padTo === 0 && this.windowStart >= 0
+            && this.store.rows.length <= this.virtualThreshold;
+    }
+
+    /**
+     * Insert the rows now at store indexes [index, index + keys.length) into the DOM, then
+     * restamp the rows after them (aria-rowindex, stripe, serial ordinal).
+     * @returns {boolean} false when the body declined (caller falls back to a full render)
+     */
+    insertRowsAt(keys, index) {
+        if (!this.canMutateInPlace()) {
+            return false;
+        }
+        const rows = this.store.rows;
+        const columns = this.store.visibleColumns();
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < keys.length; i++) {
+            const row = rows[index + i];
+            if (!row || row._k !== keys[i]) {
+                return false; // the store and the delta disagree — rebuild instead
+            }
+            frag.appendChild(this.buildRow(row, index + i, columns));
+        }
+        const after = rows[index + keys.length];
+        const ref = after ? this.rowElByKey.get(after._k) || null : null;
+        this.bodyEl.insertBefore(frag, ref);
+        this.restampRows(index + keys.length, columns);
+        return true;
+    }
+
+    /**
+     * Remove rows by key from the DOM (they are already gone from the store), then restamp
+     * the rows from the first removed index on.
+     * @returns {boolean}
+     */
+    removeRows(keys, index) {
+        if (!this.canMutateInPlace()) {
+            return false;
+        }
+        const columns = this.store.visibleColumns();
+        for (const key of keys) {
+            const rowEl = this.rowElByKey.get(key);
+            if (rowEl) {
+                this.unregisterRow(key, columns);
+                this.bodyEl.removeChild(rowEl);
+            }
+        }
+        this.restampRows(index, columns);
+        return true;
+    }
+
+    /** Re-stamp index-derived row state (aria-rowindex, stripe, serial cell) from `from` on. */
+    restampRows(from, columns) {
+        const rows = this.store.rows;
+        const serials = columns.filter((column) => column.painter === 'serial');
+        for (let i = from; i < rows.length; i++) {
+            const key = rows[i]._k;
+            const rowEl = this.rowElByKey.get(key);
+            if (!rowEl) {
+                continue;
+            }
+            rowEl.setAttribute('aria-rowindex', String(i + 2));
+            toggleClass(rowEl, 'lgrid-row--stripe', this.striped && i % 2 === 1);
+            for (const column of serials) {
+                setText(this.cellElByKey.get(cellMapKey(key, column.key)), i + 1);
+            }
+        }
+        this.windowEnd = rows.length;
+    }
+
+    /** Drop a row (and its cells) from the element indexes. */
+    unregisterRow(key, columns = this.store.visibleColumns()) {
+        this.rowElByKey.delete(key);
+        for (const column of columns) {
+            this.cellElByKey.delete(cellMapKey(key, column.key));
+        }
     }
 
     spacer(height) {
@@ -159,6 +403,11 @@ export default class BodyRenderer {
         return spacer;
     }
 
+    /**
+     * Scroll handler (one rAF per burst): shift the window only when the viewport nears the
+     * edge of the buffer — the inner half of the overscan on each side is a dead band, so a
+     * one-row scroll builds nothing.
+     */
     scheduleVirtualWindow() {
         if (!this.virtual || this.scrollFrame !== null) {
             return;
@@ -168,14 +417,25 @@ export default class BodyRenderer {
             : (callback) => setTimeout(callback, 0);
         this.scrollFrame = request(() => {
             this.scrollFrame = null;
+            if (!this.virtual) {
+                return;
+            }
+            const { first, last } = this.viewportRows();
+            const margin = Math.floor(this.overscan / 2);
+            const rows = this.store.rows.length;
+            const nearTop = first < this.windowStart + margin && this.windowStart > 0;
+            const nearBottom = last > this.windowEnd - 1 - margin && this.windowEnd < rows;
+            if (!nearTop && !nearBottom) {
+                return;
+            }
             const { start, end } = this.virtualBounds();
             if (start === this.windowStart && end === this.windowEnd) {
                 return;
             }
             this.bus.emit('body:will-render');
-            this.renderRange(start, end);
+            const delta = this.shiftWindow(start, end);
             this.bus.emit('body:did-render');
-            this.bus.emit('body:window-rendered');
+            this.bus.emit('body:window-rendered', delta);
         });
     }
 
@@ -275,7 +535,7 @@ export default class BodyRenderer {
     }
 
     ensureCellElFor(rowKey, colKey) {
-        let cell = this.cellElFor(rowKey, colKey);
+        const cell = this.cellElFor(rowKey, colKey);
         if (cell || !this.virtual) {
             return cell;
         }
@@ -283,13 +543,16 @@ export default class BodyRenderer {
         if (!hit) {
             return null;
         }
+        // Jump: scroll first, then build the window that scroll position produces — so the
+        // scroll event this raises finds its window already mounted (one render per jump).
+        const { start, end } = this.scrollToRow(hit.index)
+            ? this.virtualBounds()
+            : this.virtualBounds(hit.index);
         this.bus.emit('body:will-render');
-        const { start, end } = this.virtualBounds(hit.index);
-        this.renderRange(start, end);
+        const delta = this.shiftWindow(start, end);
         this.bus.emit('body:did-render');
-        this.bus.emit('body:window-rendered');
-        cell = this.cellElFor(rowKey, colKey);
-        return cell;
+        this.bus.emit('body:window-rendered', delta);
+        return this.cellElFor(rowKey, colKey);
     }
 
     /**
@@ -323,6 +586,9 @@ export default class BodyRenderer {
     destroy() {
         if (this.layout.refs.scroll) {
             this.layout.refs.scroll.removeEventListener('scroll', this.onScroll);
+        }
+        if (this.offMetrics) {
+            this.offMetrics();
         }
         if (typeof window !== 'undefined') {
             window.removeEventListener('beforeprint', this.onBeforePrint);

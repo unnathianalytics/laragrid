@@ -35,6 +35,39 @@ use LaraGrid\Validation\RuleCompiler;
  */
 class OpApplier
 {
+    // ---- Batch context ------------------------------------------------------------------------
+    //
+    // Set at the start of apply() and cleared at its end. A draft restore is N rows x C columns
+    // of SET ops; without these, every op paid an O(N) key scan and every blank check rebuilt
+    // the fresh-row template and re-walked the rows after it.
+
+    /**
+     * Row `_k` => array index, rebuilt by the structural ops (insert/remove/dup).
+     *
+     * @var array<string, int>
+     */
+    private array $indexByKey = [];
+
+    /**
+     * The grid's fresh-row template, the reference every blank check compares against.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $template = null;
+
+    /**
+     * Blank verdict per row `_k`, dropped for a row whenever an op writes into it.
+     *
+     * @var array<string, bool>
+     */
+    private array $blankByKey = [];
+
+    /**
+     * Index of the last non-blank row: -1 when every row is blank, null when unknown (recomputed
+     * lazily after a structural op). "Row i is blank trailing" is simply i > this.
+     */
+    private ?int $lastNonBlank = null;
+
     public function __construct(
         private readonly RuleCompiler $ruleCompiler = new RuleCompiler,
         private readonly Evaluator $evaluator = new Evaluator,
@@ -48,6 +81,20 @@ class OpApplier
      * @param  int  $version  The grid's current server version.
      */
     public function apply(Grid $grid, array $rows, OpBatch $batch, int $version = 0): OpResult
+    {
+        $this->beginBatch($grid, $rows);
+
+        try {
+            return $this->applyBatch($grid, $rows, $batch, $version);
+        } finally {
+            $this->endBatch();
+        }
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $rows
+     */
+    private function applyBatch(Grid $grid, array $rows, OpBatch $batch, int $version): OpResult
     {
         if ($batch->baseVersion !== $version) {
             $results = [];
@@ -126,7 +173,7 @@ class OpApplier
      */
     private function applySet(Grid $grid, array $rows, Op $op, array $refreshCols): array
     {
-        $index = $this->indexOfKey($rows, (string) $op->row);
+        $index = $this->indexOfKey((string) $op->row);
         if ($index === null) {
             return [$rows, $this->fail($op, '_row', 'That row no longer exists.', $rows), false];
         }
@@ -143,6 +190,7 @@ class OpApplier
 
         $cast = $this->castValue($column, $op->value);
         $rows[$index][$column->key] = $cast;
+        $this->rowChanged($grid, $rows, $index);
 
         // Validate the cast value against the column's server ruleset (skip blank trailing rows).
         $errors = [];
@@ -160,6 +208,8 @@ class OpApplier
             $rows[$index] = $this->runSelectHook($column, $rows[$index], $cast, $patch);
             $rows[$index] = $this->runCellHook($grid, $rows[$index], $column->key, $patch);
             $rows[$index] = $this->recomputeFormulas($grid, $rows[$index], $patch);
+            // A hook may have written other editable cells of this row.
+            $this->rowChanged($grid, $rows, $index);
         }
 
         $rowKey = (string) $op->row;
@@ -191,7 +241,7 @@ class OpApplier
         }
 
         $keys = $op->rows ?? [];
-        $sourceIndex = $this->indexOfKey($rows, $keys[0]);
+        $sourceIndex = $this->indexOfKey($keys[0]);
         if ($sourceIndex === null) {
             return [$rows, $this->fail($op, '_row', 'The source row no longer exists.', $rows), false];
         }
@@ -206,7 +256,7 @@ class OpApplier
         $patch = [];
         $resultErrors = [];
         foreach (array_slice($keys, 1) as $key) {
-            $index = $this->indexOfKey($rows, $key);
+            $index = $this->indexOfKey($key);
             if ($index === null) {
                 $resultErrors[$key][$column->key] = 'That row no longer exists.';
 
@@ -218,6 +268,7 @@ class OpApplier
                 continue;
             }
             $rows[$index][$column->key] = $sourceValue;
+            $this->rowChanged($grid, $rows, $index);
             $rowPatch = [];
             $validation = $this->isBlankTrailing($grid, $rows, $index)
                 ? []
@@ -243,6 +294,7 @@ class OpApplier
             // without this a fill could bypass an invariant every typed commit enforces.
             $rows[$index] = $this->runCellHook($grid, $rows[$index], $column->key, $rowPatch);
             $rows[$index] = $this->recomputeFormulas($grid, $rows[$index], $rowPatch);
+            $this->rowChanged($grid, $rows, $index);
             $patch[$key] = [$column->key => $sourceValue] + $rowPatch;
         }
 
@@ -267,14 +319,14 @@ class OpApplier
      */
     private function applyInsert(Grid $grid, array $rows, Op $op): array
     {
-        if ($this->indexOfKey($rows, (string) $op->as) !== null) {
+        if ($this->indexOfKey((string) $op->as) !== null) {
             // Applied-but-lost responses are safe to retry: the echoed key is the idempotency key.
             return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
         }
         $blank = $grid->makeNewRow((string) $op->as);
 
-        $beforeIndex = $op->before !== null ? $this->indexOfKey($rows, $op->before) : null;
-        $afterIndex = $op->after !== null ? $this->indexOfKey($rows, $op->after) : null;
+        $beforeIndex = $op->before !== null ? $this->indexOfKey($op->before) : null;
+        $afterIndex = $op->after !== null ? $this->indexOfKey($op->after) : null;
         if ($beforeIndex !== null) {
             array_splice($rows, $beforeIndex, 0, [$blank]);
         } elseif ($afterIndex === null) {
@@ -282,6 +334,7 @@ class OpApplier
         } else {
             array_splice($rows, $afterIndex + 1, 0, [$blank]);
         }
+        $this->reindex($rows);
 
         return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
     }
@@ -294,7 +347,7 @@ class OpApplier
      */
     private function applyRemove(Grid $grid, array $rows, Op $op): array
     {
-        $index = $this->indexOfKey($rows, (string) $op->row);
+        $index = $this->indexOfKey((string) $op->row);
         if ($index === null) {
             // Already gone — idempotent success.
             return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
@@ -306,6 +359,8 @@ class OpApplier
         }
 
         array_splice($rows, $index, 1);
+        unset($this->blankByKey[(string) $op->row]);
+        $this->reindex($rows);
 
         if ($grid->getAfterRowRemoveHook() !== null) {
             ($grid->getAfterRowRemoveHook())();
@@ -323,10 +378,10 @@ class OpApplier
      */
     private function applyDup(Grid $grid, array $rows, Op $op): array
     {
-        if ($this->indexOfKey($rows, (string) $op->as) !== null) {
+        if ($this->indexOfKey((string) $op->as) !== null) {
             return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
         }
-        $index = $this->indexOfKey($rows, (string) $op->row);
+        $index = $this->indexOfKey((string) $op->row);
         if ($index === null) {
             return [$rows, $this->fail($op, '_row', 'That row no longer exists.', $rows), false];
         }
@@ -334,6 +389,7 @@ class OpApplier
         $clone = $rows[$index];
         $clone['_k'] = (string) $op->as;
         array_splice($rows, $index + 1, 0, [$clone]);
+        $this->reindex($rows);
 
         return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
     }
@@ -517,31 +573,18 @@ class OpApplier
      */
     private function rowsForTotals(Grid $grid, array $rows): array
     {
-        $out = $rows;
-        while ($out !== [] && $this->isBlankRow($grid, end($out))) {
-            array_pop($out);
-        }
-
-        return $out;
+        return array_slice($rows, 0, $this->lastNonBlankIndex($grid, $rows) + 1);
     }
 
     /**
-     * Whether the row at $index is a blank trailing row (blank AND nothing non-blank follows it).
+     * Whether the row at $index is a blank trailing row (blank AND nothing non-blank follows it)
+     * — i.e. it sits after the last non-blank row.
      *
      * @param  list<array<string, mixed>>  $rows
      */
     private function isBlankTrailing(Grid $grid, array $rows, int $index): bool
     {
-        if (! $this->isBlankRow($grid, $rows[$index])) {
-            return false;
-        }
-        for ($i = $index + 1; $i < count($rows); $i++) {
-            if (! $this->isBlankRow($grid, $rows[$i])) {
-                return false;
-            }
-        }
-
-        return true;
+        return $index > $this->lastNonBlankIndex($grid, $rows);
     }
 
     /**
@@ -550,11 +593,20 @@ class OpApplier
      * Columns the template leaves null fall back to the classic empty check (null / '' /
      * 0 / '0' / false). Non-editable carried values (ids, formulas) never count.
      *
+     * The verdict is cached per `_k` for the batch; rowChanged() drops it when an op writes
+     * into the row.
+     *
      * @param  array<string, mixed>  $row
      */
     private function isBlankRow(Grid $grid, array $row): bool
     {
-        $template = $grid->newRowTemplate();
+        $key = isset($row['_k']) ? (string) $row['_k'] : null;
+        if ($key !== null && isset($this->blankByKey[$key])) {
+            return $this->blankByKey[$key];
+        }
+
+        $template = $this->template ??= $grid->newRowTemplate();
+        $blank = true;
 
         foreach ($grid->getColumns() as $column) {
             if (! $column->isEditable()) {
@@ -566,18 +618,24 @@ class OpApplier
             if ($default !== null) {
                 // Loose comparison bridges cast/hydration boundaries ('1' == 1).
                 if ($value != $default && $value !== null && $value !== '') {
-                    return false;
+                    $blank = false;
+                    break;
                 }
 
                 continue;
             }
 
             if ($value !== null && $value !== '' && $value !== 0 && $value !== '0' && $value !== false) {
-                return false;
+                $blank = false;
+                break;
             }
         }
 
-        return true;
+        if ($key !== null) {
+            $this->blankByKey[$key] = $blank;
+        }
+
+        return $blank;
     }
 
     /**
@@ -595,22 +653,103 @@ class OpApplier
         return $count;
     }
 
-    // ---- Small utilities ------------------------------------------------------------------
+    // ---- Batch context lifecycle ----------------------------------------------------------
 
     /**
-     * The array index of the row bearing `_k` = $key, or null.
+     * @param  list<array<string, mixed>>  $rows
+     */
+    private function beginBatch(Grid $grid, array $rows): void
+    {
+        $this->template = $grid->newRowTemplate();
+        $this->blankByKey = [];
+        $this->lastNonBlank = null;
+        $this->reindex($rows);
+    }
+
+    private function endBatch(): void
+    {
+        $this->indexByKey = [];
+        $this->template = null;
+        $this->blankByKey = [];
+        $this->lastNonBlank = null;
+    }
+
+    /**
+     * Rebuild the `_k` => index map after a structural op; the last-non-blank index is
+     * recomputed on its next use.
      *
      * @param  list<array<string, mixed>>  $rows
      */
-    private function indexOfKey(array $rows, string $key): ?int
+    private function reindex(array $rows): void
     {
+        $this->indexByKey = [];
         foreach ($rows as $i => $row) {
-            if (($row['_k'] ?? null) === $key) {
+            if (isset($row['_k'])) {
+                $this->indexByKey[(string) $row['_k']] ??= $i;
+            }
+        }
+        $this->lastNonBlank = null;
+    }
+
+    /**
+     * An op wrote into the row at $index: forget its blank verdict and move the last-non-blank
+     * marker if the write changed which row that is.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     */
+    private function rowChanged(Grid $grid, array $rows, int $index): void
+    {
+        if (isset($rows[$index]['_k'])) {
+            unset($this->blankByKey[(string) $rows[$index]['_k']]);
+        }
+
+        if ($this->lastNonBlank === null) {
+            return; // unknown anyway; the next lastNonBlankIndex() call rescans
+        }
+
+        if (! $this->isBlankRow($grid, $rows[$index])) {
+            $this->lastNonBlank = max($this->lastNonBlank, $index);
+        } elseif ($index === $this->lastNonBlank) {
+            $this->lastNonBlank = $this->scanLastNonBlank($grid, $rows, $index - 1);
+        }
+    }
+
+    /**
+     * The index of the last non-blank row (-1 when every row is blank), memoised for the batch.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     */
+    private function lastNonBlankIndex(Grid $grid, array $rows): int
+    {
+        return $this->lastNonBlank ??= $this->scanLastNonBlank($grid, $rows, count($rows) - 1);
+    }
+
+    /**
+     * Walk back from $from to the first non-blank row. Cheap in practice: a grid carries only
+     * a few trailing blanks, so the walk stops almost immediately.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     */
+    private function scanLastNonBlank(Grid $grid, array $rows, int $from): int
+    {
+        for ($i = $from; $i >= 0; $i--) {
+            if (! $this->isBlankRow($grid, $rows[$i])) {
                 return $i;
             }
         }
 
-        return null;
+        return -1;
+    }
+
+    // ---- Small utilities ------------------------------------------------------------------
+
+    /**
+     * The array index of the row bearing `_k` = $key, or null — an O(1) read of the batch's
+     * key map that the structural ops keep current.
+     */
+    private function indexOfKey(string $key): ?int
+    {
+        return $this->indexByKey[$key] ?? null;
     }
 
     /**

@@ -53,6 +53,9 @@ class ServerGridComponent extends Component
     /** Declares ->persistQuery() on the grid (session-lifetime query persistence). */
     public bool $persist = false;
 
+    /** How many times the Type filter's options closure ran (a DB lookup in a real host). */
+    public static int $typeOptionLookups = 0;
+
     /** Storage key override handed to ->persistQuery() (null = the grid name). */
     public ?string $persistKey = null;
 
@@ -84,7 +87,11 @@ class ServerGridComponent extends Component
             ->searchable(['name'])
             ->filters([
                 SelectFilter::make('type')->label('Type')
-                    ->options(['goods' => 'Goods', 'service' => 'Service']),
+                    ->options(function (): array {
+                        static::$typeOptionLookups++;
+
+                        return ['goods' => 'Goods', 'service' => 'Service'];
+                    }),
             ])
             ->exportable($this->exportOff ? false : $this->formats, fileName: 'item-register', limit: $this->limit)
             ->columns([

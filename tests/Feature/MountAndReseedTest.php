@@ -45,7 +45,38 @@ it('embeds config xss-safely — a </script> in row data cannot break out of the
 
     expect($html)
         ->not->toContain('</script><script>alert(1)')
-        ->toContain('\\u003C'); // @json hex-escapes every < inside the block
+        ->toContain('\\u003C'); // JSON_HEX_TAG hex-escapes every < inside the block
+});
+
+it('embeds the config with lean escapes: raw unicode and slashes, one closing script tag', function () {
+    $grid = Grid::make('lean')->columns([TextColumn::make('name')]);
+
+    $html = (string) $this->blade(
+        '<x-laragrid :grid="$grid" :rows="$rows" />',
+        ['grid' => $grid, 'rows' => [['name' => '₹ 1,000 / "quoted" </script><b>']]],
+    );
+
+    expect($html)
+        // No \u20b9 for the rupee sign, no \/ for the slash, plain \" for the quotes.
+        ->toContain('₹ 1,000 / \\"quoted\\" \\u003C/script\\u003E\\u003Cb\\u003E')
+        ->and(substr_count($html, '</script>'))->toBe(1);
+
+    preg_match('/data-lgrid-config>(.*?)<\/script>/s', $html, $m);
+    $decoded = json_decode($m[1], true, 512, JSON_THROW_ON_ERROR);
+    expect($decoded['rows'][0]['name'])->toBe('₹ 1,000 / "quoted" </script><b>');
+});
+
+it('keeps the page up when a row value carries invalid utf-8', function () {
+    $grid = Grid::make('bytes')->columns([TextColumn::make('name')]);
+
+    $html = (string) $this->blade(
+        '<x-laragrid :grid="$grid" :rows="$rows" />',
+        ['grid' => $grid, 'rows' => [['name' => "bad \xB1 byte"]]],
+    );
+
+    preg_match('/data-lgrid-config>(.*?)<\/script>/s', $html, $m);
+    $decoded = json_decode($m[1], true, 512, JSON_THROW_ON_ERROR);
+    expect($decoded['rows'][0]['name'])->toBe("bad \u{FFFD} byte");
 });
 
 it('computes the in-memory footer total into the config', function () {

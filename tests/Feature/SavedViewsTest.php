@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use LaraGrid\Columns\TextColumn;
@@ -177,4 +178,33 @@ it('caps views per grid but still allows overwriting at the cap', function () {
 
     // Overwriting an existing name is an update, not a new slot.
     expect($host->gridViewSave('items', 'Two', currentState())['views'])->toHaveCount(2);
+});
+
+it('answers a save with the same list a fresh read returns, reading the table no more than needed', function () {
+    $host = viewsHost();
+    $host->gridViewSave('items', 'beta', []);
+    $host->gridViewSave('items', 'Delta', []);
+
+    $queriesFor = function (callable $save): array {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $result = $save();
+        $count = count(array_filter(DB::getQueryLog(), fn (array $q): bool => str_contains($q['query'], 'laragrid_views')));
+        DB::disableQueryLog();
+
+        return [$result, $count];
+    };
+
+    // Overwrite: pre-save list, upsert, id lookup — the returned list is the pre-save list
+    // updated in place, identical to what a fresh read returns.
+    [$overwrite, $overwriteQueries] = $queriesFor(fn () => $host->gridViewSave('items', 'Delta', currentState()));
+    expect($overwriteQueries)->toBe(3)
+        ->and($overwrite['views'])->toBe($host->gridViews('items')['views'])
+        ->and(collect($overwrite['views'])->firstWhere('name', 'Delta')['state']['search'])->toBe('bol');
+
+    // New name: one extra read, because only the store's ordering knows where it sorts.
+    [$created, $createdQueries] = $queriesFor(fn () => $host->gridViewSave('items', 'alpha', []));
+    expect($createdQueries)->toBe(4)
+        ->and($created['views'])->toBe($host->gridViews('items')['views'])
+        ->and(array_column($created['views'], 'name'))->toContain('alpha');
 });

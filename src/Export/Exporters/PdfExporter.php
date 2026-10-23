@@ -60,6 +60,21 @@ final class PdfExporter implements Exporter
         611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584,
     ];
 
+    // Streaming state for the document being written; startDocument() resets it.
+
+    /** Bytes written so far, which is also the next object's byte offset. */
+    private int $written = 0;
+
+    /**
+     * Byte offset of each object written so far, by object id.
+     *
+     * @var array<int, int>
+     */
+    private array $offsets = [];
+
+    /** Pages written so far. */
+    private int $pageCount = 0;
+
     public function extension(): string
     {
         return 'pdf';
@@ -89,19 +104,22 @@ final class PdfExporter implements Exporter
         $widths = array_map(fn (float $hint): float => $hint / $natural * $usable, $hints);
 
         $registry = app(FormatRegistry::class);
-        $pages = [];
         $page = '';
         $y = 0.0;
 
-        $newPage = function (bool $first = false) use (&$page, &$pages, &$y, $data, $widths, $pageW, $pageH): void {
+        // The document streams: each page's objects are written as soon as the page is full,
+        // so memory holds one page, never the whole file.
+        $this->startDocument();
+
+        $newPage = function (bool $first = false) use (&$page, &$y, $data, $widths, $pageW, $pageH): void {
             if ($page !== '') {
-                $pages[] = $page;
+                $this->writePage($page);
             }
             $page = '';
             $y = $pageH - self::MARGIN;
 
             // Page number (known immediately — no second pass).
-            $n = count($pages) + 1;
+            $n = $this->pageCount + 1;
             $page .= $this->text('Page '.$n, self::MARGIN, self::MARGIN - 14, 7, bold: false, gray: 0.45);
 
             if ($first) {
@@ -134,9 +152,8 @@ final class PdfExporter implements Exporter
             $y = $this->bodyRow($page, $y, $totals, $data->columns, $widths, $registry, bold: true);
         }
 
-        $pages[] = $page;
-
-        echo $this->assemble($pages, $pageW, $pageH, $data->title);
+        $this->writePage($page);
+        $this->finishDocument($pageW, $pageH, $data->title);
     }
 
     // ---- Table painting ------------------------------------------------------------------------
@@ -284,61 +301,79 @@ final class PdfExporter implements Exporter
         return $converted === false ? (string) preg_replace('/[^\x20-\x7E]/', '?', $text) : $converted;
     }
 
-    // ---- Document assembly -----------------------------------------------------------------------
+    // ---- Document streaming ------------------------------------------------------------------------
+    //
+    // Object ids are fixed: 1 catalog, 2 pages tree, 3 F1, 4 F2, 5 info, then a [page, contents]
+    // pair per painted page (6 + 2i, 7 + 2i). Page objects are written as each page completes;
+    // ids 1 to 5 follow the last page, because the pages tree needs the final page count. A PDF
+    // body may hold its objects in any order: the xref table, written last, maps every id to
+    // the byte offset where its object begins, counted here as the bytes go out.
 
-    /**
-     * Assemble the object graph — catalog, pages tree, the two fonts, one page + one content
-     * stream per painted page, the info dict — with a byte-exact xref table.
-     *
-     * @param  list<string>  $pages
-     */
-    private function assemble(array $pages, float $pageW, float $pageH, string $title): string
+    private function startDocument(): void
+    {
+        $this->written = 0;
+        $this->offsets = [];
+        $this->pageCount = 0;
+        $this->emit("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+    }
+
+    /** Write one finished page: its page object and its (Flate-compressed) content stream. */
+    private function writePage(string $content): void
     {
         $compress = function_exists('gzcompress');
+        $stream = $compress ? (string) gzcompress($content, 6) : $content;
+        $filter = $compress ? ' /Filter /FlateDecode' : '';
 
-        // Fixed ids: 1 catalog, 2 pages, 3 F1, 4 F2, 5 info; then [page, contents] pairs.
+        $id = 6 + 2 * $this->pageCount;
+        $this->pageCount++;
+
+        $this->writeObject($id, '<< /Type /Page /Parent 2 0 R'
+            .' /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >>'
+            .' /Contents '.($id + 1).' 0 R >>');
+        $this->writeObject($id + 1, '<< /Length '.strlen($stream).$filter." >>\nstream\n".$stream."\nendstream");
+    }
+
+    /**
+     * Write the catalog, the pages tree, the fonts and the info dict, then the xref table
+     * (ids in ascending order, offsets as recorded) and the trailer.
+     */
+    private function finishDocument(float $pageW, float $pageH, string $title): void
+    {
         $kids = [];
-        foreach (array_keys($pages) as $i) {
+        for ($i = 0; $i < $this->pageCount; $i++) {
             $kids[] = (6 + 2 * $i).' 0 R';
         }
 
-        $objects = [
-            1 => '<< /Type /Catalog /Pages 2 0 R >>',
-            2 => '<< /Type /Pages /Kids ['.implode(' ', $kids).'] /Count '.count($pages)
-                .sprintf(' /MediaBox [0 0 %.2F %.2F] >>', $pageW, $pageH),
-            3 => '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
-            4 => '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>',
-            5 => '<< /Title ('.str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $this->winAnsi($title)).')'
-                .' /Producer (LaraGrid) /CreationDate (D:'.date('YmdHis').') >>',
-        ];
+        $this->writeObject(1, '<< /Type /Catalog /Pages 2 0 R >>');
+        $this->writeObject(2, '<< /Type /Pages /Kids ['.implode(' ', $kids).'] /Count '.$this->pageCount
+            .sprintf(' /MediaBox [0 0 %.2F %.2F] >>', $pageW, $pageH));
+        $this->writeObject(3, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+        $this->writeObject(4, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+        $this->writeObject(5, '<< /Title ('.str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $this->winAnsi($title)).')'
+            .' /Producer (LaraGrid) /CreationDate (D:'.date('YmdHis').') >>');
 
-        foreach ($pages as $i => $content) {
-            $stream = $compress ? (string) gzcompress($content, 6) : $content;
-            $filter = $compress ? ' /Filter /FlateDecode' : '';
+        ksort($this->offsets);
+        $xrefAt = $this->written;
+        $count = count($this->offsets) + 1;
 
-            $objects[6 + 2 * $i] = '<< /Type /Page /Parent 2 0 R'
-                .' /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >>'
-                .' /Contents '.(7 + 2 * $i).' 0 R >>';
-            $objects[7 + 2 * $i] = '<< /Length '.strlen($stream).$filter." >>\nstream\n".$stream."\nendstream";
+        $xref = "xref\n0 {$count}\n0000000000 65535 f \n";
+        foreach ($this->offsets as $offset) {
+            $xref .= sprintf("%010d 00000 n \n", $offset);
         }
+        $xref .= "trailer\n<< /Size {$count} /Root 1 0 R /Info 5 0 R >>\nstartxref\n{$xrefAt}\n%%EOF\n";
 
-        // Serialize with byte-exact offsets — the xref table is what makes the file a PDF.
-        $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
-        $offsets = [];
-        ksort($objects);
-        foreach ($objects as $id => $body) {
-            $offsets[$id] = strlen($pdf);
-            $pdf .= $id." 0 obj\n".$body."\nendobj\n";
-        }
+        $this->emit($xref);
+    }
 
-        $xrefAt = strlen($pdf);
-        $count = count($objects) + 1;
-        $pdf .= "xref\n0 {$count}\n0000000000 65535 f \n";
-        foreach ($offsets as $offset) {
-            $pdf .= sprintf("%010d 00000 n \n", $offset);
-        }
-        $pdf .= "trailer\n<< /Size {$count} /Root 1 0 R /Info 5 0 R >>\nstartxref\n{$xrefAt}\n%%EOF\n";
+    private function writeObject(int $id, string $body): void
+    {
+        $this->offsets[$id] = $this->written;
+        $this->emit($id." 0 obj\n".$body."\nendobj\n");
+    }
 
-        return $pdf;
+    private function emit(string $bytes): void
+    {
+        echo $bytes;
+        $this->written += strlen($bytes);
     }
 }

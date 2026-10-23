@@ -178,6 +178,10 @@ export default class GridCore {
         this.offEmptyState = this.bus.on('rows:changed', () => this.renderEmptyState());
         this.renderEmptyState();
 
+        // A shell config (host re-render of a grid the browser already held, then a morph that
+        // swapped the mount element) carries no rows — fetch them now.
+        this.loadDeferredRows();
+
         this.installMorphGuard();
 
         /** Total init script time in ms (store build excluded — it runs in the constructor). */
@@ -472,12 +476,12 @@ export default class GridCore {
         );
         this.draftStore.init();
 
-        this.offSyncStateDom = this.bus.on('sync-state', (state) => this.publishSyncState(state));
+        this.offSyncStateDom = this.bus.on('sync-state', () => this.publishSyncState());
         this.onSyncRetry = () => this.sync.retryNow();
         if (this.refs.syncRetry) {
             this.refs.syncRetry.addEventListener('click', this.onSyncRetry);
         }
-        this.publishSyncState(this.sync.state());
+        this.publishSyncState();
 
         // Open the editor on a double-click of an editable cell. Pad rows (Busy dedicated
         // blanks) are inert — without the guard the editor would open at the PREVIOUS active
@@ -493,7 +497,7 @@ export default class GridCore {
         // TSV paste (M5, G15): the grid root owns the paste event in NAV mode; while the editor
         // is open its input handles paste natively. R7: the paste EVENT is permission-free.
         this.onPaste = (e) => {
-            if (this.editorManager.isEditing()) {
+            if (this.editorManager.isEditing() || this.store.rowsDeferred) {
                 return;
             }
             const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
@@ -518,12 +522,15 @@ export default class GridCore {
         this.lastActiveRow = null;
 
         // Row ops (Insert/F7 repeat/Delete/Ctrl+D) → optimistic store mutation + op enqueue.
+        // While deferred rows are in flight a structural op would be wiped by the reseed that
+        // delivers them (and its insert op would race it on the server) — the keys are inert.
+        const whenRowsLoaded = (op) => () => (this.store.rowsDeferred ? undefined : op());
         this.rowOps = {
-            insert: () => this.rowInsert(),
-            delete: () => this.rowDelete(),
-            repeatAbove: () => this.rowRepeatAbove(),
-            fillDown: () => this.rowFillDown(),
-            clear: () => this.clearSelectedCells(),
+            insert: whenRowsLoaded(() => this.rowInsert()),
+            delete: whenRowsLoaded(() => this.rowDelete()),
+            repeatAbove: whenRowsLoaded(() => this.rowRepeatAbove()),
+            fillDown: whenRowsLoaded(() => this.rowFillDown()),
+            clear: whenRowsLoaded(() => this.clearSelectedCells()),
         };
 
         // Footer live-total reconcile from op responses.
@@ -706,12 +713,13 @@ export default class GridCore {
         if (!this.editorManager || !this.sync) {
             return;
         }
-        const cells = this.store.selectedCells();
+        const cells = this.store.selectedCellAddresses();
         const items = [];
         let cleared = 0;
         for (const { rowKey, colKey } of cells) {
             const column = this.store.columnByKey(colKey);
-            if (!column || !column.editable || this.store.cellLocked(rowKey, colKey)) {
+            const hit = this.store.rowByKey.get(rowKey);
+            if (!column || !column.editable || !hit || this.store.cellLocked(hit.row, column)) {
                 continue;
             }
             const result = this.editorManager.pasteCell(rowKey, colKey, column, '');
@@ -1002,6 +1010,48 @@ export default class GridCore {
         }
     }
 
+    /**
+     * Fetch the rows of a mount that booted from a SHELL config (`rowsDeferred`, perf plan P1)
+     * through ONE gridReseedRows call, and adopt rows, footer and the server's protocol version
+     * so the next op batch is not refused as stale. If something else reseeded the store while
+     * the call was in flight (a host lgrid:reseed, a draft restore) its rows win and the
+     * response is dropped. A failure clears the deferral so the empty state can paint, and is
+     * logged — a silently empty grid is undebuggable.
+     *
+     * @returns {Promise<boolean>} whether the fetched rows were applied
+     */
+    async loadDeferredRows() {
+        if (!this.store.rowsDeferred) {
+            return false;
+        }
+        const wire = this.refs.wire;
+        if (!wire || typeof wire.gridReseedRows !== 'function') {
+            this.store.rowsDeferred = false;
+            this.renderEmptyState();
+            return false;
+        }
+        try {
+            const payload = (await wire.gridReseedRows(this.store.name)) || {};
+            if (!this.store.rowsDeferred) {
+                return false;
+            }
+            this.store.reseed(Array.isArray(payload.rows) ? payload.rows : []);
+            if (typeof payload.version === 'number') {
+                this.store.version = payload.version;
+            }
+            this.applyFooter(payload.footer || {});
+            return true;
+        } catch (error) {
+            if (this.store.rowsDeferred) {
+                this.store.rowsDeferred = false;
+                this.renderEmptyState();
+            }
+            // eslint-disable-next-line no-console
+            console.error('[laragrid:' + this.store.name + '] gridReseedRows failed:', error);
+            return false;
+        }
+    }
+
     /** Apply reconciled footer totals from an op response to the footer chrome. */
     applyFooter(footer) {
         this.store.pageTotals = footer || {};
@@ -1059,11 +1109,30 @@ export default class GridCore {
             await this.draftStore.clear();
         }
         this.lastSavedAt = Date.now();
-        this.publishSyncState(this.sync ? this.sync.state() : { status: 'idle', canSave: true });
+        this.publishSyncState();
+    }
+
+    /**
+     * Schedule one publish of the sync state at the end of the current task. One edit raises
+     * sync-state four to six times (enqueue, mark pending, flush start, settle) and a paste
+     * once per batch step; the status text, the dataset and the bubbling lgrid:statechange
+     * event follow only the final state, once.
+     */
+    publishSyncState() {
+        if (this.syncStateQueued) {
+            return;
+        }
+        this.syncStateQueued = true;
+        queueMicrotask(() => {
+            this.syncStateQueued = false;
+            if (!this.destroyed) {
+                this.renderSyncState(this.sync ? this.sync.state() : { status: 'idle', canSave: true });
+            }
+        });
     }
 
     /** Render and publish one stable state surface for host Save buttons and diagnostics. */
-    publishSyncState(state) {
+    renderSyncState(state) {
         const full = {
             ...state,
             dirty: this.store.dirty.size,
@@ -1108,8 +1177,8 @@ export default class GridCore {
 
     /** Show/hide the empty-state message from the mount's <template> when there are zero rows. */
     renderEmptyState() {
-        if (this.store.deferredInitial) {
-            return; // deferred mount: page 1 is in flight — no "no rows" flash before it lands
+        if (this.store.deferredInitial || this.store.rowsDeferred) {
+            return; // deferred mount: rows are in flight — no "no rows" flash before they land
         }
         const tpl = this.refs.emptyTemplate;
         const hasRows = this.store.rowCount() > 0;
@@ -1171,6 +1240,7 @@ export default class GridCore {
 
     /** Tear down subscriptions + listeners (mount removal, observed by the boot module). */
     destroy() {
+        this.destroyed = true;
         if (this.morphObserver) {
             this.morphObserver.disconnect();
         }

@@ -8,6 +8,7 @@ use Illuminate\Contracts\View\View;
 use Illuminate\View\Component;
 use LaraGrid\Grid;
 use LaraGrid\Support\ConfigSerializer;
+use LaraGrid\Support\MountedGrids;
 
 /**
  * What: The <x-laragrid :grid :rows> Blade component — the bridge between a PHP Grid
@@ -19,7 +20,9 @@ use LaraGrid\Support\ConfigSerializer;
  *       array. The grid body renders entirely client-side inside a `wire:ignore` region, so
  *       Livewire never morphs a cell; the mount carries only `data-lgrid` markers — no
  *       directives, nothing for the host page to configure (the zero-blade-config rule:
- *       every behavior lives on the Grid definition).
+ *       every behavior lives on the Grid definition). Because that region is never morphed,
+ *       a host RE-render of a grid the browser already holds ships a shell config (no rows, no
+ *       queries) — MountedGrids carries "already mounted" over from the host's last render.
  *
  * When: Rendered wherever a host places <x-laragrid :grid="$this->gridDefinition('name')">;
  *       registered as `laragrid` by the service provider.
@@ -41,7 +44,14 @@ class DatagridComponent extends Component
         public Grid $grid,
         iterable $rows = [],
     ) {
-        $this->config = app(ConfigSerializer::class)->serialize($grid, $rows);
+        $serializer = app(ConfigSerializer::class);
+        $mounted = app(MountedGrids::class);
+
+        $this->config = $mounted->isMounted($grid->name) && $serializer->canShell($grid)
+            ? $serializer->serializeShell($grid)
+            : $serializer->serialize($grid, $rows);
+
+        $mounted->mark($grid->name);
     }
 
     public function render(): View

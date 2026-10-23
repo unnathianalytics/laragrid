@@ -249,3 +249,23 @@ it('counts the NARROWED set when deciding the deferred initial load', function (
     expect($config['server']['total'])->toBe(2);
     expect($config['query']['filters'])->toBe(['type' => 'service']);
 });
+
+it('looks up filter options only for a new or changed value, never for an unchanged stored one', function () {
+    // A fresh host per fetch, as Livewire builds one per request (the options memo is per request).
+    persistHost()->gridFetch('items', ['filters' => ['type' => 'goods']]);
+    expect(queryStore()->get('items')['filters'])->toBe(['type' => 'goods']);
+
+    ServerGridComponent::$typeOptionLookups = 0;
+    persistHost()->gridFetch('items', ['filters' => ['type' => 'goods'], 'page' => 2]);
+    persistHost()->gridFetch('items', ['filters' => ['type' => 'goods'], 'sort' => 'qty', 'dir' => 'desc']);
+    expect(ServerGridComponent::$typeOptionLookups)->toBe(0)
+        ->and(queryStore()->get('items')['sort'])->toBe('qty');
+
+    // A changed value is checked again — and a stale one is still never persisted.
+    persistHost()->gridFetch('items', ['filters' => ['type' => 'service']]);
+    expect(ServerGridComponent::$typeOptionLookups)->toBe(1)
+        ->and(queryStore()->get('items')['filters'])->toBe(['type' => 'service']);
+
+    persistHost()->gridFetch('items', ['filters' => ['type' => 'ghost']]);
+    expect(queryStore()->get('items'))->toBe([]);
+});

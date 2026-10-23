@@ -17,9 +17,12 @@
 
     <div wire:ignore>
         <div data-lgrid tabindex="0" class="lgrid">
-            {{-- The declarative config (ConfigSerializer output). @json hex-escapes <, >, &,
-                 quotes, so `</script>` can never break out of this block (XSS-safe embed). --}}
-            <script type="application/json" data-lgrid-config>@json($config)</script>
+            {{-- The declarative config (ConfigSerializer output). JSON_HEX_TAG turns every < and >
+                 into < / >, so `</script>` can never break out of this block (XSS-safe
+                 embed); JSON_HEX_AMP covers &. Quotes, slashes and non-ASCII text stay raw: this is
+                 a text node, not an attribute, so they need no escaping and the payload stays small.
+                 Invalid UTF-8 in a row value is substituted rather than failing the page. --}}
+            <script type="application/json" data-lgrid-config>{!! json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR) !!}</script>
 
             {{-- Package-rendered toolbar (P6): search / filters / column chooser, built
                  client-side from layout.toolbar. Hidden until something qualifies. --}}

@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use LaraGrid\Grid;
 use LaraGrid\Support\RowSerializer;
+use Throwable;
 
 /**
  * What: Runs a readonly grid's host-supplied query through sort → global-search → filters, then
@@ -31,26 +32,29 @@ final class QueryPipeline
         private readonly AppliesSearch $search = new AppliesSearch,
         private readonly AppliesFilters $filters = new AppliesFilters,
         private readonly RowSerializer $rowSerializer = new RowSerializer,
+        private readonly AppliesEagerLoads $eagerLoads = new AppliesEagerLoads,
     ) {}
 
     /**
      * @param  array{sort?: string|null, dir?: string|null, search?: string|null, filters?: array<string, mixed>, page?: int|string|null, perPage?: int|string|null}  $request
+     * @param  int|null  $knownTotal  The filtered-set count when the caller already ran it
+     *                                (ConfigSerializer's adaptive pre-count), so it is never run twice.
      */
-    public function run(Grid $grid, array $request): PageResult
+    public function run(Grid $grid, array $request, ?int $knownTotal = null): PageResult
     {
         $query = $grid->resolveQuery();
 
-        // 1. Narrow (order/search/filter) — grand totals must see the filtered set, so search +
-        //    filters run before the aggregate clone; sort is order-only and harmless either way.
-        $this->sort->apply($query, $grid, $request);
+        // 1. Narrow (search/filter) — grand totals must see the filtered set, so search + filters
+        //    run before the aggregate clone. Sort is applied AFTER the clone: an ORDER BY on an
+        //    aggregate is wasted work at best and a PostgreSQL error at worst.
         $this->search->apply($query, $grid, $request);
         $this->filters->apply($query, $grid, $request);
 
-        // 2. Totals over the whole filtered set (before pagination) — the register total.
-        $grandTotals = $this->aggregate($grid, clone $query);
+        // 2. Count + totals over the whole filtered set (before pagination) — the register total.
+        [$total, $grandTotals] = $this->aggregateAndCount($grid, clone $query, $knownTotal);
 
-        // 3. Count + paginate.
-        $total = (clone $query)->toBase()->getCountForPagination();
+        // 3. Order + paginate.
+        $this->sort->apply($query, $grid, $request);
 
         $perPage = $this->resolvePerPage($grid, $request);
 
@@ -66,9 +70,21 @@ final class QueryPipeline
 
         $page = $this->resolvePage($request, $total, $perPage);
 
-        $models = $query
-            ->forPage($page, $perPage)
-            ->get();
+        $query->forPage($page, $perPage);
+
+        // Relations behind dot-keyed columns load in one query each, not one per row.
+        $added = $this->eagerLoads->apply($query, $grid);
+
+        try {
+            $models = $query->get();
+        } catch (Throwable $e) {
+            if ($added === []) {
+                throw $e;
+            }
+            // A relation the eager loader cannot handle: serve the page on the lazy path.
+            $this->eagerLoads->fallBack($query, $grid, $added, $e);
+            $models = $query->get();
+        }
 
         // 4. Serialize the page's rows for the client (same shape as the config's first page).
         $rows = $this->rowSerializer->serializeMany($grid, $models);
@@ -108,26 +124,71 @@ final class QueryPipeline
     }
 
     /**
-     * Aggregate each footer column over a (filtered) query without loading rows — a SUM per
-     * summable footer column, so grand totals stay exact and cheap on large sets.
+     * The filtered-set count plus every footer SUM, without loading rows.
      *
-     * @param  Builder<covariant Model>  $query
-     * @return array<string, int|float>
+     * What: On a plain query (no GROUP BY / HAVING / DISTINCT / UNION) one statement does it all —
+     *       `COUNT(*) AS lg_total, SUM(col) AS lg_sum_0, ...` — built in the exact shape Laravel's
+     *       own pagination count uses (columns, orders, limit and offset stripped, with their
+     *       bindings), so a host select() list can never leak into the aggregate. Grouped,
+     *       distinct or unioned queries keep the one-COUNT-plus-K-SUMs path, whose per-query
+     *       semantics Laravel already defines for those shapes.
+     * Why:  K footer sums used to cost K + 1 round trips per page, each SUM dragging the page's
+     *       ORDER BY along. Column names are quoted through the grammar and aliased by index so a
+     *       column named like a reserved word (or `total`) can neither break nor shadow anything.
+     *
+     * @param  Builder<covariant Model>  $query  A clone the caller does not reuse.
+     * @return array{0: int, 1: array<string, int|float>}
      */
-    private function aggregate(Grid $grid, Builder $query): array
+    private function aggregateAndCount(Grid $grid, Builder $query, ?int $knownTotal): array
     {
-        $totals = [];
+        $query->reorder();
 
+        $sumColumns = [];
         foreach ($grid->getFooter() as $aggregate) {
-            if ($aggregate->type !== 'sum') {
-                continue;
+            if ($aggregate->type === 'sum') {
+                $sumColumns[] = $aggregate->column;
             }
-            $sum = (clone $query)->sum($aggregate->column);
-            // Keep integer paise as int; only a genuinely fractional sum becomes float.
-            $totals[$aggregate->column] = $this->normaliseNumeric($sum);
         }
 
-        return $totals;
+        $base = $query->toBase();
+
+        if ($sumColumns === []) {
+            return [$knownTotal ?? (int) $base->getCountForPagination(), []];
+        }
+
+        $combinable = empty($base->groups) && empty($base->havings) && ! $base->distinct && empty($base->unions);
+
+        if (! $combinable) {
+            $total = $knownTotal ?? (int) $base->getCountForPagination();
+            $totals = [];
+            foreach ($sumColumns as $column) {
+                $totals[$column] = $this->normaliseNumeric((clone $query)->sum($column));
+            }
+
+            return [$total, $totals];
+        }
+
+        $grammar = $base->getGrammar();
+        $selects = ['COUNT(*) AS lg_total'];
+        foreach ($sumColumns as $i => $column) {
+            $selects[] = 'SUM('.$grammar->wrap($column).') AS lg_sum_'.$i;
+        }
+
+        $row = $base
+            ->cloneWithout(['columns', 'orders', 'limit', 'offset'])
+            ->cloneWithoutBindings(['select', 'order'])
+            ->selectRaw(implode(', ', $selects))
+            ->first();
+
+        $totals = [];
+        foreach ($sumColumns as $i => $column) {
+            /** @var int|float|string|null $sum */
+            $sum = $row->{'lg_sum_'.$i} ?? null;
+            // Keep integer paise as int; only a genuinely fractional sum becomes float.
+            $totals[$column] = $this->normaliseNumeric($sum);
+        }
+
+        return [(int) ($row->lg_total ?? 0), $totals];
     }
 
     /**

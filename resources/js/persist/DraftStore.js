@@ -22,6 +22,18 @@ export default class DraftStore {
         this.restoring = false;
         this.candidate = null;
         this.subscriptions = [];
+        /**
+         * True while storage holds no draft written by this grid (nothing yet, or the last
+         * operation was a remove), so a save on a clean grid can skip the storage round trip.
+         */
+        this.lastWriteClean = true;
+        /**
+         * The serialized rows of the last snapshot, reused while no row changed — a save
+         * raised only by errors:changed or sync-state does not copy every row again. Dropped
+         * on edit-state, rows:changed and cells:changed (a label write emits only the latter).
+         * @type {object[]|null}
+         */
+        this.rowsSnapshot = null;
 
         this.onRestore = () => this.restoreCandidate();
         this.onDiscard = () => this.discardCandidate();
@@ -51,12 +63,16 @@ export default class DraftStore {
             return false;
         }
 
+        // No active:changed subscription: cursor movement alone never saves. The active cell
+        // rides along with the next save an edit (or pagehide) triggers.
         this.subscriptions = [
-            this.bus.on('edit-state', () => this.schedule()),
-            this.bus.on('rows:changed', () => this.schedule()),
+            this.bus.on('edit-state', () => this.rowsChanged()),
+            this.bus.on('rows:changed', () => this.rowsChanged()),
+            this.bus.on('cells:changed', () => {
+                this.rowsSnapshot = null;
+            }),
             this.bus.on('errors:changed', () => this.schedule()),
             this.bus.on('sync-state', () => this.schedule()),
-            this.bus.on('active:changed', () => this.schedule()),
         ];
 
         if (this.refs.draftRestore) {
@@ -112,14 +128,17 @@ export default class DraftStore {
     }
 
     snapshot() {
+        if (this.rowsSnapshot === null) {
+            this.rowsSnapshot = this.store.rows.map((row) => ({
+                ...row,
+                _labels: row._labels ? { ...row._labels } : undefined,
+            }));
+        }
         return {
             key: this.key,
             schema: this.schemaFingerprint(),
             updatedAt: Date.now(),
-            rows: this.store.rows.map((row) => ({
-                ...row,
-                _labels: row._labels ? { ...row._labels } : undefined,
-            })),
+            rows: this.rowsSnapshot,
             active: this.store.active ? { ...this.store.active } : null,
             dirty: [...this.store.dirty],
             modified: [...this.store.modified],
@@ -130,6 +149,12 @@ export default class DraftStore {
             version: this.store.version,
             queue: this.sync.snapshotQueue(),
         };
+    }
+
+    /** Row data may have changed: drop the cached rows, then save on the usual debounce. */
+    rowsChanged() {
+        this.rowsSnapshot = null;
+        this.schedule();
     }
 
     schedule() {
@@ -151,6 +176,9 @@ export default class DraftStore {
         }
         try {
             if (!this.store.hasUnsavedChanges() && !this.sync.hasPending()) {
+                if (this.lastWriteClean) {
+                    return;
+                }
                 await this.remove();
                 this.bus.emit('draft-state', { status: 'clear' });
                 return;
@@ -287,6 +315,9 @@ export default class DraftStore {
     }
 
     async write(draft) {
+        // Cleared before the write: a failed or interrupted write leaves storage unknown, and
+        // the next clean save must then still remove whatever is there.
+        this.lastWriteClean = false;
         if (this.backend) {
             return this.backend.put(this.key, draft);
         }
@@ -298,9 +329,11 @@ export default class DraftStore {
             return;
         }
         if (this.backend) {
-            return this.backend.delete(this.key);
+            await this.backend.delete(this.key);
+        } else {
+            await this.transaction('readwrite', (store) => store.delete(this.key));
         }
-        return this.transaction('readwrite', (store) => store.delete(this.key));
+        this.lastWriteClean = true;
     }
 
     async transaction(mode, operation) {

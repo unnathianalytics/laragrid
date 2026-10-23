@@ -38,27 +38,30 @@ class DatabaseViewStore implements ViewStore
     }
 
     /**
+     * Create or overwrite one view: two queries either way.
+     *
+     * What: One upsert on the (scope, grid_key, name) unique index (an overwrite keeps the row,
+     *       its id and its created_at), then one lookup of the row's id.
+     * Why:  The read-then-write it replaces took the same two queries but could race: two saves
+     *       under one new name both saw "no row", and the second insert hit the unique index.
+     *       The id lookup stays because no driver-neutral way exists to get it back from an
+     *       upsert (lastInsertId() is stale or zero when the upsert updated instead).
+     *
      * @param  array<string, mixed>  $state
      * @return array{id: string, name: string, state: array<string, mixed>}
      */
     public function save(string $scope, string $gridKey, string $name, array $state): array
     {
         $keys = ['scope' => $scope, 'grid_key' => $gridKey, 'name' => $name];
-        $json = (string) json_encode($state);
+        $now = now();
 
-        $existing = $this->table()->where($keys)->first();
+        $this->table()->upsert(
+            [[...$keys, 'state' => (string) json_encode($state), 'created_at' => $now, 'updated_at' => $now]],
+            ['scope', 'grid_key', 'name'],
+            ['state', 'updated_at'],
+        );
 
-        if ($existing !== null) {
-            $this->table()->where('id', $existing->id)->update(['state' => $json, 'updated_at' => now()]);
-            $id = (int) $existing->id;
-        } else {
-            $id = (int) $this->table()->insertGetId([
-                ...$keys,
-                'state' => $json,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        }
+        $id = (int) $this->table()->where($keys)->value('id');
 
         return ['id' => (string) $id, 'name' => $name, 'state' => $state];
     }

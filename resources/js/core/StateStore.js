@@ -39,6 +39,80 @@ export function compareCellValues(a, b) {
     return String(a).localeCompare(String(b));
 }
 
+/**
+ * Move an inclusive row span [r0, r1] across one in-place insert or remove so it keeps covering
+ * the same rows: rows inserted at or above r0 push it down, rows inserted inside it widen it,
+ * removed rows above pull it up and removed rows inside shrink it. Shared by the store's
+ * selection and SelectionPainter's painted rectangle, so the two always move together.
+ *
+ * @param {{r0: number, r1: number}} span
+ * @param {{inserted?: {keys: string[], index: number}, removed?: {keys: string[], index: number}}} change
+ * @returns {{r0: number, r1: number}|null} null when every row of the span was removed
+ */
+export function shiftRowSpan(span, change) {
+    let { r0, r1 } = span;
+    if (change.inserted) {
+        const { index, keys } = change.inserted;
+        if (index <= r0) {
+            r0 += keys.length;
+            r1 += keys.length;
+        } else if (index <= r1) {
+            r1 += keys.length;
+        }
+    }
+    if (change.removed) {
+        const lo = change.removed.index;
+        const hi = lo + change.removed.keys.length - 1;
+        if (hi < r0) {
+            r0 -= change.removed.keys.length;
+            r1 -= change.removed.keys.length;
+        } else if (lo <= r1) {
+            const above = Math.max(0, r0 - lo);
+            const inside = Math.min(hi, r1) - Math.max(lo, r0) + 1;
+            r0 -= above;
+            r1 -= above + inside;
+            if (r1 < r0) {
+                return null;
+            }
+        }
+    }
+    return { r0, r1 };
+}
+
+const NO_DEPENDENTS = Object.freeze([]);
+
+/**
+ * The operator-hidden column set: a Set whose in-place mutations (ColumnChooser.setHidden adds
+ * and deletes keys directly) drop the store's visible-column memo, so a wholesale replacement
+ * and an in-place edit both invalidate without the call sites knowing a memo exists.
+ */
+class HiddenColumnSet extends Set {
+    constructor(store, keys) {
+        super();
+        this.store = store;
+        for (const key of keys || []) {
+            super.add(key);
+        }
+    }
+
+    add(key) {
+        super.add(key);
+        this.store.invalidateColumns();
+        return this;
+    }
+
+    delete(key) {
+        const hit = super.delete(key);
+        this.store.invalidateColumns();
+        return hit;
+    }
+
+    clear() {
+        super.clear();
+        this.store.invalidateColumns();
+    }
+}
+
 export default class StateStore {
     /**
      * @param {object} config the declarative config from ConfigSerializer
@@ -51,6 +125,18 @@ export default class StateStore {
         this.groups = config.groups || [];
         this.footer = config.footer || [];
         this.layout = config.layout || {};
+
+        /**
+         * Column lookup memos: the visible list, its key → visible-index map and the key →
+         * definition map. Every per-cell reader (navigation, selection paint, status bar)
+         * goes through these; invalidateColumns() drops them all whenever the hidden set
+         * or the column list changes.
+         */
+        this._visibleCache = null;
+        this._visibleIndex = null;
+        this._byKey = null;
+        /** @type {Map<string, string[]>|null} lockedWhen controller key → dependent column keys. */
+        this._lockDependents = null;
 
         /** Rows in display order (array of row objects, each carrying `_k`). */
         this.rows = [];
@@ -94,6 +180,15 @@ export default class StateStore {
         this.deferredInitial = !!server.deferred;
 
         /**
+         * Deferred rows (perf plan P1): an editable mount booted from a SHELL config — a host
+         * re-render of a grid the browser already held, which ships no rows. GridCore fetches
+         * them through gridReseedRows right after boot. Cleared by reseed() (that fetch, a
+         * host lgrid:reseed or a draft restore — whichever lands first) and read by the
+         * empty-state guard and the row-op guards while the rows are in flight.
+         */
+        this.rowsDeferred = !!config.rowsDeferred;
+
+        /**
          * The operator's restored query (->persistQuery()): the server already BUILT the page
          * above from this exact state, so adopting it here is not a re-application — it is
          * telling the client the truth about what it is already showing. Without it the client
@@ -132,10 +227,11 @@ export default class StateStore {
             .map((column) => column.key));
         /**
          * Columns currently hidden through chooser layout state. It begins with the definition's
-         * defaults; a persisted layout or saved view may subsequently replace it wholesale.
+         * defaults; a persisted layout or saved view may subsequently replace it wholesale (the
+         * `userHidden` setter below wraps whatever Set is assigned).
          * @type {Set<string>}
          */
-        this.userHidden = new Set(this.defaultHidden);
+        this._userHidden = new HiddenColumnSet(this, this.defaultHidden);
 
         // ---- Editable (M4) state ---------------------------------------------------------
         this.editable = !!(this.layout && this.layout.editable);
@@ -184,8 +280,6 @@ export default class StateStore {
         this.structureModified = false;
         /** @type {Map<string, string>} error message by cellMapKey (or `${_k}_row` for row errors). */
         this.errors = new Map();
-        /** @type {Array<object>} the recorded op log (the sync spine). */
-        this.opLog = [];
         /**
          * The undo/redo recorder (§1.4, completed): GridCore points this at the UndoManager for
          * an editable grid; every optimistic mutator below reports its before/after through it.
@@ -461,9 +555,41 @@ export default class StateStore {
         return row[column.key];
     }
 
-    /** Visible columns in display order (the definition's `visible` flag AND operator hides). */
+    /** @returns {Set<string>} the operator-hidden column keys (mutate in place or assign a Set). */
+    get userHidden() {
+        return this._userHidden;
+    }
+
+    set userHidden(keys) {
+        this._userHidden = new HiddenColumnSet(this, keys);
+        this.invalidateColumns();
+    }
+
+    /** Drop the column memos — after a hidden-set change or a column-list replacement. */
+    invalidateColumns() {
+        this._visibleCache = null;
+        this._visibleIndex = null;
+        this._byKey = null;
+        this._lockDependents = null;
+    }
+
+    /**
+     * Visible columns in display order (the definition's `visible` flag AND operator hides).
+     * Memoized: callers may read it per cell; they must not mutate the returned array.
+     */
     visibleColumns() {
-        return this.columns.filter((c) => c.visible !== false && !this.userHidden.has(c.key));
+        if (this._visibleCache === null) {
+            this._visibleCache = this.columns.filter((c) => c.visible !== false && !this._userHidden.has(c.key));
+        }
+        return this._visibleCache;
+    }
+
+    /** Visible-index by column key (memoized alongside visibleColumns). */
+    visibleIndexMap() {
+        if (this._visibleIndex === null) {
+            this._visibleIndex = new Map(this.visibleColumns().map((c, i) => [c.key, i]));
+        }
+        return this._visibleIndex;
     }
 
     /**
@@ -473,7 +599,7 @@ export default class StateStore {
      * @returns {Array<object>}
      */
     visibleGroups() {
-        const indexByKey = new Map(this.visibleColumns().map((c, i) => [c.key, i]));
+        const indexByKey = this.visibleIndexMap();
         const out = [];
         for (const group of this.groups || []) {
             const indexes = (group.columns || [])
@@ -502,7 +628,8 @@ export default class StateStore {
 
     /** The visible column index for a column key, or -1. */
     colIndexOf(colKey) {
-        return this.visibleColumns().findIndex((c) => c.key === colKey);
+        const index = this.visibleIndexMap().get(colKey);
+        return index === undefined ? -1 : index;
     }
 
     /** The visible column at an index, or null. */
@@ -583,6 +710,7 @@ export default class StateStore {
         }
 
         const out = [];
+        const cols = this.visibleColumns();
         for (let r = sel.r0; r <= sel.r1; r++) {
             const row = this.rowAt(r);
             if (!row) {
@@ -590,12 +718,43 @@ export default class StateStore {
             }
             const cells = [];
             for (let c = sel.c0; c <= sel.c1; c++) {
-                const column = this.columnAt(c);
+                const column = cols[c];
                 if (column) {
                     cells.push({ column, value: row[column.key] });
                 }
             }
             out.push(cells);
+        }
+        return out;
+    }
+
+    /**
+     * The current selection as a flat list of stable `{rowKey, colKey}` addresses in row-major
+     * order — the shape the mutating commands (Delete clear) need, as opposed to the
+     * `{column, value}` grid selectedCells() hands the readers. Falls back to the active cell
+     * when there is no range; empty when there is neither.
+     *
+     * @returns {Array<{rowKey: string, colKey: string}>}
+     */
+    selectedCellAddresses() {
+        const sel = this.selection;
+        if (!sel) {
+            const a = this.indexOf(this.active);
+            return a.row < 0 || a.col < 0 ? [] : [{ ...this.active }];
+        }
+        const out = [];
+        const cols = this.visibleColumns();
+        for (let r = sel.r0; r <= sel.r1; r++) {
+            const row = this.rowAt(r);
+            if (!row) {
+                continue;
+            }
+            for (let c = sel.c0; c <= sel.c1; c++) {
+                const column = cols[c];
+                if (column) {
+                    out.push({ rowKey: row._k, colKey: column.key });
+                }
+            }
         }
         return out;
     }
@@ -676,7 +835,15 @@ export default class StateStore {
      * @param {string} colKey
      */
     columnByKey(colKey) {
-        return this.columns.find((c) => c && c.key === colKey) || null;
+        if (this._byKey === null) {
+            this._byKey = new Map();
+            for (const c of this.columns) {
+                if (c && c.key && !this._byKey.has(c.key)) {
+                    this._byKey.set(c.key, c);
+                }
+            }
+        }
+        return this._byKey.get(colKey) || null;
     }
 
     /**
@@ -702,15 +869,25 @@ export default class StateStore {
 
     /**
      * The column keys whose `lockedWhen` is CONTROLLED by `colKey` — the sibling cells whose
-     * locked look must repaint when a `colKey` cell changes (e.g. dc → [dr, cr]).
+     * locked look must repaint when a `colKey` cell changes (e.g. dc → [dr, cr]). Built once
+     * for all columns (the Renderer asks per changed cell per frame); callers must not mutate
+     * the returned array.
      *
      * @param {string} colKey
      * @returns {string[]}
      */
     lockedDependentsOf(colKey) {
-        return this.columns
-            .filter((c) => c && c.lockedWhen && c.lockedWhen.column === colKey)
-            .map((c) => c.key);
+        if (this._lockDependents === null) {
+            this._lockDependents = new Map();
+            for (const c of this.columns) {
+                if (c && c.lockedWhen) {
+                    const dependents = this._lockDependents.get(c.lockedWhen.column) || [];
+                    dependents.push(c.key);
+                    this._lockDependents.set(c.lockedWhen.column, dependents);
+                }
+            }
+        }
+        return this._lockDependents.get(colKey) || NO_DEPENDENTS;
     }
 
     /**
@@ -910,27 +1087,83 @@ export default class StateStore {
 
     /**
      * Insert a fresh blank row after `afterKey` (or appended), keyed by the client-generated
-     * `newKey`. Structural → full body repaint via rows:changed.
+     * `newKey`. Structural — see insertRows for the repaint contract.
      * @param {string} newKey
      * @param {string|null} afterKey
      */
     insertRow(newKey, afterKey = null) {
-        const blank = this.makeDraftRow(newKey);
-        const at = afterKey !== null ? this.rowIndexOf(afterKey) : -1;
-        if (at < 0) {
-            this.rows.push(blank);
-        } else {
-            this.rows.splice(at + 1, 0, blank);
+        return this.insertRows([newKey], afterKey)[0];
+    }
+
+    /**
+     * Insert several fresh blank rows in ONE structural pass (a multi-row paste): one splice,
+     * one reindex, one undo record per row (all inside the same microtask batch, so they undo
+     * as one step), one rows:changed, one markStructureModified. The rows land after
+     * `afterKey`, or are appended.
+     *
+     * @param {string[]} keys client-generated row keys, in order
+     * @param {string|null} afterKey
+     * @returns {object[]} the blank rows
+     */
+    insertRows(keys, afterKey = null) {
+        if (!keys || keys.length === 0) {
+            return [];
         }
+        const blanks = keys.map((key) => this.makeDraftRow(key));
+        const at = afterKey !== null ? this.rowIndexOf(afterKey) : -1;
+        const index = at < 0 ? this.rows.length : at + 1;
+        this.rows.splice(index, 0, ...blanks);
         this.reindex();
         if (this.recorder) {
-            this.recorder.record({
-                t: 'insert', rowKey: newKey, index: this.rowIndexOf(newKey), snapshot: { ...blank },
-            });
+            blanks.forEach((blank, i) => this.recorder.record({
+                t: 'insert', rowKey: blank._k, index: index + i, snapshot: { ...blank },
+            }));
         }
-        this.bus.emit('rows:changed', { rows: this.rows });
+        this.emitStructural({ inserted: { keys: blanks.map((blank) => blank._k), index } });
+        return blanks;
+    }
+
+    /**
+     * Publish a row insert/remove. The Renderer applies the structural delta from the dedicated
+     * rows:inserted / rows:removed event, then sees `incremental: true` on the rows:changed
+     * that follows and skips its full body rebuild (every other rows:changed subscriber —
+     * painters, draft store, empty state — behaves as for any row change). A non-incremental
+     * rows:changed (setRows) stays the full-rebuild seam.
+     *
+     * The index-space selection is moved with the rows first (silently — no selection:changed),
+     * so copy, Delete and fill-down keep acting on the rows the operator selected and the
+     * painter's diff on rows:changed finds nothing to repaint.
+     *
+     * @param {{inserted?: {keys: string[], index: number}, removed?: {keys: string[], index: number}}} change
+     */
+    emitStructural(change) {
+        this.shiftSelection(change);
+        if (change.inserted) {
+            this.bus.emit('rows:inserted', change.inserted);
+        }
+        if (change.removed) {
+            this.bus.emit('rows:removed', change.removed);
+        }
+        this.bus.emit('rows:changed', { rows: this.rows, incremental: true, ...change });
         this.markStructureModified();
-        return blank;
+    }
+
+    /**
+     * Keep the selection rectangle on its rows across an in-place insert/remove (active and
+     * anchor are keys and follow on their own). Whole-column and select-all selections keep
+     * spanning every row, appended rows included.
+     */
+    shiftSelection(change) {
+        const sel = this.selection;
+        if (!sel) {
+            return;
+        }
+        if (sel.kind === 'all' || sel.kind === 'col') {
+            this.selection = this.rows.length ? { ...sel, r0: 0, r1: this.rows.length - 1 } : null;
+            return;
+        }
+        const span = shiftRowSpan(sel, change);
+        this.selection = span ? { ...sel, ...span } : null;
     }
 
     /**
@@ -972,7 +1205,7 @@ export default class StateStore {
     }
 
     /**
-     * Remove a row by key. Structural → full body repaint.
+     * Remove a row by key. Structural (incremental repaint — see emitStructural).
      * @param {string} rowKey
      */
     removeRow(rowKey) {
@@ -990,8 +1223,7 @@ export default class StateStore {
         this.rows.splice(at, 1);
         this.clearRowState(rowKey);
         this.reindex();
-        this.bus.emit('rows:changed', { rows: this.rows });
-        this.markStructureModified();
+        this.emitStructural({ removed: { keys: [rowKey], index: at } });
     }
 
     /**
@@ -1013,8 +1245,7 @@ export default class StateStore {
                 snapshot: { ...clone, _labels: { ...(clone._labels || {}) } },
             });
         }
-        this.bus.emit('rows:changed', { rows: this.rows });
-        this.markStructureModified();
+        this.emitStructural({ inserted: { keys: [newKey], index: at + 1 } });
         return clone;
     }
 
@@ -1030,8 +1261,7 @@ export default class StateStore {
         const at = Math.max(0, Math.min(index, this.rows.length));
         this.rows.splice(at, 0, row);
         this.reindex();
-        this.bus.emit('rows:changed', { rows: this.rows });
-        this.markStructureModified();
+        this.emitStructural({ inserted: { keys: [row._k], index: at } });
         return row;
     }
 
@@ -1079,6 +1309,7 @@ export default class StateStore {
 
 
     reseed(rows) {
+        this.rowsDeferred = false;
         this.clearChecked();
         this.dirty.clear();
         this.pending.clear();
@@ -1087,7 +1318,6 @@ export default class StateStore {
         this.modified.clear();
         this.structureModified = false;
         this.errors.clear();
-        this.opLog = [];
         this.version = 0;
         if (this.recorder) {
             // The reseed replaced the rows wholesale — every undo record describes rows that
@@ -1171,7 +1401,10 @@ export default class StateStore {
 
         let changed = [];
         for (const key of rowKeys.slice(1)) {
-            if (this.cellLocked(key, colKey)) {
+            // cellLocked() wants the row OBJECT and the column config — a key pair would read
+            // the lock off `undefined` and never skip anything.
+            const target = this.rowByKey.get(key);
+            if (!target || this.cellLocked(target.row, column)) {
                 continue;
             }
             changed = changed.concat(this.applyLocalSet(key, colKey, value));
@@ -1202,20 +1435,39 @@ export default class StateStore {
 
     /** Mark cells as covered by a queued op and remember its exact revision. */
     markPending(cells, seq = 0) {
-        for (const { rowKey, colKey } of cells) {
-            const key = cellMapKey(rowKey, colKey);
-            this.pending.add(key);
-            if (!this.pendingSeqs.has(key)) {
-                this.pendingSeqs.set(key, new Set());
+        this.markPendingBatch([{ cells, seq }]);
+    }
+
+    /**
+     * markPending for several queued ops at once (a paste or fill batch): every cell is marked
+     * first, then ONE sync-state carrying all of them and ONE edit-state go out.
+     *
+     * @param {Array<{cells: Array<{rowKey: string, colKey: string}>, seq: number}>} items
+     */
+    markPendingBatch(items) {
+        if (items.length === 0) {
+            return;
+        }
+        const all = items.length === 1 ? items[0].cells : [];
+        for (const { cells, seq = 0 } of items) {
+            for (const cell of cells) {
+                const key = cellMapKey(cell.rowKey, cell.colKey);
+                this.pending.add(key);
+                if (!this.pendingSeqs.has(key)) {
+                    this.pendingSeqs.set(key, new Set());
+                }
+                this.pendingSeqs.get(key).add(seq);
+                this.cellRevisions.set(key, Math.max(seq, this.cellRevisions.get(key) || 0));
+                if (all !== cells) {
+                    all.push(cell);
+                }
             }
-            this.pendingSeqs.get(key).add(seq);
-            this.cellRevisions.set(key, Math.max(seq, this.cellRevisions.get(key) || 0));
         }
         this.bus.emit('sync-state', {
             pending: this.pending.size,
             dirty: this.dirty.size,
             modified: this.modified.size,
-            cells,
+            cells: all,
         });
         this.emitEditState();
     }
@@ -1284,11 +1536,18 @@ export default class StateStore {
             }
 
             // Every acknowledged result settles its exact submitted cells. Failed validation
-            // clears pending but deliberately keeps dirty + error so it remains fixable.
-            for (const cell of this.settleOp(result, (item && item.cells) || [])) {
+            // clears pending but deliberately keeps dirty + error so it remains fixable. Only
+            // an error the settle actually cleared counts as an error change.
+            const cells = (item && item.cells) || [];
+            const errored = cells
+                .map((cell) => this.errorKey(cell.rowKey, cell.colKey))
+                .filter((key) => this.errors.has(key));
+            for (const cell of this.settleOp(result, cells)) {
                 changedState.set(cellMapKey(cell.rowKey, cell.colKey), cell);
-                if (result.ok) {
-                    changedErrors.add(this.errorKey(cell.rowKey, cell.colKey));
+            }
+            for (const key of errored) {
+                if (!this.errors.has(key)) {
+                    changedErrors.add(key);
                 }
             }
         }
@@ -1296,7 +1555,11 @@ export default class StateStore {
         if (repaint.length) {
             this.bus.emit('cells:changed', { cells: repaint });
         }
-        this.bus.emit('errors:changed', { errors: this.errors, keys: [...changedErrors] });
+        // The error panel re-sorts and rebuilds on errors:changed: skip it when no error was
+        // set or cleared (the common case — a clean edit acknowledged).
+        if (changedErrors.size > 0) {
+            this.bus.emit('errors:changed', { errors: this.errors, keys: [...changedErrors] });
+        }
         this.bus.emit('sync-state', {
             pending: this.pending.size,
             dirty: this.dirty.size,

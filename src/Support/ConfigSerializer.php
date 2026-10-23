@@ -47,12 +47,101 @@ class ConfigSerializer
      */
     public function serialize(Grid $grid, iterable $rows = []): array
     {
-        $grid->assertValid();
+        // Definition defects are build-time mistakes: enforce them where a developer is looking
+        // (local/testing by default, or wherever laragrid.assert_definitions says) rather than
+        // re-checking every column on every production render.
+        if (config('laragrid.assert_definitions') ?? app()->environment(['local', 'testing'])) {
+            $grid->assertValid();
+        }
 
         $config = $grid->isServerSide()
             ? $this->serializeServerSide($grid)
             : $this->serializeInMemory($grid, $rows);
 
+        return $this->withActionsAndVersion($grid, $config);
+    }
+
+    /**
+     * Whether a grid can be re-sent as a SHELL (no rows, no queries) once the browser already
+     * holds its mount: only when a late remount could fetch its rows on its own. A ->query()
+     * grid re-fetches page 1 through gridFetch (server.deferred); an editable grid reads its
+     * rowsFrom()-bound property back through gridReseedRows. A display grid's rows are
+     * whatever the Blade view passed — nothing could recover them — so it always ships whole.
+     */
+    public function canShell(Grid $grid): bool
+    {
+        return $grid->isServerSide()
+            || ($grid->isEditable() && $grid->getRowsProperty() !== null);
+    }
+
+    /**
+     * The config of a grid the browser ALREADY mounted, for a host re-render (perf plan P1).
+     *
+     * What: The same keys as serialize() — columns, layout, filters, actions, version, the
+     *       persisted query — with no rows and an empty footer. A ->query() grid carries
+     *       server.deferred (the existing adaptive-mount shape, so a late remount fetches page 1);
+     *       an editable grid carries rowsDeferred (a late remount calls gridReseedRows).
+     * Why:  The mount sits inside wire:ignore: after the first paint the browser never reads
+     *       this block again, so rebuilding it — COUNT + SUMs + the page SELECT, or serializing
+     *       every editable row on each refreshesHost() keystroke — was pure waste. It runs no
+     *       grid query and serializes no row. Only a mount the browser genuinely replaces (a
+     *       morph that swaps the element) ever boots from it, and both shapes recover their rows.
+     * When: DatagridComponent, when MountedGrids says this host's last render mounted the grid.
+     *
+     * @return array<string, mixed>
+     *
+     * @throws \InvalidArgumentException When the grid cannot recover rows on its own (see canShell()).
+     */
+    public function serializeShell(Grid $grid): array
+    {
+        if (! $this->canShell($grid)) {
+            throw new \InvalidArgumentException(
+                "Grid [{$grid->name}] cannot be serialized as a shell; only query() and editable rowsFrom() grids can."
+            );
+        }
+
+        if ($grid->isServerSide()) {
+            $initial = $this->initialQuery($grid);
+            $config = $this->withInitialQuery($grid, $initial, [
+                'name' => $grid->name,
+                'columns' => $this->serializeColumns($grid),
+                'groups' => $this->serializeGroups($grid),
+                'filters' => array_map(fn ($filter): array => $filter->toArray(), $grid->getFilters()),
+                'footer' => $this->serializeServerFooter($grid, []),
+                'layout' => $this->serializeLayout($grid),
+                'rows' => [],
+                'server' => [
+                    'deferred' => true,
+                    'total' => 0,
+                    'page' => 1,
+                    'perPage' => $initial['perPage'],
+                    'lastPage' => 1,
+                ],
+            ]);
+        } else {
+            $config = [
+                'name' => $grid->name,
+                'columns' => $this->serializeColumns($grid),
+                'groups' => $this->serializeGroups($grid),
+                'filters' => [],
+                'footer' => $this->serializeFooter($grid, []),
+                'layout' => $this->serializeLayout($grid),
+                'rows' => [],
+                'rowsDeferred' => true,
+            ];
+        }
+
+        return $this->withActionsAndVersion($grid, $config);
+    }
+
+    /**
+     * Fold the declarative action meta and the editable protocol version into a config.
+     *
+     * @param  array<string, mixed>  $config
+     * @return array<string, mixed>
+     */
+    protected function withActionsAndVersion(Grid $grid, array $config): array
+    {
         // P7 actions - declarative meta only (labels/icons/confirm/kind; never closures).
         // Toolbar url() actions resolve once here (no row context).
         $actions = array_filter([
@@ -118,9 +207,10 @@ class ConfigSerializer
         // One cheap COUNT decides; the footer fills from that first fetch's grand totals.
         $cap = max(1, (int) config('laragrid.max_per_page', 1000));
         $threshold = $grid->getSinglePageUpTo();
+        $knownTotal = null;
 
         if ($threshold !== null || $initial['perPage'] > $cap) {
-            $total = $this->queryPipeline->countFor($grid, $initial);
+            $total = $knownTotal = $this->queryPipeline->countFor($grid, $initial);
             $effective = ($threshold !== null && $total <= $threshold)
                 ? max(1, $total)
                 : $initial['perPage'];
@@ -145,7 +235,8 @@ class ConfigSerializer
             }
         }
 
-        $page = $this->queryPipeline->run($grid, array_merge($initial, ['page' => 1]));
+        // The pre-count (when it ran) is handed to the pipeline so page 1 never counts twice.
+        $page = $this->queryPipeline->run($grid, array_merge($initial, ['page' => 1]), $knownTotal);
 
         return $this->withInitialQuery($grid, $initial, [
             'name' => $grid->name,

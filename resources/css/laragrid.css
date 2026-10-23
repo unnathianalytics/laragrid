@@ -30,6 +30,8 @@
         --lgrid-text: var(--color-zinc-800, #27272a);
         --lgrid-header-text: var(--color-zinc-600, #52525b);
         --lgrid-accent: var(--color-accent, #262626);
+        /* Secondary text (sync bar, .lgrid-muted): the body text at 45 percent. */
+        --lgrid-muted: color-mix(in oklab, var(--lgrid-text) 45%, transparent);
 
         /* M2 interaction tokens — the active-cell ring and the range/selection fill. */
         --lgrid-active-ring: var(--lgrid-accent);
@@ -207,9 +209,12 @@
     }
 
     /* While a drag is live: no text selection anywhere in the grid, col-resize everywhere so
-       the cursor doesn't flicker as the pointer crosses cells. */
+       the cursor doesn't flicker as the pointer crosses cells. Both properties reach the
+       descendants from the root (cursor inherits; user-select: auto follows a `none` parent),
+       so the class toggle restyles one element instead of every cell. The editor input is the
+       exception — an editable control keeps its own selection unless told otherwise. */
     .lgrid--resizing,
-    .lgrid--resizing * {
+    .lgrid--resizing .lgrid-cell-editor-input {
         cursor: col-resize !important;
         user-select: none !important;
     }
@@ -673,7 +678,9 @@
         --lgrid-cell-pad-x: 0.75rem;
     }
 
-    /* Dense Busy/Tally skin — tightest rows, hairline feel. */
+    /* Dense Busy/Tally skin — tightest rows, hairline feel. Nothing in the package emits this
+       class: a host opts in with ->themeClass('lgrid--tally') (layout.themeClass, which Layout
+       adds to the root). */
     .lgrid--tally {
         --lgrid-row-h: 1.375rem;
         --lgrid-cell-pad-y: 0.0625rem;
@@ -924,10 +931,6 @@
         font-size: var(--lgrid-font-size);
     }
 
-    .lgrid-draftbar[hidden] {
-        display: none;
-    }
-
     .lgrid-draftbar button {
         padding: 0.15rem 0.4rem;
         border: 1px solid var(--lgrid-border);
@@ -1026,7 +1029,9 @@
         position: relative;
     }
 
-    .lgrid-check--on {
+    /* A ticked checkbox cell, and a checked row in the bulk selector gutter (P7). */
+    .lgrid-check--on,
+    .lgrid-cell--checked .lgrid-check {
         border-color: var(--lgrid-accent);
         background: var(--lgrid-accent);
     }
@@ -1081,10 +1086,6 @@
         background: var(--lgrid-header-bg);
         border-bottom: 1px solid var(--lgrid-border);
         font-size: var(--lgrid-font-size);
-    }
-
-    .lgrid-toolbar[hidden] {
-        display: none;
     }
 
     .lgrid-toolbar-search,
@@ -1151,11 +1152,6 @@
 
     .lgrid-cell[data-col='_select'] {
         cursor: pointer;
-    }
-
-    .lgrid-cell--checked .lgrid-check {
-        background: var(--lgrid-accent);
-        border-color: var(--lgrid-accent);
     }
 
     .lgrid-toolbar-btn {
@@ -1319,7 +1315,7 @@
     }
 
     .lgrid-muted {
-        color: color-mix(in oklab, var(--lgrid-text) 45%, transparent);
+        color: var(--lgrid-muted);
     }
 
     /* ---- Shipped color schemes (->theme('blue') etc.) ------------------------------ */

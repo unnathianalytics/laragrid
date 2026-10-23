@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace LaraGrid\Validation;
 
-use Closure;
 use LaraGrid\Columns\Column;
 
 /**
@@ -76,29 +75,7 @@ class RuleCompiler
      */
     public function clientRules(Column $column): array
     {
-        $client = [];
-
-        // Static required only — a Closure required is server-resolved (no client projection).
-        if ($column->isRequiredStatic()) {
-            $client[] = ['rule' => 'required'];
-        }
-
-        if (($max = $column->getMaxLength()) !== null) {
-            $client[] = ['rule' => 'maxLength', 'value' => $max];
-        }
-
-        foreach ($column->getRules() as $rule) {
-            if (! is_string($rule)) {
-                // Closures / Rule objects are server-only.
-                continue;
-            }
-
-            foreach ($this->projectStringRule($rule) as $projected) {
-                $client[] = $projected;
-            }
-        }
-
-        return $client;
+        return $this->compile($column)['client'];
     }
 
     /**
@@ -135,10 +112,7 @@ class RuleCompiler
      */
     public function toConfig(Column $column): array
     {
-        return [
-            'client' => $this->clientRules($column),
-            'serverOnly' => $this->hasServerOnlyRules($column),
-        ];
+        return $this->compile($column);
     }
 
     /**
@@ -147,27 +121,55 @@ class RuleCompiler
      */
     protected function hasServerOnlyRules(Column $column): bool
     {
-        if ($column->isRequiredDynamic()) {
-            return true;
+        return $this->compile($column)['serverOnly'];
+    }
+
+    /**
+     * The client subset and the serverOnly flag, from one walk over the declared rules.
+     *
+     * What: Each string rule is projected once: a non-empty projection joins the client set,
+     *       an empty one (cross-field, db, unknown) marks the column serverOnly. Any non-string
+     *       rule (a closure, a Rule object, an array) is serverOnly too, as are a per-row
+     *       required closure and the implicit type rules (in:, boolean, date_format).
+     * Why:  toConfig() runs per editable column on every full render; projecting each rule
+     *       once for the client list and again for the flag doubled that work.
+     *
+     * @return array{client: list<array{rule: string, value?: mixed}>, serverOnly: bool}
+     */
+    private function compile(Column $column): array
+    {
+        $client = [];
+
+        // Static required only — a Closure required is server-resolved (no client projection).
+        if ($column->isRequiredStatic()) {
+            $client[] = ['rule' => 'required'];
         }
 
-        // Implicit type rules (in:/boolean/date_format) run server-side only.
-        if ($column->implicitRules() !== []) {
-            return true;
+        if (($max = $column->getMaxLength()) !== null) {
+            $client[] = ['rule' => 'maxLength', 'value' => $max];
         }
+
+        $serverOnly = $column->isRequiredDynamic() || $column->implicitRules() !== [];
 
         foreach ($column->getRules() as $rule) {
-            if ($rule instanceof Closure) {
-                return true;
-            }
-            if (is_string($rule) && $this->projectStringRule($rule) === []) {
-                return true;
-            }
             if (! is_string($rule)) {
-                return true; // Rule objects, arrays — server-only
+                $serverOnly = true; // closures, Rule objects, arrays
+
+                continue;
+            }
+
+            $projected = $this->projectStringRule($rule);
+            if ($projected === []) {
+                $serverOnly = true;
+
+                continue;
+            }
+
+            foreach ($projected as $entry) {
+                $client[] = $entry;
             }
         }
 
-        return false;
+        return ['client' => $client, 'serverOnly' => $serverOnly];
     }
 }

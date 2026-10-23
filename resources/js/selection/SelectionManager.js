@@ -169,7 +169,9 @@ export default class SelectionManager {
             col,
             rowCount: this.store.rowCount(),
             mask: this.store.navigabilityMask(),
-            page: this.pageSize(),
+            // Only the page intents read it, and measuring it costs two getComputedStyle
+            // calls plus a clientHeight read — not something every arrow key should pay.
+            page: intent === 'pageUp' || intent === 'pageDown' ? this.pageSize() : 0,
         });
     }
 

@@ -1,0 +1,23 @@
+# Keep development-only files out of the Composer archive (`git archive`, which Packagist
+# dist downloads use). What ships: src/, resources/, config/, routes/, database/, the
+# README/LICENSE, and dist/ minus the source map (the bundle carries no sourceMappingURL
+# comment, so nothing requests it).
+/.gitattributes        export-ignore
+/.gitignore            export-ignore
+/.github               export-ignore
+/assets                export-ignore
+/build                 export-ignore
+/docs                  export-ignore
+/tests                 export-ignore
+/package.json          export-ignore
+/package-lock.json     export-ignore
+/phpunit.xml           export-ignore
+/phpstan.neon          export-ignore
+/pint.json             export-ignore
+/google4a1d148577db724a.html export-ignore
+/dist/*.map            export-ignore
+
+# The precompressed siblings the AssetController serves are byte streams: never diff them
+# and never convert line endings (core.autocrlf would corrupt them on a Windows checkout).
+*.br                   binary
+*.gz                   binary

@@ -33,7 +33,7 @@ export default class ErrorPainter {
             this.schedule(cells.map(({ rowKey, colKey }) => cellMapKey(rowKey, colKey)));
         });
         this.offRows = bus.on('rows:changed', () => this.reassert());
-        this.offWindow = bus.on('body:window-rendered', () => this.reassert());
+        this.offWindow = bus.on('body:window-rendered', (delta) => this.reassert(delta));
         this.offEditor = bus.on('editor:opened', () => this.paintEditorError());
 
         this.onKeyDown = (event) => this.handleKey(event);
@@ -313,8 +313,40 @@ export default class ErrorPainter {
         input.setAttribute('aria-describedby', error.id);
     }
 
-    /** Re-apply state after BodyRenderer replaces cell DOM, touching state keys only. */
-    reassert() {
+    /**
+     * Re-apply state after BodyRenderer replaces cell DOM, touching state keys only. A window
+     * delta ({added, removed} row keys from a virtual shift) narrows it to the rows that
+     * entered — the kept rows still carry their classes.
+     *
+     * @param {{added?: string[], removed?: string[]}|null} [delta]
+     */
+    reassert(delta = null) {
+        if (delta && Array.isArray(delta.added)) {
+            const entered = new Set(delta.added);
+            const left = new Set(delta.removed || []);
+            const rowOf = (key) => {
+                const address = splitCellMapKey(key);
+                return address ? address.rowKey : null;
+            };
+            for (const painted of [this.paintedErrors, this.paintedDirty, this.paintedPending]) {
+                for (const key of [...painted]) {
+                    if (left.has(rowOf(key))) {
+                        painted.delete(key);
+                    }
+                }
+            }
+            const keys = [];
+            const collect = (key) => {
+                if (entered.has(rowOf(key))) {
+                    keys.push(key);
+                }
+            };
+            this.store.errors.forEach((_, key) => collect(key));
+            this.store.dirty.forEach(collect);
+            this.store.pending.forEach(collect);
+            this.schedule(keys);
+            return;
+        }
         this.paintedErrors.clear();
         this.paintedDirty.clear();
         this.paintedPending.clear();

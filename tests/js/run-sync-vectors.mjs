@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import EventBus from '../../resources/js/core/EventBus.js';
 import StateStore from '../../resources/js/core/StateStore.js';
 import SyncManager from '../../resources/js/sync/SyncManager.js';
+import { cellMapKey } from '../../resources/js/util/dom.js';
 
 function makeStore(sync = 'per-cell') {
     const bus = new EventBus();
@@ -203,6 +204,103 @@ function result(seq, overrides = {}) {
     assert.equal(calls, 2);
     assert.equal(store.dirty.size, 0);
     sync.destroy();
+}
+
+// A batch marks its cells pending in one pass: one sync-state carrying every cell and one
+// edit-state, then the queue's own state and the flush start (3 sync-state emits for a
+// 100-cell batch, not 102).
+{
+    const { bus, store } = makeStore();
+    store.setRows(Array.from({ length: 100 }, (_, i) => ({ _k: 'b' + i, name: '' })));
+    const sync = new SyncManager(store, bus, { gridOps: () => new Promise(() => {}) });
+    const items = store.rows.map((row) => ({
+        op: { seq: store.nextSeq(), t: 'set', row: row._k, col: 'name', v: 'x' },
+        cells: store.applyLocalSet(row._k, 'name', 'x'),
+    }));
+    const syncStates = [];
+    let editStates = 0;
+    bus.on('sync-state', (state) => syncStates.push(state));
+    bus.on('edit-state', () => { editStates += 1; });
+    sync.enqueueBatch(items);
+    assert.equal(syncStates.length, 3, 'markPendingBatch + queue state + flush start');
+    assert.equal(syncStates[0].cells.length, 100, 'the pending emit carries every cell');
+    assert.equal(editStates, 1);
+    assert.equal(store.pending.size, 100);
+    assert.equal(store.pendingSeqs.get(cellMapKey('b99', 'name')).has(items[99].op.seq), true);
+    assert.equal(sync.status, 'syncing');
+    sync.destroy();
+}
+
+// GridCore publishes the sync state once per task with the final state: a 100-cell paste
+// (30 existing rows + 20 appended, two columns) dispatches lgrid:statechange once, and the
+// acknowledgement once more.
+{
+    const { FakeElement, installFakeDom } = await import('./support/fake-dom.mjs');
+    const dom = installFakeDom();
+    const { default: GridCore } = await import('../../resources/js/core/GridCore.js');
+    const { default: ClipboardManager } = await import('../../resources/js/clipboard/ClipboardManager.js');
+    const root = new FakeElement();
+    const dispatched = [];
+    root.dispatchEvent = (event) => {
+        dispatched.push({ type: event.type, ...event.detail });
+        return true;
+    };
+    let acknowledge;
+    const wire = {
+        gridOps: (_name, batch) => new Promise((resolve) => {
+            acknowledge = () => resolve({
+                version: 1,
+                footer: {},
+                results: batch.ops.map((op) => ({ seq: op.seq, ok: true, patch: [], errors: [] })),
+            });
+        }),
+    };
+    const core = new GridCore({
+        name: 'lines',
+        columns: [
+            { key: 'name', label: 'Name', visible: true, editable: true, navigable: true, parse: { kind: 'string' } },
+            { key: 'qty', label: 'Qty', visible: true, editable: true, navigable: true, parse: { kind: 'int' } },
+        ],
+        rows: Array.from({ length: 30 }, (_, i) => ({ _k: 'r' + i, name: '', qty: 0 })),
+        layout: { editable: true, autoAppend: true },
+    }, {
+        root,
+        body: new FakeElement(),
+        wire,
+        editor: Object.assign(new FakeElement(), { querySelector: () => null }),
+        syncStatus: new FakeElement(),
+    });
+    // installEditing() runs after init() has built these; stand-ins are enough here.
+    core.renderer = { cellElFor: () => null, repaintCell: () => null, footer: { render() {} }, destroy() {} };
+    core.clipboard = new ClipboardManager(core.store, {});
+    core.installEditing();
+    await Promise.resolve();
+    assert.equal(dispatched.length, 1, 'the install publishes the initial state once');
+    assert.equal(dispatched[0].type, 'lgrid:statechange');
+
+    core.store.setActive({ rowKey: 'r0', colKey: 'name' });
+    const tsv = Array.from({ length: 50 }, (_, i) => `N${i}\t${i}`).join('\n');
+    core.clipboard.paste(tsv, { editor: core.editorManager, sync: core.sync, popup: null });
+    assert.equal(core.store.rowCount(), 50);
+    assert.equal(core.store.pending.size, 100);
+    assert.equal(dispatched.length, 1, 'nothing is dispatched inside the paste task');
+    await Promise.resolve();
+    assert.equal(dispatched.length, 2, 'the 100-cell paste dispatches lgrid:statechange once');
+    assert.equal(dispatched[1].status, 'syncing');
+    assert.equal(dispatched[1].pending, 100);
+    assert.equal(core.refs.syncStatus.textContent, 'Syncing 100…');
+
+    acknowledge();
+    await core.sync.whenSettled();
+    await Promise.resolve();
+    assert.equal(dispatched.length, 3, 'the acknowledgement dispatches once more');
+    assert.equal(dispatched[2].status, 'idle');
+    assert.equal(dispatched[2].pending, 0);
+    assert.equal(dispatched[2].modified, 101, '100 cells + the structural flag for the appended rows');
+    assert.equal(core.refs.syncStatus.textContent, 'Changes ready to save');
+
+    core.destroy();
+    dom.restore();
 }
 
 console.log('sync vectors: ok');

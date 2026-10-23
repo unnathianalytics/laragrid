@@ -40,6 +40,11 @@ class LaraGridServiceProvider extends ServiceProvider
         $this->app->singleton(CastRegistry::class);
         $this->app->singleton(ExporterRegistry::class);
 
+        // The host→Blade-component mount registry (which grids the browser already holds).
+        // Scoped, not singleton: Octane flushes it per request, so a render that throws can
+        // never leak a frame into the next request's first paint.
+        $this->app->scoped(Support\MountedGrids::class);
+
         // Saved-view storage (->savedViews()): swappable — an app rebinds the interface in its
         // own provider to keep views in Redis / a tenant table / an existing preference store.
         $this->app->bind(Views\ViewStore::class, Views\DatabaseViewStore::class);

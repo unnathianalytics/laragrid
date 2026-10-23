@@ -90,15 +90,40 @@ export default class ResizeManager {
         }
 
         this.refs.root.classList.add('lgrid--resizing');
+        // One layout read per drag: every move below reuses this width.
+        this.layout.holdAvailableWidth();
 
+        // At most one template write per frame, at the latest pointer position (pointermove
+        // can fire several times a frame); pointerup applies any position still pending.
+        const request = typeof requestAnimationFrame === 'function'
+            ? requestAnimationFrame
+            : (callback) => setTimeout(callback, 16);
+        const cancel = typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout;
+        let frame = null;
+        let latestX = null;
+        const applyLatest = () => {
+            frame = null;
+            if (latestX !== null) {
+                this.applyWidth(column, startWidth + (latestX - startX));
+                latestX = null;
+            }
+        };
         const onMove = (ev) => {
-            this.applyWidth(column, startWidth + (ev.clientX - startX));
+            latestX = ev.clientX;
+            if (frame === null) {
+                frame = request(applyLatest);
+            }
         };
         const onUp = () => {
             window.removeEventListener('pointermove', onMove);
             window.removeEventListener('pointerup', onUp);
             window.removeEventListener('pointercancel', onUp);
+            if (frame !== null) {
+                cancel(frame);
+            }
+            applyLatest();
             this.refs.root.classList.remove('lgrid--resizing');
+            this.layout.releaseAvailableWidth();
             this.commit(column);
         };
         window.addEventListener('pointermove', onMove);
