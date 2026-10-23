@@ -9,6 +9,6 @@
         "test": "node tests/js/run-expression-vectors.mjs && node tests/js/run-lru-vectors.mjs && node tests/js/run-option-cache-key.mjs && node tests/js/run-nav-vectors.mjs && node tests/js/run-picker-vectors.mjs && node tests/js/run-undo-vectors.mjs && node tests/js/run-zero-row-vectors.mjs && node tests/js/run-sync-vectors.mjs && node tests/js/run-editable-reliability.mjs && node tests/js/run-boot-order.mjs && node tests/js/run-facade-surface.mjs && node tests/js/run-sort-vectors.mjs && node tests/js/run-hide-vectors.mjs && node tests/js/run-query-seed.mjs && node tests/js/run-sizing-vectors.mjs && node tests/js/run-column-visibility.mjs && node tests/js/run-export-source.mjs && node tests/js/run-clipboard-vectors.mjs && node tests/js/run-clear-vectors.mjs && node tests/js/run-visible-columns.mjs && node tests/js/run-virtual-window.mjs && node tests/js/run-paste-batch.mjs && node tests/js/run-draft-store.mjs && node tests/js/run-hot-path-vectors.mjs && node tests/js/run-shell-boot.mjs"
     },
     "devDependencies": {
-        "esbuild": "^0.28.1"
+        "esbuild": "0.28.2"
     }
 }
