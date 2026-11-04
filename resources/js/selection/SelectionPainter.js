@@ -214,6 +214,29 @@ export default class SelectionPainter {
         if (!rect) {
             return;
         }
+        // A row move: the painted rows now sit at shifted indexes, and the store collapsed the
+        // selection. Clear each painted row where it went, then let paintSelection start over.
+        if (change.moved) {
+            const { from, to } = change.moved;
+            const now = (i) => {
+                if (i === from) {
+                    return to;
+                }
+                if (from < to && i > from && i <= to) {
+                    return i - 1;
+                }
+                if (to < from && i >= to && i < from) {
+                    return i + 1;
+                }
+                return i;
+            };
+            for (let i = rect.r0; i <= rect.r1; i++) {
+                const r = now(i);
+                this.paintRect({ r0: r, r1: r, c0: rect.c0, c1: rect.c1 }, false);
+            }
+            this.paintedRect = null;
+            return;
+        }
         const span = shiftRowSpan(rect, change);
         this.paintedRect = span ? { ...rect, ...span } : null;
         if (span && change.inserted) {

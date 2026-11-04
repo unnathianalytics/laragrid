@@ -13,7 +13,7 @@
  * When: Built by GridCore from the @js() config at init; read by the Renderer and the M2 managers.
  */
 import { evaluate as evalExpr } from '../formula/ExprEval.js';
-import { cellMapKey } from '../util/dom.js';
+import { cellMapKey, splitClasses, NO_CLASSES } from '../util/dom.js';
 
 /**
  * Type-aware cell comparison for the LOCAL sort path (in-memory display grids).
@@ -80,6 +80,29 @@ export function shiftRowSpan(span, change) {
 }
 
 const NO_DEPENDENTS = Object.freeze([]);
+const NO_CLASS_DEPENDENTS = Object.freeze({ cells: NO_DEPENDENTS, row: false });
+
+/**
+ * The class tokens of every declarative rule ({column, in, class}) the row matches.
+ *
+ * @param {Array<{column: string, in: string[], class: string}>|undefined} rules
+ * @param {object|null} row
+ * @returns {string[]}
+ */
+function matchClassRules(rules, row) {
+    if (!rules || rules.length === 0 || !row) {
+        return NO_CLASSES;
+    }
+    let out = null;
+    for (const rule of rules) {
+        const value = row[rule.column];
+        const current = value == null ? '' : String(value);
+        if ((rule.in || []).some((candidate) => String(candidate) === current)) {
+            out = (out || []).concat(splitClasses(rule.class));
+        }
+    }
+    return out || NO_CLASSES;
+}
 
 /**
  * The operator-hidden column set: a Set whose in-place mutations (ColumnChooser.setHidden adds
@@ -137,6 +160,8 @@ export default class StateStore {
         this._byKey = null;
         /** @type {Map<string, string[]>|null} lockedWhen controller key → dependent column keys. */
         this._lockDependents = null;
+        /** @type {Map<string, {cells: string[], row: boolean}>|null} classWhen controller key → dependents. */
+        this._classDependents = null;
 
         /** Rows in display order (array of row objects, each carrying `_k`). */
         this.rows = [];
@@ -280,6 +305,19 @@ export default class StateStore {
         this.structureModified = false;
         /** @type {Map<string, string>} error message by cellMapKey (or `${_k}_row` for row errors). */
         this.errors = new Map();
+        /**
+         * Cells whose value is a pasted picker LABEL the server has not resolved yet (F3):
+         * cellMapKey → the lookup op's seq. A draft snapshot carries the keys so a reload
+         * re-resolves them instead of storing the label as an id.
+         * @type {Map<string, number>}
+         */
+        this.lookups = new Map();
+        /**
+         * Error keys set by the last grid-level validation result (`scope: 'rows'`, F5). The
+         * next such result replaces them wholesale — an op-level settle never clears them.
+         * @type {Set<string>}
+         */
+        this.rowsScopedErrors = new Set();
         /**
          * The undo/redo recorder (§1.4, completed): GridCore points this at the UndoManager for
          * an editable grid; every optimistic mutator below reports its before/after through it.
@@ -571,6 +609,7 @@ export default class StateStore {
         this._visibleIndex = null;
         this._byKey = null;
         this._lockDependents = null;
+        this._classDependents = null;
     }
 
     /**
@@ -891,6 +930,64 @@ export default class StateStore {
     }
 
     /**
+     * The declarative host classes (`classWhen`, {column, in, class} — serialized only when
+     * declared) this row's cell carries: evaluated against the row's own values, so the class
+     * follows the controlling cell the instant it changes.
+     *
+     * @param {object|null} row
+     * @param {object|null} column the serialized column config
+     * @returns {string[]} class tokens (callers must not mutate)
+     */
+    cellClasses(row, column) {
+        return matchClassRules(column && column.classWhen, row);
+    }
+
+    /**
+     * The declarative host classes (`layout.rowClassWhen`) this row's element carries.
+     *
+     * @param {object|null} row
+     * @returns {string[]} class tokens (callers must not mutate)
+     */
+    rowClasses(row) {
+        return matchClassRules(this.layout && this.layout.rowClassWhen, row);
+    }
+
+    /**
+     * What a change to `colKey` must repaint for the declarative classes: the column keys whose
+     * `classWhen` reads it, and whether a `rowClassWhen` rule reads it. Built once (the Renderer
+     * asks per changed cell per frame); callers must not mutate the result.
+     *
+     * @param {string} colKey
+     * @returns {{cells: string[], row: boolean}}
+     */
+    classDependentsOf(colKey) {
+        if (this._classDependents === null) {
+            const map = new Map();
+            const entryFor = (key) => {
+                let entry = map.get(key);
+                if (!entry) {
+                    entry = { cells: [], row: false };
+                    map.set(key, entry);
+                }
+                return entry;
+            };
+            for (const c of this.columns) {
+                for (const rule of (c && c.classWhen) || []) {
+                    const entry = entryFor(rule.column);
+                    if (!entry.cells.includes(c.key)) {
+                        entry.cells.push(c.key);
+                    }
+                }
+            }
+            for (const rule of (this.layout && this.layout.rowClassWhen) || []) {
+                entryFor(rule.column).row = true;
+            }
+            this._classDependents = map;
+        }
+        return this._classDependents.get(colKey) || NO_CLASS_DEPENDENTS;
+    }
+
+    /**
      * Whether a cell is REQUIRED for this row — statically (`required: true`) or by its
      * column's declarative `requiredWhen` ({column, in} — e.g. the voucher Debit under dc='D').
      * Consumed by the NAV-Enter blank-required block (G7): an engaged row's active-side amount
@@ -1033,15 +1130,21 @@ export default class StateStore {
      * @param {string} rowKey
      * @param {string} colKey
      * @param {*} value the PARSED model value (parse.js already ran)
+     * @param {{lookup?: boolean}} [opts] `lookup`: the value is a pasted picker label the server
+     *        resolves (F3) — the undo record keeps the flag so a redo resolves it again
      * @returns {Array<{rowKey: string, colKey: string}>}
      */
-    applyLocalSet(rowKey, colKey, value) {
+    applyLocalSet(rowKey, colKey, value, opts) {
         const hit = this.rowByKey.get(rowKey);
         if (!hit) {
             return [];
         }
         if (this.recorder && hit.row[colKey] !== value) {
-            this.recorder.record({ t: 'set', rowKey, colKey, before: hit.row[colKey], after: value });
+            const entry = { t: 'set', rowKey, colKey, before: hit.row[colKey], after: value };
+            if (opts && opts.lookup) {
+                entry.lookup = true;
+            }
+            this.recorder.record(entry);
         }
         hit.row[colKey] = value;
 
@@ -1134,7 +1237,7 @@ export default class StateStore {
      * so copy, Delete and fill-down keep acting on the rows the operator selected and the
      * painter's diff on rows:changed finds nothing to repaint.
      *
-     * @param {{inserted?: {keys: string[], index: number}, removed?: {keys: string[], index: number}}} change
+     * @param {{inserted?: {keys: string[], index: number}, removed?: {keys: string[], index: number}, moved?: {key: string, from: number, to: number}}} change
      */
     emitStructural(change) {
         this.shiftSelection(change);
@@ -1143,6 +1246,9 @@ export default class StateStore {
         }
         if (change.removed) {
             this.bus.emit('rows:removed', change.removed);
+        }
+        if (change.moved) {
+            this.bus.emit('rows:moved', change.moved);
         }
         this.bus.emit('rows:changed', { rows: this.rows, incremental: true, ...change });
         this.markStructureModified();
@@ -1156,6 +1262,14 @@ export default class StateStore {
     shiftSelection(change) {
         const sel = this.selection;
         if (!sel) {
+            return;
+        }
+        // A row move scatters a rectangle: collapse it onto the active cell, which follows its
+        // row by key.
+        if (change.moved) {
+            const at = this.active ? this.indexOf(this.active) : { row: -1, col: -1 };
+            this.anchor = this.active;
+            this.selection = at.row < 0 ? null : { r0: at.row, r1: at.row, c0: at.col, c1: at.col, kind: 'cell' };
             return;
         }
         if (sel.kind === 'all' || sel.kind === 'col') {
@@ -1224,6 +1338,54 @@ export default class StateStore {
         this.clearRowState(rowKey);
         this.reindex();
         this.emitStructural({ removed: { keys: [rowKey], index: at } });
+    }
+
+    /**
+     * Move a row to a new index (F4: Alt+Up / Alt+Down, the gutter drag, undo of a move).
+     * Structural and incremental like insert/remove: one splice, one reindex, one undo record,
+     * `rows:moved` then an incremental `rows:changed`. A move onto the current index is a no-op.
+     *
+     * @param {string} rowKey
+     * @param {number} toIndex clamped to the row range
+     * @returns {boolean} whether the row moved
+     */
+    moveRow(rowKey, toIndex) {
+        const from = this.rowIndexOf(rowKey);
+        if (from < 0) {
+            return false;
+        }
+        const to = Math.max(0, Math.min(toIndex, this.rows.length - 1));
+        if (to === from) {
+            return false;
+        }
+        const [row] = this.rows.splice(from, 1);
+        this.rows.splice(to, 0, row);
+        if (this.recorder) {
+            this.recorder.record({ t: 'move', rowKey, from, to });
+        }
+        this.reindex();
+        this.emitStructural({ moved: { key: rowKey, from, to } });
+        return true;
+    }
+
+    /**
+     * The wire op that places `rowKey` where it now is: `before` the next row, else `after` the
+     * previous row (the server resolves the anchor among the other rows, like insert).
+     *
+     * @param {string} rowKey
+     * @returns {{seq: number, t: 'move', row: string, before?: string, after?: string}}
+     */
+    moveOpFor(rowKey) {
+        const at = this.rowIndexOf(rowKey);
+        const op = { seq: this.nextSeq(), t: 'move', row: rowKey };
+        const next = this.rows[at + 1];
+        const prev = at > 0 ? this.rows[at - 1] : null;
+        if (next) {
+            op.before = next._k;
+        } else if (prev) {
+            op.after = prev._k;
+        }
+        return op;
     }
 
     /**
@@ -1318,6 +1480,8 @@ export default class StateStore {
         this.modified.clear();
         this.structureModified = false;
         this.errors.clear();
+        this.lookups.clear();
+        this.rowsScopedErrors.clear();
         this.version = 0;
         if (this.recorder) {
             // The reseed replaced the rows wholesale — every undo record describes rows that
@@ -1493,6 +1657,12 @@ export default class StateStore {
         }
 
         for (const result of response.results || []) {
+            // A grid-level validation result (`scope: 'rows'`, appended after the op results)
+            // replaces the previous one's messages; it carries no patch and settles no cells.
+            if (result.scope === 'rows') {
+                this.applyRowsScopedErrors(result, changedErrors);
+                continue;
+            }
             const item = bySeq.get(result.seq);
             // Errors: accept only when a newer optimistic edit has not superseded this result.
             for (const [rowKey, cols] of Object.entries(result.errors || {})) {
@@ -1521,6 +1691,34 @@ export default class StateStore {
                         hit.row._labels = { ...(hit.row._labels || {}), ...(value || {}) };
                         for (const labelled of Object.keys(value || {})) {
                             repaint.push({ rowKey, colKey: labelled });
+                        }
+                        continue;
+                    }
+                    // Refreshed closure classes (rowClass()/cellClass() grids): `_rowClass` is
+                    // the row's new class (null = none) and repaints the row element through the
+                    // `_rowClass` pseudo-cell; `_cellClass` replaces the row's whole map and
+                    // repaints every cell whose class came or went.
+                    if (colKey === '_rowClass') {
+                        if (value == null || value === '') {
+                            delete hit.row._rowClass;
+                        } else {
+                            hit.row._rowClass = value;
+                        }
+                        repaint.push({ rowKey, colKey: '_rowClass' });
+                        continue;
+                    }
+                    if (colKey === '_cellClass') {
+                        const next = value && !Array.isArray(value) ? value : {};
+                        const previous = hit.row._cellClass || {};
+                        for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+                            if (previous[key] !== next[key]) {
+                                repaint.push({ rowKey, colKey: key });
+                            }
+                        }
+                        if (Object.keys(next).length === 0) {
+                            delete hit.row._cellClass;
+                        } else {
+                            hit.row._cellClass = next;
                         }
                         continue;
                     }
@@ -1569,6 +1767,55 @@ export default class StateStore {
         this.emitEditState();
     }
 
+    /**
+     * Replace the grid-level validation messages (F5) with a `scope: 'rows'` result's errors.
+     * The previous scoped keys are dropped first; a message lands unless a newer local edit of
+     * that cell superseded the result, or an op-level error already holds the key (that one is
+     * cleared by its own settle). Row and grid messages always land.
+     *
+     * @param {{seq: number, errors?: Object<string, Object<string, string>>}} result
+     * @param {Set<string>} changedErrors collects every key set or cleared
+     */
+    applyRowsScopedErrors(result, changedErrors) {
+        for (const key of this.rowsScopedErrors) {
+            if (this.errors.delete(key)) {
+                changedErrors.add(key);
+            }
+        }
+        this.rowsScopedErrors.clear();
+        for (const [rowKey, cols] of Object.entries(result.errors || {})) {
+            for (const [colKey, message] of Object.entries(cols || {})) {
+                const key = this.errorKey(rowKey, colKey);
+                const revisionKey = colKey === '_row' ? null : cellMapKey(rowKey, colKey);
+                if (revisionKey && (this.cellRevisions.get(revisionKey) || 0) > result.seq) {
+                    continue;
+                }
+                if (this.errors.has(key)) {
+                    continue;
+                }
+                this.errors.set(key, message);
+                this.rowsScopedErrors.add(key);
+                changedErrors.add(key);
+            }
+        }
+    }
+
+    /**
+     * Track (seq) or forget (null) a cell's unresolved paste-by-label lookup. A later plain
+     * write to the cell supersedes the lookup, so every commit calls this.
+     *
+     * @param {string} rowKey
+     * @param {string} colKey
+     * @param {number|null} seq the lookup op's seq, or null when the newest write is not one
+     */
+    trackLookup(rowKey, colKey, seq) {
+        if (seq != null) {
+            this.lookups.set(cellMapKey(rowKey, colKey), seq);
+        } else if (this.lookups.size > 0) {
+            this.lookups.delete(cellMapKey(rowKey, colKey));
+        }
+    }
+
     /** Clear the acknowledged sequence for exact client-known cells. */
     settleOp(result, cells = []) {
         for (const { rowKey, colKey } of cells) {
@@ -1591,6 +1838,13 @@ export default class StateStore {
             if (!cellFailed && (this.cellRevisions.get(ck) || 0) <= result.seq) {
                 this.dirty.delete(ck);
                 this.errors.delete(this.errorKey(rowKey, colKey));
+            }
+            // A resolved paste-by-label lookup is done. A refused one stays tracked while the
+            // pasted text is still the cell's value: a reload must resolve it again, never
+            // store the label as an id.
+            const lookupSeq = this.lookups.get(ck);
+            if (lookupSeq !== undefined && lookupSeq <= result.seq && !cellFailed) {
+                this.lookups.delete(ck);
             }
         }
         return cells;
@@ -1653,6 +1907,16 @@ export default class StateStore {
         for (const key of [...this.errors.keys()]) {
             if (key.startsWith(prefix)) {
                 this.errors.delete(key);
+            }
+        }
+        for (const key of [...this.lookups.keys()]) {
+            if (key.startsWith(prefix)) {
+                this.lookups.delete(key);
+            }
+        }
+        for (const key of [...this.rowsScopedErrors]) {
+            if (key.startsWith(prefix)) {
+                this.rowsScopedErrors.delete(key);
             }
         }
     }

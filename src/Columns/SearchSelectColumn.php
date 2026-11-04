@@ -174,8 +174,52 @@ final class SearchSelectColumn extends Column
             return [];
         }
 
+        $options = $this->normaliseOptions(($this->optionsResolver)($term, $row));
+
+        usort($options, fn (array $a, array $b): int => strcasecmp($a['label'], $b['label']));
+
+        return array_slice($options, 0, $this->limit);
+    }
+
+    /**
+     * Resolve a pasted label to the options it names exactly (paste by label, F3): run the
+     * search closure with the label as the term and keep every option whose label equals it
+     * case-insensitively after trimming, or whose value equals it — scanned BEFORE the limit()
+     * slice, so an exact match is found even behind 50 longer labels sharing its prefix. One
+     * hit resolves the paste; none or several refuse it. The closure must filter by the term
+     * for this to find anything it would not return first.
+     *
+     * @param  array<string, mixed>  $row
+     * @return list<array{value: string, label: string, meta?: string}>
+     */
+    public function resolveExact(string $label, array $row = []): array
+    {
+        $needle = trim($label);
+        if ($this->optionsResolver === null || $needle === '') {
+            return [];
+        }
+
+        $folded = mb_strtolower($needle);
+        $hits = [];
+        foreach ($this->normaliseOptions(($this->optionsResolver)($needle, $row)) as $option) {
+            if ($option['value'] === $needle || mb_strtolower(trim($option['label'])) === $folded) {
+                $hits[$option['value']] = $option;
+            }
+        }
+
+        return array_values($hits);
+    }
+
+    /**
+     * Normalise the closure's rows to {value, label(, meta)}; non-array rows are skipped.
+     *
+     * @param  iterable<int, mixed>  $rows
+     * @return list<array{value: string, label: string, meta?: string}>
+     */
+    private function normaliseOptions(iterable $rows): array
+    {
         $options = [];
-        foreach (($this->optionsResolver)($term, $row) as $option) {
+        foreach ($rows as $option) {
             if (! is_array($option)) {
                 continue;
             }
@@ -190,9 +234,7 @@ final class SearchSelectColumn extends Column
             $options[] = $normalized;
         }
 
-        usort($options, fn (array $a, array $b): int => strcasecmp($a['label'], $b['label']));
-
-        return array_slice($options, 0, $this->limit);
+        return $options;
     }
 
     public function painterId(): string

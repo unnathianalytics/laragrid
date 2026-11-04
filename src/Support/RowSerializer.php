@@ -76,6 +76,8 @@ class RowSerializer
         // within a grid — the "identical shape across a page swap" guarantee the pipeline relies on.
         if (is_array($row)) {
             $serialized = $row;
+            // Change-tracking originals (F6) are host-side bookkeeping, never client data.
+            unset($serialized['_orig']);
             $serialized['_k'] = $this->rowKey($grid, $row, $ordinal);
         } else {
             $serialized = ['_k' => $this->rowKey($grid, $row, $ordinal)];
@@ -134,8 +136,45 @@ class RowSerializer
             }
         }
 
+        return $this->applyClasses($grid, $serialized, $arr, $rowClass, $cellClass);
+    }
+
+    /**
+     * The closure-resolved classes of one editable host row: `_rowClass` and `_cellClass`
+     * (column key => class), each present only when non-empty — the same verdicts
+     * serializeOne() bakes, so the OpApplier can refresh them in an op patch after a write.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array{_rowClass?: string, _cellClass?: array<string, string>}
+     */
+    public function rowClasses(Grid $grid, array $row): array
+    {
+        unset($row['_rowClass'], $row['_cellClass']);
+        $resolved = $this->applyClasses(
+            $grid,
+            $row,
+            fn (): array => $row,
+            $grid->getRowClassResolver(),
+            $grid->getCellClassResolver(),
+        );
+
+        return array_intersect_key($resolved, ['_rowClass' => true, '_cellClass' => true]);
+    }
+
+    /**
+     * Run the rowClass / cellClass resolvers over a row and write their non-empty verdicts into
+     * it as `_rowClass` / `_cellClass` (cellClass sees the row with `_rowClass` already set).
+     *
+     * @param  array<string, mixed>  $serialized
+     * @param  \Closure(): array<string, mixed>  $view  The row view the rowClass closure reads.
+     * @param  (\Closure(array<string, mixed>): (string|null))|null  $rowClass
+     * @param  (\Closure(mixed, array<string, mixed>, string): (string|null))|null  $cellClass
+     * @return array<string, mixed>
+     */
+    protected function applyClasses(Grid $grid, array $serialized, \Closure $view, ?\Closure $rowClass, ?\Closure $cellClass): array
+    {
         if ($rowClass !== null) {
-            $class = $rowClass($arr());
+            $class = $rowClass($view());
             if ($class !== null && $class !== '') {
                 $serialized['_rowClass'] = $class;
             }
@@ -244,8 +283,8 @@ class RowSerializer
      * The clean rows an editable grid's host save() should persist (umbrella §3.3, gridRows()).
      *
      * What: Drops blank trailing rows (the auto-append artefact, G4) and strips the client-only
-     *       bookkeeping keys (`_k`, `_rowClass`, `_cellClass`) so nothing grid-internal leaks into
-     *       the saved data.
+     *       bookkeeping keys (`_k`, `_rowClass`, `_cellClass`, `_labels`, `_actions`, `_orig`) so
+     *       nothing grid-internal leaks into the saved data.
      * Why:  The host reads this — never the raw bound property — so the op protocol's stable keys
      *       and the auto-append blank row stay a pure client/transport concern. A row is "blank"
      *       when every EDITABLE column is empty, matching the OpApplier's own blank-row rule so the
@@ -262,11 +301,21 @@ class RowSerializer
             array_pop($rows);
         }
 
-        return array_map(function (array $row): array {
-            unset($row['_k'], $row['_rowClass'], $row['_cellClass'], $row['_labels'], $row['_actions']);
+        return array_map(fn (array $row): array => $this->cleanRow($row), $rows);
+    }
 
-            return $row;
-        }, $rows);
+    /**
+     * One row without the grid's bookkeeping keys (`_k`, `_rowClass`, `_cellClass`, `_labels`,
+     * `_actions`, `_orig`) — the shape a save persists.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    public function cleanRow(array $row): array
+    {
+        unset($row['_k'], $row['_rowClass'], $row['_cellClass'], $row['_labels'], $row['_actions'], $row['_orig']);
+
+        return $row;
     }
 
     /**

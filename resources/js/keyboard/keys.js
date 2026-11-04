@@ -105,6 +105,9 @@ export const SHARED_KEYMAP = {
     'Shift+Delete': { action: 'rowop', kind: 'delete' },
     F7: { action: 'rowop', kind: 'repeatAbove' },
     'Ctrl+d': { action: 'rowop', kind: 'fillDown' },
+    // Row move (F4): the active row swaps with its neighbour; the active cell follows it.
+    'Alt+ArrowUp': { action: 'rowop', kind: 'moveUp' },
+    'Alt+ArrowDown': { action: 'rowop', kind: 'moveDown' },
 
     // F9 is mode-aware: editable grids delete the active row; non-editable grids only hide
     // it from the current view. Hidden state is ephemeral: Shift+F9 restores it and any

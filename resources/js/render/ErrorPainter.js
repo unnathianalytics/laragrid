@@ -159,14 +159,18 @@ export default class ErrorPainter {
             const rowKey = key.endsWith('_row') ? key.slice(0, -4) : null;
             const hit = rowKey ? this.store.rowByKey.get(rowKey) : null;
             const first = this.store.visibleColumns()[0];
+            // `_grid_row` is a grid-level message (minRows, ->validateRows()): it belongs to no
+            // row, so it sorts first and reads "Grid — message".
+            const grid = rowKey === '_grid';
             entries.push({
                 key,
                 rowKey: hit ? rowKey : null,
                 colKey: hit && first ? first.key : null,
                 row: hit ? hit.index + 1 : '?',
-                rowIndex: hit ? hit.index : Number.MAX_SAFE_INTEGER,
+                rowIndex: hit ? hit.index : (grid ? -1 : Number.MAX_SAFE_INTEGER),
                 colIndex: -1,
                 column: hit ? 'Row' : 'Grid',
+                grid,
                 message,
             });
         }
@@ -188,7 +192,9 @@ export default class ErrorPainter {
             button.id = id;
             button.dataset.lgridErrorIndex = String(index);
             button.className = 'lgrid-error-item';
-            button.textContent = 'Row ' + entry.row + ' · ' + entry.column + ' — ' + entry.message;
+            button.textContent = entry.grid
+                ? 'Grid — ' + entry.message
+                : 'Row ' + entry.row + ' · ' + entry.column + ' — ' + entry.message;
             item.appendChild(button);
             fragment.appendChild(item);
             this.errorIds.set(entry.key, id);
@@ -278,6 +284,18 @@ export default class ErrorPainter {
         if (entry.rowKey && entry.colKey) {
             this.store.setActive({ rowKey: entry.rowKey, colKey: entry.colKey });
             this.refs.root.focus({ preventScroll: true });
+            return;
+        }
+        // A message without a cell (grid level, or a row that is gone): land on the first
+        // navigable cell and read the message out, so the operator still learns what is wrong.
+        const colIndex = this.store.navigabilityMask().indexOf(true);
+        const addr = colIndex >= 0 ? this.store.addressAt(0, colIndex) : null;
+        if (addr) {
+            this.store.setActive(addr);
+            this.refs.root.focus({ preventScroll: true });
+        }
+        if (this.refs.announcer) {
+            this.refs.announcer.textContent = entry.grid ? 'Grid: ' + entry.message : entry.message;
         }
     }
 

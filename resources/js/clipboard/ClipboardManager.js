@@ -257,11 +257,15 @@ export default class ClipboardManager {
 
         let applied = 0;
         let skipped = 0;
+        let lookedUp = 0;
         for (const cell of plan.cells) {
             const result = ctx.editor.pasteCell(cell.rowKey, cell.colKey, cell.column, cell.raw);
             if (result.ok) {
                 items.push({ op: result.op, cells: result.cells });
                 applied++;
+                if (result.lookup) {
+                    lookedUp++;
+                }
             } else {
                 this.store.setError(cell.rowKey, cell.colKey, result.message);
                 skipped++;
@@ -272,7 +276,8 @@ export default class ClipboardManager {
             ctx.sync.enqueueBatch(items);
         }
 
-        let message = `Pasted ${applied} ${applied === 1 ? 'cell' : 'cells'}.`;
+        let message = `Pasted ${applied} ${applied === 1 ? 'cell' : 'cells'}`
+            + (lookedUp ? `, ${lookedUp} looked up on the server.` : '.');
         if (skipped) {
             message += ` ${skipped} skipped.`;
         }

@@ -12,7 +12,7 @@
  *       re-render (plan §2.4 Renderer / §1.3 G20 ARIA grid pattern).
  * When: Called by Renderer on paint (and on setRows via the store's change event, M3+).
  */
-import { el, toggleClass, cellDomId, cellMapKey, setText } from '../util/dom.js';
+import { el, toggleClass, cellDomId, cellMapKey, setText, splitClasses, paintHostClasses } from '../util/dom.js';
 import { painterFor } from './CellPainters.js';
 
 export default class BodyRenderer {
@@ -369,6 +369,31 @@ export default class BodyRenderer {
         return true;
     }
 
+    /**
+     * Move one row element to the position its row now holds in the store (already moved),
+     * then restamp from the lower of the two indexes. The element and its cells are kept, so
+     * every key-addressed state (active ring, errors, host classes) moves with it.
+     * @param {string} key
+     * @param {number} from
+     * @param {number} to
+     * @returns {boolean} false when the body declined (caller falls back to a full render)
+     */
+    moveRow(key, from, to) {
+        if (!this.canMutateInPlace()) {
+            return false;
+        }
+        const rows = this.store.rows;
+        const rowEl = this.rowElByKey.get(key);
+        if (!rowEl || !rows[to] || rows[to]._k !== key) {
+            return false;
+        }
+        const after = rows[to + 1];
+        const ref = after ? this.rowElByKey.get(after._k) || null : null;
+        this.bodyEl.insertBefore(rowEl, ref);
+        this.restampRows(Math.min(from, to), this.store.visibleColumns());
+        return true;
+    }
+
     /** Re-stamp index-derived row state (aria-rowindex, stripe, serial cell) from `from` on. */
     restampRows(from, columns) {
         const rows = this.store.rows;
@@ -446,9 +471,9 @@ export default class BodyRenderer {
         // 1-based, and offset by the header row so AT reads a stable document position.
         rowEl.setAttribute('aria-rowindex', String(index + 2));
         toggleClass(rowEl, 'lgrid-row--stripe', this.striped && index % 2 === 1);
-        if (row._rowClass) {
-            rowEl.classList.add(row._rowClass);
-        }
+        // Host classes: the server closure verdict (`_rowClass`) plus the declarative
+        // rowClassWhen matches; repaintRowClasses() swaps them when either changes.
+        paintHostClasses(rowEl, splitClasses(row._rowClass), this.store.rowClasses(row));
 
         const cellClasses = row._cellClass || null;
 
@@ -461,6 +486,9 @@ export default class BodyRenderer {
             if (column.editable) {
                 cellEl.classList.add('lgrid-cell--editable');
             }
+            if (column.painter === 'serial') {
+                cellEl.classList.add('lgrid-cell--serial'); // the row-drag handle (F4)
+            }
             // Per-row declarative lock (lockedWhen): painted muted; the class tracks the
             // controlling value via repaintCell (Renderer repaints lock dependents).
             toggleClass(cellEl, 'lgrid-cell--locked', this.store.cellLocked(row, column));
@@ -469,9 +497,11 @@ export default class BodyRenderer {
 
             toggleClass(cellEl, 'lgrid-cell--right', column.align === 'right');
             toggleClass(cellEl, 'lgrid-cell--center', column.align === 'center');
-            if (cellClasses && cellClasses[column.key]) {
-                cellEl.classList.add(cellClasses[column.key]);
-            }
+            paintHostClasses(
+                cellEl,
+                splitClasses(cellClasses ? cellClasses[column.key] : null),
+                this.store.cellClasses(row, column),
+            );
             this.layout.applyFrozenTo(cellEl, colIndex);
 
             const painter = painterFor(column.painter);
@@ -580,7 +610,30 @@ export default class BodyRenderer {
         // Re-evaluate the per-row lock: the repaint may have been triggered by a change to the
         // CONTROLLING column (e.g. dc), which is exactly when the muted look must flip.
         toggleClass(cellEl, 'lgrid-cell--locked', this.store.cellLocked(hit.row, column));
+        // Same for the host classes: a classWhen controller changed, or a reconcile refreshed
+        // the row's closure-resolved `_cellClass`.
+        paintHostClasses(
+            cellEl,
+            splitClasses(hit.row._cellClass ? hit.row._cellClass[colKey] : null),
+            this.store.cellClasses(hit.row, column),
+        );
         return cellEl;
+    }
+
+    /**
+     * Repaint ONE row element's host classes in place: the closure verdict (`_rowClass`) plus
+     * the declarative rowClassWhen matches. Returns the row element (or null when unmounted).
+     * @param {string} rowKey
+     * @returns {HTMLElement|null}
+     */
+    repaintRowClasses(rowKey) {
+        const rowEl = this.rowElByKey.get(rowKey);
+        const hit = this.store.rowByKey.get(rowKey);
+        if (!rowEl || !hit) {
+            return null;
+        }
+        paintHostClasses(rowEl, splitClasses(hit.row._rowClass), this.store.rowClasses(hit.row));
+        return rowEl;
     }
 
     destroy() {

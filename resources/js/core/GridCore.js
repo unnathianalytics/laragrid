@@ -37,6 +37,7 @@ import HeaderFilters from '../render/HeaderFilters.js';
 import Toolbar from '../render/Toolbar.js';
 import RowActivator from '../interact/RowActivator.js';
 import ActionRunner from '../interact/ActionRunner.js';
+import RowDragger from '../interact/RowDragger.js';
 import ViewsManager from '../views/ViewsManager.js';
 import '../edit/builtin.js';
 
@@ -494,6 +495,10 @@ export default class GridCore {
         };
         this.refs.body.addEventListener('dblclick', this.onDblClick);
 
+        // Row move by dragging the serial gutter (F4): same store move + op as Alt+Up/Down.
+        this.rowDragger = new RowDragger(this.store, this.refs, (rowKey, toIndex) => this.rowMoveTo(rowKey, toIndex));
+        this.rowDragger.init();
+
         // TSV paste (M5, G15): the grid root owns the paste event in NAV mode; while the editor
         // is open its input handles paste natively. R7: the paste EVENT is permission-free.
         this.onPaste = (e) => {
@@ -531,6 +536,8 @@ export default class GridCore {
             repeatAbove: whenRowsLoaded(() => this.rowRepeatAbove()),
             fillDown: whenRowsLoaded(() => this.rowFillDown()),
             clear: whenRowsLoaded(() => this.clearSelectedCells()),
+            moveUp: whenRowsLoaded(() => this.rowMove(-1)),
+            moveDown: whenRowsLoaded(() => this.rowMove(1)),
         };
 
         // Footer live-total reconcile from op responses.
@@ -858,6 +865,42 @@ export default class GridCore {
             [],
             { flush: true },
         );
+    }
+
+    /** Alt+Up / Alt+Down: move the active row one place up or down (F4). */
+    rowMove(delta) {
+        const active = this.store.active;
+        if (!active) {
+            return;
+        }
+        this.rowMoveTo(active.rowKey, this.store.rowIndexOf(active.rowKey) + delta);
+    }
+
+    /**
+     * Move a row to an index (keyboard or gutter drag): optimistic store move, then a `move` op
+     * flushed at once. Refused while an editor is open or the rows are still deferred.
+     *
+     * @param {string} rowKey
+     * @param {number} toIndex
+     * @returns {boolean} whether the row moved
+     */
+    rowMoveTo(rowKey, toIndex) {
+        if (this.store.rowsDeferred || (this.editorManager && this.editorManager.isEditing())) {
+            return false;
+        }
+        if (!this.store.moveRow(rowKey, toIndex)) {
+            return false;
+        }
+        this.sync.enqueue(this.store.moveOpFor(rowKey), [], { flush: true });
+        const index = this.store.rowIndexOf(rowKey);
+        // Re-assert the active cell: the painter scrolls it into view at the row's new place.
+        if (this.store.active) {
+            this.store.setActive(this.store.active);
+        }
+        if (this.announcer) {
+            this.announcer.message(`Row moved to ${index + 1} of ${this.store.rowCount()}.`);
+        }
+        return true;
     }
 
     /** F7: duplicate the row immediately above the active row and focus the new copy. */
@@ -1286,6 +1329,9 @@ export default class GridCore {
         }
         if (this.editorManager) {
             this.editorManager.destroy();
+        }
+        if (this.rowDragger) {
+            this.rowDragger.destroy();
         }
         if (this.errorPainter) {
             this.errorPainter.destroy();

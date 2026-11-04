@@ -375,6 +375,12 @@ class ConfigSerializer
             $layout['rowActivate'] = ['navigate' => $grid->rowActivateNavigates()];
         }
 
+        // Declarative conditional row classes (->rowClassWhen()): the client evaluates them per
+        // row and re-evaluates on every change to a controlling column. Emitted only when declared.
+        if ($grid->getRowClassWhen() !== []) {
+            $layout['rowClassWhen'] = $grid->getRowClassWhen();
+        }
+
         // Exports (readonly grids): query-backed and trusted exportRows-backed grids both expose
         // the control. hasServerExportSource deliberately does not alter in-memory display mode.
         if ($grid->hasServerExportSource() && ($export = $grid->getExport()) !== null) {

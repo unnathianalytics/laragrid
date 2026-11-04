@@ -27,6 +27,10 @@ final class OpResult
      * @param  array<string, int|float|string>  $footer  Recomputed footer aggregate values by column.
      * @param  list<array<string, mixed>>  $rows  The applied rows (host writes back; NOT serialized to the wire).
      * @param  bool  $refreshHost  Whether any op touched a refreshesHost column (drop Renderless).
+     * @param  list<string>  $inserted  Keys of rows the batch inserted or duplicated (change
+     *                                  tracking, F6; off the wire).
+     * @param  list<array<string, mixed>>  $removed  Rows the batch removed, as they were just
+     *                                               before removal (change tracking; off the wire).
      */
     public function __construct(
         public readonly int $version,
@@ -34,11 +38,14 @@ final class OpResult
         public readonly array $footer,
         public readonly array $rows,
         public readonly bool $refreshHost,
+        public readonly array $inserted = [],
+        public readonly array $removed = [],
     ) {}
 
     /**
      * The wire response for gridOps — version + per-op results + footer. Deliberately omits `rows`
-     * (they ride the host snapshot) and `refreshHost` (a trait-side render decision, not client data).
+     * (they ride the host snapshot), `refreshHost` (a trait-side render decision, not client data)
+     * and the change-tracking `inserted` / `removed` bookkeeping.
      *
      * @return array{version: int, results: list<array<string, mixed>>, footer: array<string, int|float|string>}
      */

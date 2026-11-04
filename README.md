@@ -34,6 +34,7 @@ An editable entry grid — typed cell editors, ERP cell focus control (`FocusMod
 - [Quick start — a readonly list](#quick-start--a-readonly-list)
 - [Quick start — an editable entry grid](#quick-start--an-editable-entry-grid)
 - [Row lifecycle & blank rows](#row-lifecycle--blank-rows)
+- [Change sets](#change-sets)
 - [Ending entry — the completion flow](#ending-entry--the-completion-flow)
   - [`->endOfListOption()` — the picker exit](#-endoflistoption--the-picker-exit)
   - [`->completeWhenBalanced()` — the balancing guard](#-completewhenbalanceddr-cr--the-balancing-guard)
@@ -285,7 +286,8 @@ await grid.commitAndSave('save') // commit editor → flush → await stable que
 ```
 
 `commitAndSave()` refuses while validation errors, offline state, or a terminal sync failure
-remain. `lgrid:statechange` bubbles from the root with `canSave`, `pending`, `modified`,
+remain. Grid-level messages from a live `->validateRows()` count as validation errors, so they
+block it too `[v1.46.0+]`. `lgrid:statechange` bubbles from the root with `canSave`, `pending`, `modified`,
 `errors`, and the current sync status for declarative host buttons. If the host invokes Save
 some other way, call `await grid.whenSettled()` first and `await grid.markSaved()` only after
 the database transaction succeeds.
@@ -334,6 +336,41 @@ insertion and concurrent edits can never target the wrong row. If your host code
 the bound rows outside the op protocol (a save reset, importing lines), call
 `$this->reseedGrid('lines')` so the client adopts the new set wholesale; skipping it leaves
 the client referencing keys the server no longer has.
+
+## Change sets
+
+`[v1.46.0+]` For a screen that edits an existing document, declare `->trackChanges()` on the
+grid and call `$this->gridChanges('lines')` in `save()` instead of `gridRows()`. It validates
+exactly as `gridRows()` does (same `ValidationException`), then compares the rows with the
+**baseline**: the rows when you last called `reseedGrid()` (or, without it, the rows at the
+first op). A fresh document from `gridMountRows()` has an empty baseline, so every row is new.
+
+```php
+$changes = $this->gridChanges('lines');
+// [
+//     'inserted'  => [['key' => 'r7a1', 'row' => [...]]],
+//     'updated'   => [['key' => 'l12', 'row' => [...], 'changes' => ['qty' => ['from' => 1, 'to' => 3]]]],
+//     'removed'   => [['key' => 'l03', 'row' => [...]]],   // the row as it was in the baseline
+//     'unchanged' => [['key' => 'l01', 'row' => [...]]],
+//     'reordered' => true,                                  // the baseline rows changed order
+//     'order'     => ['l01', 'r7a1', 'l12'],                // the kept row keys, top to bottom
+// ]
+```
+
+Each `row` is a clean row, as `gridRows()` returns it. Values compare after the column's cast,
+so a seeded `10.0` and an entered `10.00` are the same decimal; a cell edited and then edited
+back is unchanged. A row inserted and removed again appears nowhere. A baseline row that the
+operator empties into a blank trailing row counts as removed. Use the row keys you seeded
+(`_k`, for example your line ids) to find the database lines.
+
+After a successful save, start a new baseline: call `reseedGrid('lines')` when you replace
+the rows, or `$this->markGridSaved('lines')` when you keep them. `gridChanges()` and
+`markGridSaved()` are protected, so the browser cannot call them.
+
+The grid keeps each edited cell's original value on the host rows (an `_orig` key that the
+browser and `gridRows()` never see) and the removed baseline rows in a locked component
+property. The Livewire snapshot grows with the number of edited cells and removed rows, and
+shrinks again at the next baseline. Grids without `->trackChanges()` keep no such state.
 
 ## Ending entry — the completion flow
 
@@ -429,8 +466,8 @@ at all and listen for `lgrid:complete` — the event fires with or without it.
 
 ## Server hooks — enrichment & row consistency
 
-Three server-side hooks let a grid keep its rows internally consistent without any client code.
-All of them receive a `RowContext` — `get('col')`, `set('col', $value)`,
+Three server-side hooks let a grid keep its rows internally consistent without any client code,
+and a fourth validates the whole row set. The first three receive a `RowContext` — `get('col')`, `set('col', $value)`,
 `setLabel('col', $text)` for picker display labels — and every `set()` rides the op response
 back into the client row. Crucially, **formula columns recompute after the hooks** in the same
 operation, so a hook that sets `nights` also refreshes `amount = nights × rate` in one round
@@ -460,7 +497,29 @@ SearchSelectColumn::make('item_id')
 
 // 3. After a row removal — recompute host-side chrome (an "Allocated" total, a balance badge):
 ->afterRowRemove(fn () => $this->recomputeTotals())
+
+// 4. Grid-level validation [v1.46.0+]: sees every kept row at once (blank trailing rows
+//    excluded, each row still carrying `_k`). Report by row key, never by position.
+->validateRows(function (RowsContext $rows): void {
+    $rows->unique('item_id', 'This item is already on another line.'); // flags 2nd and later
+    if (array_sum(array_column($rows->rows(), 'qty')) === 0) {
+        $rows->error('Enter at least one quantity.');                   // grid scope
+    }
+    foreach ($rows->rows() as $row) {
+        if (($row['qty'] ?? 0) > 1000) {
+            $rows->error('Needs approval.', $row['_k']);              // row scope
+            // $rows->error('Too many.', $row['_k'], 'qty');            // cell scope
+        }
+    }
+}, live: true)
 ```
+
+`->validateRows()` runs when the host calls `gridRows()` (its messages join the cell rules under
+the usual keys: `lines` for the grid, `lines.2` for a row, `lines.2.qty` for a cell) and on draft
+restore. With `live: true` it also runs once after every op batch: the messages appear in the
+grid as the operator types, Review errors lists a grid message as "Grid — …", and Save stays
+blocked until the next batch clears them. The live mode calls your closure once per batch with
+the whole row set, so keep it fast.
 
 The hooks are the *authoritative* half of the optimistic model: the client already painted the
 keystroke; the server decides the truth and patches back anything the hooks changed.
@@ -480,6 +539,16 @@ SearchSelectColumn::make('account_id')
     ->optionsDependOn(['dc'])
 ```
 
+**Paste by label** `[v1.46.0+]`. A label pasted onto a server-mode picker (for example item names
+copied from a spreadsheet) shows at once, then the server resolves it: it runs the column's
+`optionsUsing()` closure with the label as the term and keeps the options whose label equals the
+text (case-insensitive, trimmed) or whose id equals it. One match stores that id, paints its label
+and runs `->onSelect()` and the formulas, as a pick does. No match or more than one match flags the
+cell ("No option matches …" / "… matches 2 options; pick it from the list.") and stores nothing.
+The match is made before `->limit()` cuts the list, but only among the rows the closure returns, so
+the closure must filter by the term. The `$row` the closure receives is the row after the earlier
+cells of the same paste, so a pasted D/C side applies to the account pasted beside it.
+
 ## Display-only mode
 
 ```blade
@@ -496,8 +565,8 @@ To refresh a display grid's data later, call `$this->reseedGrid('name', $freshRo
 |---|---|---|---|
 | `SerialColumn` | — | row number | the `#` gutter |
 | `TextColumn` | text | string | `->maxLength()`, `->upper()`/`->lower()` |
-| `IntegerColumn` | number | int | grouping-tolerant input |
-| `DecimalColumn` | number | fixed-scale string | `->scale(n)`; precision never rides a float |
+| `IntegerColumn` | number | int | grouping-tolerant input; arithmetic entry: `1250*12`, `(2+3)*4`, `=` optional `[v1.46.0+]` |
+| `DecimalColumn` | number | fixed-scale string | `->scale(n)`; precision never rides a float; arithmetic entry: `1250*12`, `(2+3)*4`, `=` optional `[v1.46.0+]` |
 | `DateColumn` | date | ISO `Y-m-d` | fuzzy typed input (`31/12`, `311226`); display pattern configurable; financial-year inference opt-in |
 | `SelectColumn` | dropdown | option id | `->options([...])` embedded whitelist |
 | `SearchSelectColumn` | async picker | option id | `->optionsUsing(fn ($term, $row))`, `->optionsDependOn([...])`, `->onSelect()` enrichment, `->minChars()`, `->debounce()`, `->limit()`; an option row may carry `'meta' => …` — painted right-aligned and muted (e.g. stock on hand) |
@@ -511,6 +580,7 @@ Shared column chains: `label`, `width` / `minWidth` / `maxWidth` / `grow`, `alig
 `hiddenByDefault` (initially unchecked but available in the column chooser), `frozen`,
 `sortable(bool|'db.column')`, `searchable`, `filterable(Filter)`, `required` /
 `required(fn)`, `readonly` / `readonly(fn)`, `focusMode(FocusMode|'always'|'manual'|'never', default: ...)` `[v1.20.0+]` / `default(mixed|fn)` `[v1.20.0+]`, `rules([...])`, `lockedWhen('col', value)`,
+`classWhen('col', values, 'class')` (add a host class to the cell while `col` is one of `values`; repeatable; follows the value as the operator types) `[v1.46.0+]`,
 `requiredWhen('col', value)`, `whenFilled(sets: [...], clears: [...])`,
 `endOfListOption()` (see *Ending entry*), `opensPanel('name')`, `html()`,
 `exportable(false)` (keep a painted column out of downloads).
@@ -564,7 +634,9 @@ DateColumn::make('vch_date')
 `minRows(n)` · `autoAppend()` · `padRows(n)` · `sync(SyncPolicy::PerCell|PerRow|Deferred)` ·
 `persistDraft('local', key)` · `virtualizeRowsAbove(n)` ·
 `refreshesHost([...])` (re-render host chrome when listed columns change) ·
-`completeWhenBalanced('dr', 'cr')` · `afterCellChange(fn)` · `afterRowRemove(fn)`.
+`completeWhenBalanced('dr', 'cr')` · `afterCellChange(fn)` · `afterRowRemove(fn)` ·
+`validateRows(fn (RowsContext $rows), live: false)` `[v1.46.0+]` ·
+`trackChanges()` (see [Change sets](#change-sets)) `[v1.46.0+]`.
 
 **Behavior** — `keymap('entry'|'excel')` · `toolbar(...)` / `toolbar(false)` ·
 `focusOnMount()` · `focusOutTo(selector)` (Tab off the last cell lands here) ·
@@ -576,7 +648,14 @@ DateColumn::make('vch_date')
 
 **Layout** — `columnGroups([ColumnGroup::make('GST', ['cgst', 'sgst'])])` (two-tier grouped headers) · `stickyHeader()` · `freezeColumns(n)` · `striped()` ·
 `density(GridDensity::Compact|Normal|Comfortable)` · `height('420px')` · `minHeight('300px')` ·
-`maxHeight('60vh')` · `fillParent()` · `fitColumns()` · `themeClass('my-theme')` · `rowClass(fn)` · `cellClass(fn)`.
+`maxHeight('60vh')` · `fillParent()` · `fitColumns()` · `themeClass('my-theme')` · `rowClass(fn)` · `cellClass(fn)` ·
+`rowClassWhen('col', values, 'class')` `[v1.46.0+]`.
+
+`rowClassWhen()` and a column's `classWhen()` are declarations the browser evaluates, so the class
+toggles the moment the controlling cell changes. Use them for "class while this column is one of
+these values". For any other rule, use the `rowClass(fn)` / `cellClass(fn)` closures: they run on
+the server, and on an editable grid they run again after every cell write and fill, so the classes
+refresh when the op response arrives `[v1.46.0+]`. Host classes must not start with `lgrid-`.
 
 Use `->fitColumns()` when every visible column must stay inside the grid and the horizontal
 scrollbar must be suppressed. The grid redistributes space after a container resize or a column
@@ -927,7 +1006,9 @@ native text selection is disabled in head + body, because Ctrl+C copies the *cel
 selection* as TSV, not blue text). Shift+click extends to a far cell in one shot. A
 header click sorts — the **whole header cell** is the target, not just the caret — while
 Ctrl/Cmd/Shift+click on a header **column-selects** instead; a serial-gutter click
-selects the row. Column edges drag-resize (double-click autofits) and `->persistWidths()`
+selects the row. On an editable grid, dragging a row by its serial gutter moves it: a line
+shows where it will land, the release moves it like Alt+Up/Down, and Escape cancels
+`[v1.46.0+]`. Column edges drag-resize (double-click autofits) and `->persistWidths()`
 remembers the layout per grid.
 
 ### Keyboard shortcuts
@@ -962,7 +1043,7 @@ instead of moving. Per-row locked cells are skipped by horizontal and wrapping m
 | `Shift+Arrow` | Extend the selection in that direction | All grids |
 | `Ctrl+A` | Select all navigable grid cells | All grids |
 | `Ctrl+C` | Copy the selection as TSV for Excel or another grid; after `Ctrl+A`, the copy starts with the column headers | All grids |
-| `Ctrl+V` | Paste TSV starting at the active cell; may add rows when `->autoAppend()` is enabled. A first row equal to the grid's headers is skipped | Editable grids |
+| `Ctrl+V` | Paste TSV starting at the active cell; may add rows when `->autoAppend()` is enabled. A first row equal to the grid's headers is skipped. Labels pasted onto a server-mode picker column resolve on the server through its `optionsUsing()` closure; an unmatched or ambiguous label is flagged, never stored `[v1.46.0+]` | Editable grids |
 | `Escape` | Collapse a range selection to the active cell | All grids |
 
 #### Cell editing
@@ -975,6 +1056,7 @@ instead of moving. Per-row locked cells are skipped by horizontal and wrapping m
 | `Enter` / `Shift+Enter` | Commit and advance forward / backward according to the active keymap | While editing |
 | `Tab` / `Shift+Tab` | Commit and move to the next / previous navigable cell | While editing |
 | `Escape` | Cancel the edit and restore the committed value | While editing |
+| `+ - * / ( )`, leading `=` | Type arithmetic into a number cell; `Enter` commits the result (`1250*12` → `15000`). A malformed entry (`1+`) keeps the editor open with "Not a valid number or expression." `[v1.46.0+]` | Number cells |
 | `Delete` | Clear every editable, unlocked cell in the current selection | Editable grids |
 | `Ctrl+E` | Focus a validation error; footer Review/↑/↓ exposes every message | Editable grids |
 
@@ -999,6 +1081,8 @@ and Up/Down to commit and move.
 | `Insert` | Insert a new blank row after the active row | Editable grids |
 | `Ctrl+D` | Fill the active column down through the selected rows, using the selection's first row as the source | Editable grids |
 | `F7` | Repeat the row immediately above the active row; insert and focus the new copy (no-op on the first row) | Editable grids |
+| `Alt+ArrowUp` | Move the active row up one place; the active cell moves with it; `Ctrl+Z` restores the order `[v1.46.0+]` | Editable grids |
+| `Alt+ArrowDown` | Move the active row down one place `[v1.46.0+]` | Editable grids |
 | `F8` | Unassigned and available to the host application | All grids |
 | `Shift+Delete` | Delete the active row, subject to `->minRows()` | Editable grids |
 | `F9` | Delete the active row, subject to `->minRows()` | Editable grids |
@@ -1027,7 +1111,10 @@ rollback, save exit paths).
 
 One caveat: non-writable carried values (e.g. a `HiddenColumn` database id that is not
 `->writable()`) are client-painted on restore but re-created server-side — a host whose save()
-diffs lines by id sees a deleted-then-undone row as delete + insert.
+diffs lines by id sees a deleted-then-undone row as delete + insert. With `->trackChanges()` the
+caveat goes away: `gridChanges()` remembers the removed row and reports the undone row as
+unchanged, with its original values `[v1.46.0+]` (see [Change sets](#change-sets)).
+Row moves (`Alt+Up`/`Alt+Down`, gutter drag) undo as one step each and restore the old order.
 
 ## Theming
 
@@ -1151,6 +1238,8 @@ the public RPCs, exactly as the browser does:
 Livewire::test(BookingEntry::class)
     ->call('gridOps', 'lines', ['ops' => [
         ['t' => 'set', 'seq' => 1, 'row' => $key, 'col' => 'nights', 'v' => '3'],
+        // Move a row: `before` (or `after`) names its new neighbour; neither moves it to the end.
+        ['t' => 'move', 'seq' => 2, 'row' => $key, 'before' => $firstKey],
     ]])
     ->call('gridAction', 'resorts', 'delete', [$id]);
 ```

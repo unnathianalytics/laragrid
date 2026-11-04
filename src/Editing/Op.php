@@ -32,14 +32,16 @@ final class Op
 
     public const FILL = 'fill';
 
-    private const KINDS = [self::SET, self::INSERT, self::REMOVE, self::DUP, self::FILL];
+    public const MOVE = 'move';
+
+    private const KINDS = [self::SET, self::INSERT, self::REMOVE, self::DUP, self::FILL, self::MOVE];
 
     /**
      * @param  int  $seq  The client's monotonic sequence number for this op.
      * @param  string  $kind  One of the KINDS constants.
      * @param  string|null  $row  The target row `_k` (set/remove/dup/fill).
-     * @param  string|null  $after  The row `_k` to insert after (insert; null = append at end).
-     * @param  string|null  $before  The row `_k` to insert BEFORE (insert; wins over `after`).
+     * @param  string|null  $after  The row `_k` to insert/move after (null = append at end).
+     * @param  string|null  $before  The row `_k` to insert/move BEFORE (wins over `after`).
      *                               Used by undo to restore a removed row at its original
      *                               position — `after` alone cannot express "first row".
      * @param  string|null  $as  The new row's `_k` for insert/dup (client-generated).
@@ -48,6 +50,9 @@ final class Op
      * @param  list<string>|null  $rows  The row `_k`s a fill spans (fill), in order.
      * @param  string|null  $label  The picked option's display label (set on picker columns, M5) —
      *                              display-only, stored in the row's `_labels` bag, never persisted.
+     * @param  bool  $lookup  The value is a pasted LABEL (set on a server-mode picker, F3): the
+     *                        applier resolves it to an option id through the column's own
+     *                        optionsUsing() closure before casting.
      */
     public function __construct(
         public readonly int $seq,
@@ -60,6 +65,7 @@ final class Op
         public readonly mixed $value = null,
         public readonly ?array $rows = null,
         public readonly ?string $label = null,
+        public readonly bool $lookup = false,
     ) {}
 
     /**
@@ -95,6 +101,7 @@ final class Op
                 ? array_map('strval', array_values($data['rows']))
                 : null,
             label: isset($data['label']) ? (string) $data['label'] : null,
+            lookup: ($data['lookup'] ?? false) === true,
         );
 
         $op->assertShape();
@@ -109,6 +116,10 @@ final class Op
      */
     private function assertShape(): void
     {
+        if ($this->lookup && $this->kind !== self::SET) {
+            throw new InvalidArgumentException('Only a set op may carry lookup.');
+        }
+
         switch ($this->kind) {
             case self::SET:
                 if ($this->row === null || $this->col === null) {
@@ -133,6 +144,11 @@ final class Op
             case self::FILL:
                 if ($this->col === null || $this->rows === null || $this->rows === []) {
                     throw new InvalidArgumentException('A fill op requires col and a non-empty rows list.');
+                }
+                break;
+            case self::MOVE:
+                if ($this->row === null) {
+                    throw new InvalidArgumentException('A move op requires row.');
                 }
                 break;
         }

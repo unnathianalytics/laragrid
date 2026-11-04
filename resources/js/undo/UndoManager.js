@@ -44,10 +44,11 @@ export default class UndoManager {
      * synchronous task coalesce into a single undo step; the microtask boundary seals it.
      *
      * Record shapes:
-     *   {t:'set',    rowKey, colKey, before, after}
+     *   {t:'set',    rowKey, colKey, before, after, lookup?}  (lookup: `after` is a pasted label)
      *   {t:'label',  rowKey, colKey, before, after}   (picker display labels)
      *   {t:'insert', rowKey, index, snapshot}         (row created — blank or dup clone)
      *   {t:'remove', rowKey, index, snapshot}         (row deleted, full copy incl. _labels)
+     *   {t:'move',   rowKey, from, to}                (row moved between indexes)
      *
      * @param {object} entry
      */
@@ -150,6 +151,9 @@ export default class UndoManager {
                             break; // the row is gone — a later (already-undone) step owned it
                         }
                         const value = reverse ? rec.before : rec.after;
+                        // Redo of a paste-by-label resolves the label again; undo restores the
+                        // value it replaced, which is already an id.
+                        const lookup = !reverse && rec.lookup === true;
                         this.store.applyLocalSet(rec.rowKey, rec.colKey, value);
                         const op = {
                             seq: this.store.nextSeq(),
@@ -158,6 +162,10 @@ export default class UndoManager {
                             col: rec.colKey,
                             v: value,
                         };
+                        if (lookup) {
+                            op.lookup = true;
+                        }
+                        this.store.trackLookup(rec.rowKey, rec.colKey, lookup ? op.seq : null);
                         items.push({ op, cells: [{ rowKey: rec.rowKey, colKey: rec.colKey }] });
                         setOps.set(cellMapKey(rec.rowKey, rec.colKey), op);
                         focus = focus || { rowKey: rec.rowKey, colKey: rec.colKey };
@@ -186,6 +194,15 @@ export default class UndoManager {
                             this.dropRow(rec, items);
                         }
                         break;
+                    case 'move':
+                        // A row a later (already-undone) step removed is gone: skip it.
+                        if (this.store.rowByKey.has(rec.rowKey)
+                            && this.store.moveRow(rec.rowKey, reverse ? rec.from : rec.to)) {
+                            items.push({ op: this.store.moveOpFor(rec.rowKey), cells: [] });
+                            const colKey = this.store.active ? this.store.active.colKey : null;
+                            focus = focus || { rowKey: rec.rowKey, colKey };
+                        }
+                        break;
                     default:
                         break;
                 }
@@ -195,7 +212,7 @@ export default class UndoManager {
             // reverse iteration the label record precedes its set record).
             for (const { key, label } of labels) {
                 const op = setOps.get(key);
-                if (op && label != null) {
+                if (op && label != null && !op.lookup) {
                     op.label = label;
                 }
             }

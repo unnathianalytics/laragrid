@@ -28,8 +28,8 @@ export default class Renderer {
         this.footer = new FooterRenderer(store, layout, refs.footer);
 
         // Repaint the body when rows are replaced (initial load; server pages; sort/reseed/hide).
-        // A row insert/remove arrives first as rows:inserted / rows:removed, which the body
-        // applies in place when it can (not virtual, no pad rows); the rows:changed that
+        // A row insert/remove/move arrives first as rows:inserted / rows:removed / rows:moved,
+        // which the body applies in place when it can (not virtual, no pad rows); the rows:changed that
         // follows then carries `incremental: true` and the full rebuild is skipped. When the
         // body declined the delta, that same rows:changed rebuilds as before.
         // `bodyKept` tells the later rows:changed subscribers (the painters, constructed after
@@ -42,6 +42,9 @@ export default class Renderer {
         this.unsubscribeRemoved = bus.on('rows:removed', ({ keys, index }) => {
             this.incrementalApplied = this.applyIncremental(() => this.body.removeRows(keys, index));
         });
+        this.unsubscribeMoved = bus.on('rows:moved', ({ key, from, to }) => {
+            this.incrementalApplied = this.applyIncremental(() => this.body.moveRow(key, from, to));
+        });
         this.unsubscribe = bus.on('rows:changed', (payload) => {
             this.bodyKept = !!(payload && payload.incremental && this.incrementalApplied);
             this.incrementalApplied = false;
@@ -51,9 +54,11 @@ export default class Renderer {
         });
         // M4: repaint just the changed cells (a set + its formula write-backs) without a body
         // rebuild — the cell-level hot path. Each entry is {rowKey, colKey}. A changed cell
-        // whose column CONTROLS sibling locks (lockedWhen) also repaints those siblings, so
-        // their locked look tracks the controlling value (e.g. a D/C flip re-mutes the amounts)
-        // — purely visual, no store/sync bookkeeping rides on the extra repaints.
+        // whose column CONTROLS sibling locks (lockedWhen) or declarative classes (classWhen /
+        // rowClassWhen) also repaints those siblings or the row element, so their look tracks
+        // the controlling value (e.g. a D/C flip re-mutes the amounts) — purely visual, no
+        // store/sync bookkeeping rides on the extra repaints. The `_rowClass` pseudo-cell (a
+        // reconciled closure row class) repaints only the row element.
         this.pendingCellPaints = new Map();
         this.cellPaintFrame = null;
         this.unsubscribeCells = bus.on('cells:changed', ({ cells }) => {
@@ -70,12 +75,27 @@ export default class Renderer {
                 this.cellPaintFrame = null;
                 const changed = [...this.pendingCellPaints.values()];
                 this.pendingCellPaints.clear();
+                const rowRepaints = new Set();
                 changed.forEach(({ rowKey, colKey }) => {
+                    if (colKey === '_rowClass') {
+                        rowRepaints.add(rowKey);
+                        return;
+                    }
                     this.body.repaintCell(rowKey, colKey);
                     this.store.lockedDependentsOf(colKey).forEach((dependentKey) => {
                         this.body.repaintCell(rowKey, dependentKey);
                     });
+                    const classes = this.store.classDependentsOf(colKey);
+                    classes.cells.forEach((dependentKey) => {
+                        if (dependentKey !== colKey) {
+                            this.body.repaintCell(rowKey, dependentKey);
+                        }
+                    });
+                    if (classes.row) {
+                        rowRepaints.add(rowKey);
+                    }
                 });
+                rowRepaints.forEach((rowKey) => this.body.repaintRowClasses(rowKey));
             });
         });
         // On a server page change (M3), refresh the footer totals + header sort indicators. The
@@ -158,6 +178,9 @@ export default class Renderer {
         }
         if (this.unsubscribeRemoved) {
             this.unsubscribeRemoved();
+        }
+        if (this.unsubscribeMoved) {
+            this.unsubscribeMoved();
         }
         if (this.unsubscribeHidden) {
             this.unsubscribeHidden();

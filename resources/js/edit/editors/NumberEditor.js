@@ -1,6 +1,7 @@
 /**
  * What: The numeric floating editor — a right-aligned text input constrained to numeric entry
- *       (digits, one decimal point, a leading minus, and grouping commas the parser strips). Used
+ *       (digits, decimal points, grouping commas and spaces the parser strips) plus calculator
+ *       entry (`+ - * / ( )` and a leading `=`, evaluated by parse.js evaluateArithmetic). Used
  *       for Integer/Decimal/Qty/Amount columns; the column's parse spec (int/decimal/paise) decides
  *       the final cast in the EditorManager.
  * Why:  Numbers are typed as text (a masked <input type=text>, not type=number) so grouping commas,
@@ -24,12 +25,12 @@ export default class NumberEditor {
         this.input.setAttribute('autocomplete', 'off');
         this.input.value = ctx.initialText != null ? String(ctx.initialText) : '';
 
-        // Reject characters that can't be part of a number-with-grouping as they're typed.
+        // Reject characters that can't be part of a number-with-grouping or a calculator entry.
         this.onBeforeInput = (e) => {
             if (e.data == null) {
                 return; // deletions/compositions
             }
-            if (!/^[0-9.,\-]+$/.test(e.data)) {
+            if (!/^[0-9.,\-+*/()=\s]+$/.test(e.data)) {
                 e.preventDefault();
             }
         };

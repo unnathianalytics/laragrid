@@ -19,6 +19,8 @@
  *       StateStore + the op; extended at boot via window.LaraGrid.registerCast.
  */
 import { parseFreeform, partsFromValue, formatIso, formatDisplay } from '../shared/date.js';
+import { parseArithmetic } from '../formula/ExprParse.js';
+import { evaluate } from '../formula/ExprEval.js';
 
 /** Strip grouping commas and spaces from a numeric string. */
 export function stripGrouping(raw) {
@@ -49,22 +51,76 @@ export function parseText(raw, transform) {
     return text;
 }
 
-/** Parse to a whole number (grouping stripped, rounded to an integer). Blank/invalid → 0. */
+/**
+ * Evaluate calculator entry in a number cell (`1250*12`, `(2+3)*4`, `=100*1.18`). Mirrors
+ * LaraGrid\Casting\Arithmetic::evaluate() rule for rule, pinned by arithmetic.json:
+ *   - grouping (commas, whitespace) is stripped first, then one leading `=`;
+ *   - without `=`, the text is an expression only when it holds nothing but digits, `.`,
+ *     `+ - * / ( )` AND contains `+ * / ( )` or a `-` after a digit, `.` or `)` — so `-5` and
+ *     `12,345` stay plain numbers, and plain non-numeric text stays on the silent-0 path;
+ *   - a leading `=` always means an expression.
+ * Division by zero is 0 (the formula engine's rule); a non-finite result is 0.
+ *
+ * @param {*} raw the operator's typed text
+ * @returns {number|null|undefined} the value; `null` = not an expression (take the plain
+ *          number path); `undefined` = a malformed expression (refuse the commit)
+ */
+export function evaluateArithmetic(raw) {
+    const text = stripGrouping(raw);
+    const explicit = text.charAt(0) === '=';
+    const body = explicit ? text.slice(1) : text;
+
+    if (!/^[0-9.+\-*/()]+$/.test(body)) {
+        return explicit ? undefined : null;
+    }
+    if (!explicit && !/[+*/()]|[0-9.)]-/.test(body)) {
+        return null;
+    }
+
+    let value;
+    try {
+        value = evaluate(parseArithmetic(body), {});
+    } catch (e) {
+        return undefined;
+    }
+    return Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Parse to a whole number (grouping stripped, rounded half-up to an integer — half away from
+ * zero, like PHP round()). Calculator entry evaluates first. Blank/invalid → 0; a malformed
+ * expression → the `undefined` refusal sentinel.
+ */
 export function parseInt10(raw) {
+    const arithmetic = evaluateArithmetic(raw);
+    if (arithmetic === undefined) {
+        return undefined;
+    }
+    if (arithmetic !== null) {
+        return roundHalfUp(arithmetic, 0) + 0; // + 0 turns -0 into 0
+    }
     const normalised = stripGrouping(raw);
     if (normalised === '' || Number.isNaN(Number(normalised))) {
         return 0;
     }
-    return Math.round(Number(normalised));
+    return roundHalfUp(Number(normalised), 0) + 0;
 }
 
 /**
  * Parse to a fixed-scale decimal STRING (rounded half-up at scale), so precision never rides a
- * float (plan G2). Mirrors LaraGrid\Casting\Casts\DecimalCast.
+ * float (plan G2). Calculator entry evaluates first; a malformed expression → `undefined`.
+ * Mirrors LaraGrid\Casting\Casts\DecimalCast.
  */
 export function parseDecimal(raw, scale) {
-    const normalised = stripGrouping(raw);
-    const number = normalised === '' || Number.isNaN(Number(normalised)) ? 0 : Number(normalised);
+    const arithmetic = evaluateArithmetic(raw);
+    if (arithmetic === undefined) {
+        return undefined;
+    }
+    let number = arithmetic;
+    if (number === null) {
+        const normalised = stripGrouping(raw);
+        number = normalised === '' || Number.isNaN(Number(normalised)) ? 0 : Number(normalised);
+    }
     return roundHalfUp(number, scale).toFixed(scale);
 }
 
@@ -137,10 +193,11 @@ export function parseDate(raw, spec) {
 }
 
 /**
- * The cast registry: kind → {parse(raw, spec), editText?(value, spec)}. Core kinds mirror
- * LaraGrid\Casting\CastRegistry; registerCast() adds app kinds (e.g. an accounting app's
+ * The cast registry: kind → {parse(raw, spec), editText?(value, spec), refusal?}. Core kinds
+ * mirror LaraGrid\Casting\CastRegistry; registerCast() adds app kinds (e.g. an accounting app's
  * 'paise'). `editText` is optional — kinds whose model value isn't its own editing text
- * (dates, booleans, scaled money) supply one; others fall back to String(value).
+ * (dates, booleans, scaled money) supply one; others fall back to String(value). `refusal` is
+ * the cell message shown when parse returns the `undefined` sentinel (see refusalMessage()).
  */
 const CASTS = {
     text: {
@@ -148,9 +205,11 @@ const CASTS = {
     },
     int: {
         parse: (raw) => parseInt10(raw),
+        refusal: 'Not a valid number or expression.',
     },
     decimal: {
         parse: (raw, spec) => parseDecimal(raw, Math.max(0, parseInt(spec && spec.scale, 10) || 0)),
+        refusal: 'Not a valid number or expression.',
     },
     select: {
         parse: (raw) => parseSelect(raw),
@@ -165,6 +224,7 @@ const CASTS = {
     },
     date: {
         parse: (raw, spec) => parseDate(raw, spec || {}),
+        refusal: 'Not a recognisable date.',
         editText: (value) => {
             const parts = partsFromValue(String(value));
             return parts ? formatDisplay(parts) : '';
@@ -178,7 +238,7 @@ const CASTS = {
  * client value agrees with the authoritative server cast; pin the pair with a shared vector.
  *
  * @param {string} kind
- * @param {{parse: (raw: *, spec: object) => *, editText?: (value: *, spec: object) => string}} cast
+ * @param {{parse: (raw: *, spec: object) => *, editText?: (value: *, spec: object) => string, refusal?: string}} cast
  */
 export function registerCast(kind, cast) {
     CASTS[kind] = cast;
@@ -190,12 +250,24 @@ export function registerCast(kind, cast) {
  *
  * @param {{kind: string, scale?: number, case?: string|null, fyStartMonth?: number, fyStartYear?: number}|null|undefined} spec
  * @param {*} raw the operator's typed text
- * @returns {*} `undefined` ONLY for an unparseable date-like refusal
+ * @returns {*} `undefined` ONLY for a refusal (an unparseable date, a malformed expression)
  */
 export function parseValue(spec, raw) {
     const kind = (spec && spec.kind) || 'text';
     const cast = CASTS[kind] || CASTS.text;
     return cast.parse(raw, spec || {});
+}
+
+/**
+ * The cell message for a parse refusal (parseValue returned `undefined`) under a column's parse
+ * spec: the kind's own `refusal` text, else a neutral fallback.
+ *
+ * @param {{kind?: string}|null|undefined} spec
+ * @returns {string}
+ */
+export function refusalMessage(spec) {
+    const cast = CASTS[(spec && spec.kind) || 'text'];
+    return (cast && cast.refusal) || 'Not a valid value.';
 }
 
 /**

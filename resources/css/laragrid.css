@@ -364,6 +364,25 @@
         background: var(--lgrid-stripe-bg);
     }
 
+    /* Row move by gutter drag (editable grids): the serial cell is the handle, and the row
+       under the pointer shows where the dragged row will land. */
+    .lgrid--row-draggable .lgrid-row:not(.lgrid-row--pad) .lgrid-cell--serial {
+        cursor: grab;
+    }
+
+    .lgrid--row-dragging,
+    .lgrid--row-dragging .lgrid-cell {
+        cursor: grabbing;
+    }
+
+    .lgrid-row--drop-before {
+        box-shadow: inset 0 2px 0 var(--lgrid-accent);
+    }
+
+    .lgrid-row--drop-after {
+        box-shadow: inset 0 -2px 0 var(--lgrid-accent);
+    }
+
     /* Busy-style dedicated entry rows (layout.padRows): inert visual padding below the last
        real row so short grids keep a fixed working area and editor popups open over grid
        space, not the page chrome below. Unreachable by keyboard/mouse by construction. */

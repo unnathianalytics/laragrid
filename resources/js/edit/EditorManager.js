@@ -17,7 +17,7 @@
  * When: Constructed by GridCore for an editable grid; KeyboardManager routes open intents to it.
  */
 import { editorFor } from './EditorRegistry.js';
-import { parseValue, editTextFor } from '../format/parse.js';
+import { parseValue, editTextFor, refusalMessage } from '../format/parse.js';
 import { firstNavigable } from '../util/geometry.js';
 import Lru from '../util/lru.js';
 import { optionCacheKey } from './optionCacheKey.js';
@@ -325,7 +325,7 @@ export default class EditorManager {
 
     /**
      * Commit the open editor: read raw text → parse via the column's spec → client-validate →
-     * hand off to the shared pipeline → close + advance. A parse refusal (the date sentinel) or a
+     * hand off to the shared pipeline → close + advance. A parse refusal (the sentinel) or a
      * client validation failure keeps the editor open + flags the cell (the operator fixes it in
      * place).
      *
@@ -341,9 +341,10 @@ export default class EditorManager {
         const raw = this.editor.value();
         const parsed = parseValue(column.parse, raw);
 
-        // The one refusing parse outcome: an unparseable non-empty date (shared-parser sentinel).
+        // The refusing parse outcome (`undefined`): an unparseable non-empty date or a malformed
+        // calculator expression in a number cell.
         if (parsed === undefined) {
-            this.store.setError(rowKey, colKey, 'Not a recognisable date.');
+            this.store.setError(rowKey, colKey, refusalMessage(column.parse));
             this.editor.focus(true);
             return false;
         }
@@ -411,12 +412,14 @@ export default class EditorManager {
      * @param {string} rowKey
      * @param {string} colKey
      * @param {object} column the serialized column config
-     * @param {{parsed: *, wireValue: *, label?: string|null}} payload
+     * @param {{parsed: *, wireValue: *, label?: string|null, lookup?: boolean}} payload
+     *        `lookup`: the value is a pasted LABEL the server resolves to an option id (F3); the
+     *        label is painted provisionally and never sent as the op's `label`
      * @param {{enqueue?: boolean}} [opts] paste batches ops itself (enqueue: false)
      * @returns {{op: object, cells: Array<{rowKey: string, colKey: string}>}}
      */
     commitCell(rowKey, colKey, column, payload, opts = {}) {
-        let changed = this.store.applyLocalSet(rowKey, colKey, payload.parsed);
+        let changed = this.store.applyLocalSet(rowKey, colKey, payload.parsed, payload.lookup ? { lookup: true } : undefined);
 
         // Picker labels: a pick stages one; a cleared pick — or a value written WITHOUT a label
         // (a pasted raw id) — drops the stale label rather than mislabel (mirrors applyPickLabel).
@@ -447,9 +450,12 @@ export default class EditorManager {
         }
 
         const op = { seq: this.store.nextSeq(), t: 'set', row: rowKey, col: colKey, v: payload.wireValue };
-        if (payload.label != null) {
+        if (payload.lookup) {
+            op.lookup = true;
+        } else if (payload.label != null) {
             op.label = payload.label;
         }
+        this.store.trackLookup(rowKey, colKey, payload.lookup ? op.seq : null);
         const cells = changed.length ? changed : [{ rowKey, colKey }];
 
         if (opts.enqueue !== false) {
@@ -462,8 +468,10 @@ export default class EditorManager {
     /**
      * Parse + validate + stage ONE pasted cell through the shared pipeline (enqueue deferred —
      * the ClipboardManager batches the whole paste into one flush). An embedded select accepts a
-     * pasted LABEL or value (reverse lookup); a searchselect accepts the value id only (no
-     * client-side reverse map — v1 limitation). Returns {ok, op?, cells?} or {ok:false, message}.
+     * pasted LABEL or value (reverse lookup against its option list); a server-mode searchselect
+     * stages the text as a `lookup` op — the server resolves the label (or an exact id) through
+     * the column's optionsUsing() closure and the response replaces the provisional text with
+     * the id and its label (F3). Returns {ok, op?, cells?, lookup?} or {ok:false, message}.
      *
      * @param {string} rowKey
      * @param {string} colKey
@@ -473,6 +481,20 @@ export default class EditorManager {
     pasteCell(rowKey, colKey, column, raw) {
         let text = raw;
         let label = null;
+
+        // Server-mode picker: the client never guesses an id — the server resolves the label.
+        if (this.isPickerColumn(column) && column.optionsMode === 'server') {
+            const needle = String(raw == null ? '' : raw).trim();
+            if (needle !== '') {
+                const staged = this.commitCell(rowKey, colKey, column, {
+                    parsed: needle,
+                    wireValue: needle,
+                    label: needle,
+                    lookup: true,
+                }, { enqueue: false });
+                return { ok: true, op: staged.op, cells: staged.cells, lookup: true };
+            }
+        }
 
         // Embedded options: map a pasted label or value onto the whitelist; anything else refuses.
         if (this.isPickerColumn(column) && Array.isArray(column.options) && column.options.length) {
@@ -492,7 +514,7 @@ export default class EditorManager {
 
         const parsed = parseValue(column.parse, text);
         if (parsed === undefined) {
-            return { ok: false, message: 'Not a recognisable date.' };
+            return { ok: false, message: refusalMessage(column.parse) };
         }
 
         const clientRules = (column.validate && column.validate.client) || [];

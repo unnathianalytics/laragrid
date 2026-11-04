@@ -41,6 +41,59 @@ export function toggleClass(node, className, on) {
     node.classList.toggle(className, !!on);
 }
 
+/** The shared empty class list (callers must not mutate it). */
+export const NO_CLASSES = Object.freeze([]);
+
+/**
+ * Split a host class string ('is-credit text-red') into its tokens; blank/non-string → [].
+ *
+ * @param {*} value
+ * @returns {string[]}
+ */
+export function splitClasses(value) {
+    if (typeof value !== 'string') {
+        return NO_CLASSES;
+    }
+    const text = value.trim();
+    return text === '' ? NO_CLASSES : text.split(/\s+/);
+}
+
+/**
+ * Paint an element's HOST classes — the server-resolved closure classes (`_rowClass` /
+ * `_cellClass`) plus the declarative `classWhen` matches — replacing whatever host classes the
+ * previous paint added. The element remembers its host classes in `data-lgrid-cls`, so engine
+ * state classes (`lgrid-*`) are never touched. No-op when there is nothing to add or remove.
+ *
+ * @param {HTMLElement} node
+ * @param {string[]} server tokens from the server closure verdict
+ * @param {string[]} dynamic tokens from the declarative rules
+ */
+export function paintHostClasses(node, server, dynamic) {
+    const previous = node.dataset.lgridCls;
+    if (!previous && server.length === 0 && dynamic.length === 0) {
+        return;
+    }
+    let next = server.length === 0 ? dynamic : server;
+    if (server.length > 0 && dynamic.length > 0) {
+        next = [...new Set([...server, ...dynamic])];
+    }
+    if (previous) {
+        for (const name of previous.split(' ')) {
+            if (!next.includes(name)) {
+                node.classList.remove(name);
+            }
+        }
+    }
+    for (const name of next) {
+        node.classList.add(name);
+    }
+    if (next.length > 0) {
+        node.dataset.lgridCls = next.join(' ');
+    } else {
+        delete node.dataset.lgridCls;
+    }
+}
+
 /**
  * Set (or clear) an element's textContent from a possibly-null value.
  *

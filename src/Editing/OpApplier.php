@@ -11,6 +11,7 @@ use LaraGrid\Columns\FormulaColumn;
 use LaraGrid\Columns\SearchSelectColumn;
 use LaraGrid\Expression\Evaluator;
 use LaraGrid\Grid;
+use LaraGrid\Support\RowSerializer;
 use LaraGrid\Validation\RuleCompiler;
 
 /**
@@ -68,10 +69,36 @@ class OpApplier
      */
     private ?int $lastNonBlank = null;
 
+    /**
+     * Paste-by-label resolutions for this batch, keyed by column, pasted text and the picker's
+     * optionsDependOn() values — a label pasted down fifty rows runs the closure once.
+     *
+     * @var array<string, list<array{value: string, label: string, meta?: string}>>
+     */
+    private array $lookupMemo = [];
+
+    /** Whether the grid tracks a change set (->trackChanges(), F6) — set per batch. */
+    private bool $tracking = false;
+
+    /**
+     * Keys this batch inserted or duplicated (change tracking only).
+     *
+     * @var list<string>
+     */
+    private array $insertedKeys = [];
+
+    /**
+     * Rows this batch removed, as they were just before removal (change tracking only).
+     *
+     * @var list<array<string, mixed>>
+     */
+    private array $removedRows = [];
+
     public function __construct(
         private readonly RuleCompiler $ruleCompiler = new RuleCompiler,
         private readonly Evaluator $evaluator = new Evaluator,
         private readonly CastRegistry $casts = new CastRegistry,
+        private readonly RowSerializer $serializer = new RowSerializer,
     ) {}
 
     /**
@@ -141,6 +168,8 @@ class OpApplier
             footer: $this->computeFooter($grid, $rows),
             rows: $rows,
             refreshHost: $refreshHost,
+            inserted: $this->insertedKeys,
+            removed: $this->removedRows,
         );
     }
 
@@ -159,6 +188,7 @@ class OpApplier
             Op::INSERT => $this->applyInsert($grid, $rows, $op),
             Op::REMOVE => $this->applyRemove($grid, $rows, $op),
             Op::DUP => $this->applyDup($grid, $rows, $op),
+            Op::MOVE => $this->applyMove($rows, $op),
             default => [$rows, $this->fail($op, '_row', 'Unknown operation.'), false],
         };
     }
@@ -188,7 +218,29 @@ class OpApplier
             return [$rows, $this->fail($op, $column->key, 'This cell is not editable.'), false];
         }
 
-        $cast = $this->castValue($column, $op->value);
+        // Paste by label (F3): a server-mode picker resolves the pasted text to exactly one
+        // option id before the cast; none or several refuse the write and leave the row as it was.
+        $value = $op->value;
+        $label = $op->label;
+        $resolved = false;
+        if ($op->lookup && $column instanceof SearchSelectColumn && $column->hasServerOptions()) {
+            $text = trim(is_scalar($op->value) ? (string) $op->value : '');
+            if ($text !== '') {
+                $hits = $this->lookupOptions($column, $text, $rows[$index]);
+                if (count($hits) !== 1) {
+                    $message = $hits === []
+                        ? "No option matches \"{$text}\"."
+                        : "\"{$text}\" matches ".count($hits).' options; pick it from the list.';
+
+                    return [$rows, $this->fail($op, $column->key, $message), false];
+                }
+                [$value, $label, $resolved] = [$hits[0]['value'], $hits[0]['label'], true];
+            }
+        }
+
+        $classesBefore = $this->classesOf($grid, $rows[$index]);
+        $before = $this->tracking ? $rows[$index] : null;
+        $cast = $this->castValue($column, $value);
         $rows[$index][$column->key] = $cast;
         $this->rowChanged($grid, $rows, $index);
 
@@ -204,12 +256,25 @@ class OpApplier
             // the client reconciles. Order: label the pick, run the COLUMN's onSelect enrichment
             // (umbrella §2.5.3), then the grid-level afterCellChange, then formulas over the
             // final row state.
-            $rows[$index] = $this->applyPickLabel($column, $rows[$index], $op);
+            $rows[$index] = $this->applyPickLabel($column, $rows[$index], $label);
             $rows[$index] = $this->runSelectHook($column, $rows[$index], $cast, $patch);
             $rows[$index] = $this->runCellHook($grid, $rows[$index], $column->key, $patch);
             $rows[$index] = $this->recomputeFormulas($grid, $rows[$index], $patch);
             // A hook may have written other editable cells of this row.
             $this->rowChanged($grid, $rows, $index);
+        }
+        if ($resolved) {
+            // The client holds the pasted text: hand it the resolved id and its label.
+            $rows[$index] = $this->applyPickLabel($column, $rows[$index], $label);
+            $patch[$column->key] = $cast;
+            $patch['_labels'] = array_merge(
+                is_array($patch['_labels'] ?? null) ? $patch['_labels'] : [],
+                [$column->key => $label],
+            );
+        }
+        $this->patchClasses($grid, $rows[$index], $classesBefore, $patch);
+        if ($before !== null) {
+            $rows[$index] = $this->trackOriginals($grid, $before, $rows[$index]);
         }
 
         $rowKey = (string) $op->row;
@@ -267,6 +332,8 @@ class OpApplier
 
                 continue;
             }
+            $classesBefore = $this->classesOf($grid, $rows[$index]);
+            $before = $this->tracking ? $rows[$index] : null;
             $rows[$index][$column->key] = $sourceValue;
             $this->rowChanged($grid, $rows, $index);
             $rowPatch = [];
@@ -275,7 +342,11 @@ class OpApplier
                 : $this->validateCell($column, $rows[$index], $sourceValue);
             if ($validation !== []) {
                 $resultErrors[$key][$column->key] = $validation[0];
-                $patch[$key] = [$column->key => $sourceValue];
+                $this->patchClasses($grid, $rows[$index], $classesBefore, $rowPatch);
+                if ($before !== null) {
+                    $rows[$index] = $this->trackOriginals($grid, $before, $rows[$index]);
+                }
+                $patch[$key] = [$column->key => $sourceValue] + $rowPatch;
 
                 continue;
             }
@@ -295,6 +366,10 @@ class OpApplier
             $rows[$index] = $this->runCellHook($grid, $rows[$index], $column->key, $rowPatch);
             $rows[$index] = $this->recomputeFormulas($grid, $rows[$index], $rowPatch);
             $this->rowChanged($grid, $rows, $index);
+            $this->patchClasses($grid, $rows[$index], $classesBefore, $rowPatch);
+            if ($before !== null) {
+                $rows[$index] = $this->trackOriginals($grid, $before, $rows[$index]);
+            }
             $patch[$key] = [$column->key => $sourceValue] + $rowPatch;
         }
 
@@ -307,6 +382,90 @@ class OpApplier
         $touchedRefresh = isset($refreshCols[$column->key]);
 
         return [$rows, $result, $touchedRefresh];
+    }
+
+    /**
+     * Remember the original value of every writable cell this write changed (change tracking,
+     * F6): the first change of a cell records `_orig[col]`; later changes keep it, so `_orig`
+     * always holds the value the row had at the baseline.
+     *
+     * @param  array<string, mixed>  $before  The row just before the op.
+     * @param  array<string, mixed>  $after  The row after the op, its hooks and formulas.
+     * @return array<string, mixed>
+     */
+    private function trackOriginals(Grid $grid, array $before, array $after): array
+    {
+        $originals = is_array($after['_orig'] ?? null) ? $after['_orig'] : [];
+        foreach ($grid->getColumns() as $column) {
+            if (! $column->isWritable() || array_key_exists($column->key, $originals)) {
+                continue;
+            }
+            $old = $before[$column->key] ?? null;
+            if ($old !== ($after[$column->key] ?? null)) {
+                $originals[$column->key] = $old;
+            }
+        }
+        if ($originals !== []) {
+            $after['_orig'] = $originals;
+        }
+
+        return $after;
+    }
+
+    /**
+     * The options a pasted label names on a server-mode picker, memoised per batch by column,
+     * the exact pasted text (an id matches case-sensitively) and the row's optionsDependOn()
+     * values (taken from the row as earlier ops in the batch left it).
+     *
+     * @param  array<string, mixed>  $row
+     * @return list<array{value: string, label: string, meta?: string}>
+     */
+    private function lookupOptions(SearchSelectColumn $column, string $text, array $row): array
+    {
+        $dependencies = [];
+        foreach ($column->getOptionsDependOn() as $key) {
+            $dependencies[$key] = $row[$key] ?? null;
+        }
+        $memoKey = $column->key."\x1F".$text."\x1F".json_encode($dependencies);
+
+        return $this->lookupMemo[$memoKey] ??= $column->resolveExact($text, $row);
+    }
+
+    /**
+     * The closure-resolved classes of a row before a write, or null when the grid declares no
+     * rowClass()/cellClass() closure (the common case pays nothing).
+     *
+     * @param  array<string, mixed>  $row
+     * @return array{_rowClass?: string, _cellClass?: array<string, string>}|null
+     */
+    private function classesOf(Grid $grid, array $row): ?array
+    {
+        return $grid->hasClassResolvers() ? $this->serializer->rowClasses($grid, $row) : null;
+    }
+
+    /**
+     * Refresh the closure classes in a row's write-back patch: re-run the resolvers over the
+     * written row and add `_rowClass` (string, or null when it went away) and `_cellClass` (the
+     * row's whole column => class map; an empty list when none is left) only when they differ
+     * from the verdict before the write.
+     *
+     * @param  array<string, mixed>  $row
+     * @param  array{_rowClass?: string, _cellClass?: array<string, string>}|null  $before
+     * @param  array<string, mixed>  $patch
+     */
+    private function patchClasses(Grid $grid, array $row, ?array $before, array &$patch): void
+    {
+        if ($before === null) {
+            return;
+        }
+        $after = $this->serializer->rowClasses($grid, $row);
+
+        if (($before['_rowClass'] ?? null) !== ($after['_rowClass'] ?? null)) {
+            $patch['_rowClass'] = $after['_rowClass'] ?? null;
+        }
+        if (($before['_cellClass'] ?? []) !== ($after['_cellClass'] ?? [])) {
+            $patch['_cellClass'] = $after['_cellClass'] ?? [];
+        }
     }
 
     /**
@@ -335,6 +494,9 @@ class OpApplier
             array_splice($rows, $afterIndex + 1, 0, [$blank]);
         }
         $this->reindex($rows);
+        if ($this->tracking) {
+            $this->insertedKeys[] = (string) $op->as;
+        }
 
         return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
     }
@@ -358,6 +520,9 @@ class OpApplier
             return [$rows, $this->fail($op, '_row', 'At least '.$grid->getMinRows().' line(s) required.', $rows), false];
         }
 
+        if ($this->tracking) {
+            $this->removedRows[] = $rows[$index];
+        }
         array_splice($rows, $index, 1);
         unset($this->blankByKey[(string) $op->row]);
         $this->reindex($rows);
@@ -388,8 +553,51 @@ class OpApplier
 
         $clone = $rows[$index];
         $clone['_k'] = (string) $op->as;
+        unset($clone['_orig']); // a copy is a new row: it has no originals of its own
         array_splice($rows, $index + 1, 0, [$clone]);
         $this->reindex($rows);
+        if ($this->tracking) {
+            $this->insertedKeys[] = (string) $op->as;
+        }
+
+        return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
+    }
+
+    /**
+     * Apply a row move (F4): take the row out and put it back before `before`, else after
+     * `after`, else at the end — the anchors resolve among the OTHER rows, with insert's
+     * semantics. An unknown row or anchor means the client and server disagree on structure, so
+     * the failure carries the authoritative rows for a rollback. A move onto the row's own
+     * position is an idempotent success.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return array{0: list<array<string, mixed>>, 1: OpResultShape, 2: bool}
+     */
+    private function applyMove(array $rows, Op $op): array
+    {
+        $index = $this->indexOfKey((string) $op->row);
+        if ($index === null) {
+            return [$rows, $this->fail($op, '_row', 'That row no longer exists.', $rows), false];
+        }
+
+        // Anchor index among the rows that remain once the moved row is taken out.
+        $anchorKey = $op->before ?? $op->after;
+        $target = count($rows) - 1;
+        if ($anchorKey !== null) {
+            $anchor = $this->indexOfKey($anchorKey);
+            if ($anchor === null || $anchor === $index) {
+                return [$rows, $this->fail($op, '_row', 'The row to move beside no longer exists.', $rows), false];
+            }
+            $target = ($anchor > $index ? $anchor - 1 : $anchor) + ($op->before !== null ? 0 : 1);
+        }
+
+        if ($target !== $index) {
+            $moved = array_splice($rows, $index, 1);
+            array_splice($rows, $target, 0, $moved);
+            // reindex() also forgets the last-non-blank marker: a blank trailing row moved up
+            // is no longer trailing, so the next blank-trailing test must rescan.
+            $this->reindex($rows);
+        }
 
         return [$rows, ['seq' => $op->seq, 'ok' => true, 'patch' => [], 'errors' => []], false];
     }
@@ -449,7 +657,7 @@ class OpApplier
      * @param  array<string, mixed>  $row
      * @return array<string, mixed>
      */
-    private function applyPickLabel(Column $column, array $row, Op $op): array
+    private function applyPickLabel(Column $column, array $row, ?string $label): array
     {
         if (($column->parseSpec()['kind'] ?? null) !== 'select') {
             return $row;
@@ -458,8 +666,8 @@ class OpApplier
         /** @var array<string, string> $labels */
         $labels = is_array($row['_labels'] ?? null) ? $row['_labels'] : [];
 
-        if (($row[$column->key] ?? null) !== null && $op->label !== null) {
-            $labels[$column->key] = $op->label;
+        if (($row[$column->key] ?? null) !== null && $label !== null) {
+            $labels[$column->key] = $label;
         } else {
             // A cleared pick, or a value written WITHOUT a label (a pasted raw id): any previous
             // label no longer describes the value — drop it rather than mislabel.
@@ -663,6 +871,10 @@ class OpApplier
         $this->template = $grid->newRowTemplate();
         $this->blankByKey = [];
         $this->lastNonBlank = null;
+        $this->lookupMemo = [];
+        $this->tracking = $grid->tracksChanges();
+        $this->insertedKeys = [];
+        $this->removedRows = [];
         $this->reindex($rows);
     }
 
@@ -672,6 +884,10 @@ class OpApplier
         $this->template = null;
         $this->blankByKey = [];
         $this->lastNonBlank = null;
+        $this->lookupMemo = [];
+        $this->tracking = false;
+        $this->insertedKeys = [];
+        $this->removedRows = [];
     }
 
     /**

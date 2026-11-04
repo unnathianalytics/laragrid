@@ -13,9 +13,11 @@ use Illuminate\Validation\Rules\In;
 use Illuminate\Validation\Rules\NotIn;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use LaraGrid\Casting\CastRegistry;
 use LaraGrid\Columns\SearchSelectColumn;
 use LaraGrid\Editing\OpApplier;
 use LaraGrid\Editing\OpBatch;
+use LaraGrid\Editing\RowsContext;
 use LaraGrid\Export\ExportBuilder;
 use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Grid;
@@ -56,6 +58,23 @@ trait WithLaraGrid
     /** Server-owned revision per editable grid; locked against client mutation. */
     #[Locked]
     public array $laraGridVersions = [];
+
+    /**
+     * Change tracking (->trackChanges(), F6): the baseline row keys per grid, in baseline order.
+     * A grid without an entry has no baseline yet (taken at its first op or reseed).
+     *
+     * @var array<string, list<string>>
+     */
+    #[Locked]
+    public array $laraGridBaseline = [];
+
+    /**
+     * Change tracking: removed baseline rows per grid, key => the row with its original values.
+     *
+     * @var array<string, array<string, array<string, mixed>>>
+     */
+    #[Locked]
+    public array $laraGridRemoved = [];
 
     /**
      * The grids this host's LAST render mounted (grid name => true). A later render re-sends
@@ -483,12 +502,14 @@ trait WithLaraGrid
         $rows = (array) ($this->{$property} ?? []);
 
         $serverVersion = (int) ($this->laraGridVersions[$grid] ?? 0);
+        $this->captureBaseline($grid, $definition, $rows);
         $result = app(OpApplier::class)->apply($definition, $rows, $batch, $serverVersion);
         $this->laraGridVersions[$grid] = $result->version;
+        $applied = $this->trackRowChanges($grid, $definition, $result->rows, $result->inserted, $result->removed);
 
         // Write the authoritative rows back to the host property so save() + a possible re-render
         // read the applied state (cast values, recomputed formulas, row structure).
-        $this->{$property} = $result->rows;
+        $this->{$property} = $applied;
 
         // Drop Renderless when host chrome must refresh (G6) — see the method docblock: the
         // attribute hook already stored 'skipRender' BEFORE this method ran, so it must be
@@ -498,7 +519,58 @@ trait WithLaraGrid
             store($this)->unset('skipRender');
         }
 
-        return $result->toArray();
+        $wire = $result->toArray();
+
+        // Live grid-level validation (F5): one extra result entry, scoped 'rows', after the
+        // per-op results. It is appended even when empty — that is how the client learns the
+        // previous rows-scope messages are gone.
+        if ($definition->validatesRowsLive()) {
+            $messages = $this->runRowsValidator($definition, $this->keptRows($definition, $applied));
+            $seqs = array_map(fn ($op): int => $op->seq, $batch->ops);
+            $wire['results'][] = [
+                'seq' => $seqs === [] ? 0 : max($seqs),
+                'ok' => $messages === [],
+                'scope' => 'rows',
+                'patch' => [],
+                'errors' => $messages,
+            ];
+        }
+
+        return $wire;
+    }
+
+    /**
+     * The rows a save keeps (blank trailing rows dropped) with their `_k` and `_labels` still
+     * on — the row view a grid-level validator works on.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>>
+     */
+    protected function keptRows(Grid $definition, array $rows): array
+    {
+        $kept = count(app(RowSerializer::class)->cleanEditableRows($definition, $rows));
+
+        return array_slice(array_values($rows), 0, $kept);
+    }
+
+    /**
+     * Run the grid's ->validateRows() validator over kept rows and return its messages keyed
+     * [rowKey|'_grid'][column|'_row'] (empty when none is declared or nothing failed).
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return array<string, array<string, string>>
+     */
+    protected function runRowsValidator(Grid $definition, array $rows): array
+    {
+        $validator = $definition->getRowsValidator();
+        if ($validator === null) {
+            return [];
+        }
+
+        $context = new RowsContext($rows);
+        $validator($context);
+
+        return $context->messages();
     }
 
     /**
@@ -508,7 +580,7 @@ trait WithLaraGrid
      * new keys start from the definition's fresh-row template, and every writable value is run
      * through the normal OpApplier authorization/cast/validation/hooks/formula pipeline.
      *
-     * @param  array{baseVersion?: int, rows?: list<array<string, mixed>>}  $payload
+     * @param  array{baseVersion?: int, rows?: list<array<string, mixed>>, lookups?: list<string>}  $payload
      * @return array{version: int, results: list<array<string, mixed>>, footer: array<string, int|float|string>, rows: list<array<string, mixed>>}
      */
     #[Renderless]
@@ -549,6 +621,15 @@ trait WithLaraGrid
             }
         }
 
+        // Cells the browser pasted as a picker LABEL whose lookup was not acknowledged before the
+        // reload (F3): their draft value is still the label, so the SET must resolve it again.
+        $lookups = [];
+        foreach ((array) ($payload['lookups'] ?? []) as $cellKey) {
+            if (is_string($cellKey)) {
+                $lookups[$cellKey] = true;
+            }
+        }
+
         $rows = [];
         $ops = [];
         $seen = [];
@@ -577,7 +658,9 @@ trait WithLaraGrid
                     'col' => $column->key,
                     'v' => $raw[$column->key],
                 ];
-                if (isset($raw['_labels'][$column->key])) {
+                if (isset($lookups[$key."\x1F".$column->key])) {
+                    $op['lookup'] = true;
+                } elseif (isset($raw['_labels'][$column->key])) {
                     $op['label'] = (string) $raw['_labels'][$column->key];
                 }
                 $ops[] = $op;
@@ -585,15 +668,28 @@ trait WithLaraGrid
         }
 
         $batch = OpBatch::fromPayload(['baseVersion' => $serverVersion, 'ops' => $ops]);
+        $this->captureBaseline($grid, $definition, $currentRows);
         $result = app(OpApplier::class)->apply($definition, $rows, $batch, $serverVersion);
         $wire = $result->toArray();
-        $kept = app(RowSerializer::class)->cleanEditableRows($definition, $result->rows);
+        // The draft replaces the row set wholesale: rows it lacks were removed, keys it brings
+        // that the server lacked were inserted — the change set must see both (F6).
+        $restoredRows = $result->rows;
+        if ($definition->tracksChanges()) {
+            $restoredRows = $this->trackRowChanges(
+                $grid,
+                $definition,
+                $result->rows,
+                [...$result->inserted, ...array_keys(array_diff_key($seen, $current))],
+                [...$result->removed, ...array_values(array_diff_key($current, $seen))],
+            );
+        }
+        $kept = app(RowSerializer::class)->cleanEditableRows($definition, $restoredRows);
         $finalErrors = [];
         if (count($kept) < $definition->getMinRows()) {
             $finalErrors['_grid']['_row'] = 'At least '.$definition->getMinRows().' line(s) required.';
         }
         $compiler = app(RuleCompiler::class);
-        foreach (array_slice($result->rows, 0, count($kept)) as $row) {
+        foreach (array_slice($restoredRows, 0, count($kept)) as $row) {
             foreach ($this->validateGridRow($definition, $compiler, $row) as $key => $columnMessages) {
                 $finalErrors[(string) $row['_k']][$key] = $columnMessages[0];
             }
@@ -606,14 +702,24 @@ trait WithLaraGrid
                 'errors' => $finalErrors,
             ];
         }
+        if ($definition->getRowsValidator() !== null) {
+            $rowsMessages = $this->runRowsValidator($definition, array_slice($restoredRows, 0, count($kept)));
+            $wire['results'][] = [
+                'seq' => ++$seq,
+                'ok' => $rowsMessages === [],
+                'scope' => 'rows',
+                'patch' => [],
+                'errors' => $rowsMessages,
+            ];
+        }
         $this->laraGridVersions[$grid] = $result->version;
         if ($property !== null) {
-            $this->{$property} = $result->rows;
+            $this->{$property} = $restoredRows;
         }
 
         return [
             ...$wire,
-            'rows' => app(RowSerializer::class)->serializeMany($definition, $result->rows),
+            'rows' => app(RowSerializer::class)->serializeMany($definition, $restoredRows),
         ];
     }
 
@@ -780,6 +886,115 @@ trait WithLaraGrid
      */
     public function gridRows(string $grid): array
     {
+        return $this->validatedGridRows($grid)[2];
+    }
+
+    /**
+     * The change set of a tracked editable grid (->trackChanges(), F6) against its baseline —
+     * the rows the document held when the host last loaded or saved it.
+     *
+     * What: Validates exactly as gridRows() does (and throws the same ValidationException),
+     *       then sorts every kept row into `inserted` (not in the baseline), `updated` (in the
+     *       baseline with at least one changed cell, listed in `changes` as {from, to}) or
+     *       `unchanged`; `removed` lists baseline rows that are gone (or emptied) with their
+     *       baseline values; `reordered` says whether the baseline rows changed order and
+     *       `order` gives the kept row keys. Each `row` is a clean row, as gridRows() returns it.
+     *       Values compare after the column's cast, so a seeded 10.0 equals the applied '10.00'.
+     * Why:  An edit-existing-document screen must UPDATE, INSERT and DELETE lines, not rewrite
+     *       them all; without this the host cannot tell a deleted-then-undone line from a new one.
+     * When: In the host's save(); then markGridSaved() (or reseedGrid()) starts a new baseline.
+     *       Protected: host code calls it, the browser cannot.
+     *
+     * @return array{
+     *     inserted: list<array{key: string, row: array<string, mixed>}>,
+     *     updated: list<array{key: string, row: array<string, mixed>, changes: array<string, array{from: mixed, to: mixed}>}>,
+     *     removed: list<array{key: string, row: array<string, mixed>|null}>,
+     *     unchanged: list<array{key: string, row: array<string, mixed>}>,
+     *     reordered: bool,
+     *     order: list<string>,
+     * }
+     *
+     * @throws InvalidArgumentException When the grid is unknown, not editable, or untracked.
+     * @throws ValidationException When the rows fail validation (as gridRows()).
+     */
+    protected function gridChanges(string $grid): array
+    {
+        [$definition, $kept, $clean] = $this->validatedGridRows($grid);
+
+        if (! $definition->tracksChanges()) {
+            throw new InvalidArgumentException("Grid [{$grid}] does not track changes; declare ->trackChanges() on it.");
+        }
+
+        $serializer = app(RowSerializer::class);
+        $baselineKeys = $this->laraGridBaseline[$grid] ?? array_map(fn (array $row): string => (string) $row['_k'], $kept);
+        $baseline = array_flip($baselineKeys);
+        $changes = ['inserted' => [], 'updated' => [], 'removed' => [], 'unchanged' => [], 'reordered' => false, 'order' => []];
+
+        $present = [];
+        foreach ($kept as $index => $row) {
+            $key = (string) $row['_k'];
+            $present[$key] = true;
+            $changes['order'][] = $key;
+            if (! isset($baseline[$key])) {
+                $changes['inserted'][] = ['key' => $key, 'row' => $clean[$index]];
+
+                continue;
+            }
+            $cells = $this->changedCells($definition, $row);
+            if ($cells === []) {
+                $changes['unchanged'][] = ['key' => $key, 'row' => $clean[$index]];
+            } else {
+                $changes['updated'][] = ['key' => $key, 'row' => $clean[$index], 'changes' => $cells];
+            }
+        }
+
+        // Baseline rows no longer kept: removed, or emptied into a blank trailing row.
+        $property = $definition->getRowsProperty();
+        $hostRows = [];
+        foreach ($property !== null ? (array) ($this->{$property} ?? []) : [] as $row) {
+            $hostRows[(string) ($row['_k'] ?? '')] = $row;
+        }
+        $removed = $this->laraGridRemoved[$grid] ?? [];
+        foreach ($baselineKeys as $key) {
+            if (isset($present[$key])) {
+                continue;
+            }
+            $snapshot = $removed[$key] ?? (isset($hostRows[$key]) ? $this->originalRow($hostRows[$key]) : null);
+            $changes['removed'][] = ['key' => $key, 'row' => $snapshot === null ? null : $serializer->cleanRow($snapshot)];
+        }
+
+        $stillKept = array_values(array_filter($baselineKeys, fn (string $key): bool => isset($present[$key])));
+        $nowOrder = array_values(array_filter($changes['order'], fn (string $key): bool => isset($baseline[$key])));
+        $changes['reordered'] = $stillKept !== $nowOrder;
+
+        return $changes;
+    }
+
+    /**
+     * Start a new change-tracking baseline after the host saved without reseeding: the current
+     * kept rows become the baseline, their originals are forgotten and so are removed rows.
+     */
+    protected function markGridSaved(string $grid): void
+    {
+        $definition = $this->gridDefinition($grid);
+        if (! $definition->tracksChanges() || ($property = $definition->getRowsProperty()) === null) {
+            return;
+        }
+
+        $rows = $this->withoutOriginals((array) ($this->{$property} ?? []));
+        $this->{$property} = $rows;
+        $this->resetBaseline($grid, $definition, $rows);
+    }
+
+    /**
+     * The validation body gridRows() and gridChanges() share: minRows, the per-row rules and
+     * the grid-level validator, thrown as one ValidationException. Returns the definition, the
+     * kept host rows (with `_k`) and their clean twins.
+     *
+     * @return array{0: Grid, 1: list<array<string, mixed>>, 2: list<array<string, mixed>>}
+     */
+    protected function validatedGridRows(string $grid): array
+    {
         $definition = $this->gridDefinition($grid);
 
         if (! $definition->isEditable()) {
@@ -805,11 +1020,163 @@ trait WithLaraGrid
             }
         }
 
+        // Grid-level validation (F5): row keys map to the clean rows' indexes, so the host sees
+        // `lines.2.item_id` exactly as for a cell rule, `lines.2` for a row and `lines` for the grid.
+        $kept = array_slice(array_values($rows), 0, count($clean));
+        $indexByKey = [];
+        foreach ($kept as $index => $row) {
+            $indexByKey[(string) ($row['_k'] ?? '')] = $index;
+        }
+        foreach ($this->runRowsValidator($definition, $kept) as $rowKey => $columns) {
+            foreach ($columns as $column => $message) {
+                $index = $indexByKey[(string) $rowKey] ?? null;
+                $key = match (true) {
+                    $index === null => $grid,
+                    $column === '_row' => "{$grid}.{$index}",
+                    default => "{$grid}.{$index}.{$column}",
+                };
+                $messages[$key] = [...($messages[$key] ?? []), $message];
+            }
+        }
+
         if ($messages !== []) {
             throw ValidationException::withMessages($messages);
         }
 
-        return $clean;
+        return [$definition, $kept, $clean];
+    }
+
+    /**
+     * Take a tracked grid's baseline the first time an op batch or a draft restore runs before
+     * any mount/reseed set one: the rows on the server then are the document as loaded.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     */
+    protected function captureBaseline(string $grid, Grid $definition, array $rows): void
+    {
+        if ($definition->tracksChanges() && ! array_key_exists($grid, $this->laraGridBaseline)) {
+            $this->resetBaseline($grid, $definition, $rows);
+        }
+    }
+
+    /**
+     * Make `$rows`' kept keys the baseline and forget every removed-row snapshot.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     */
+    protected function resetBaseline(string $grid, Grid $definition, array $rows): void
+    {
+        $this->laraGridBaseline[$grid] = array_map(
+            fn (array $row): string => (string) ($row['_k'] ?? ''),
+            $this->keptRows($definition, $rows),
+        );
+        $this->laraGridRemoved[$grid] = [];
+    }
+
+    /**
+     * Fold a batch's structural ops into the change-tracking state: a removed baseline row is
+     * remembered with its original values; a row re-inserted under a remembered key (an undo of
+     * that remove) gets those values back as its originals, so it reads as unchanged once its
+     * cells are restored. Untracked grids pass through untouched.
+     *
+     * @param  list<array<string, mixed>>  $rows  The applied rows.
+     * @param  list<string>  $inserted
+     * @param  list<array<string, mixed>>  $removedRows
+     * @return list<array<string, mixed>>
+     */
+    protected function trackRowChanges(string $grid, Grid $definition, array $rows, array $inserted, array $removedRows): array
+    {
+        if (! $definition->tracksChanges()) {
+            return $rows;
+        }
+
+        $baseline = array_flip($this->laraGridBaseline[$grid] ?? []);
+        $removed = $this->laraGridRemoved[$grid] ?? [];
+        foreach ($removedRows as $row) {
+            $key = (string) ($row['_k'] ?? '');
+            if (isset($baseline[$key]) && ! isset($removed[$key])) {
+                $removed[$key] = $this->originalRow($row);
+            }
+        }
+
+        if ($inserted !== [] && $removed !== []) {
+            $returning = array_flip($inserted);
+            foreach ($rows as $index => $row) {
+                $key = (string) ($row['_k'] ?? '');
+                if (! isset($returning[$key], $removed[$key])) {
+                    continue;
+                }
+                $originals = [];
+                foreach ($definition->getColumns() as $column) {
+                    if ($column->isWritable()) {
+                        $originals[$column->key] = $removed[$key][$column->key] ?? null;
+                    }
+                }
+                $rows[$index]['_orig'] = $originals;
+                unset($removed[$key]);
+            }
+        }
+
+        $this->laraGridRemoved[$grid] = $removed;
+
+        return $rows;
+    }
+
+    /**
+     * A host row as it was at the baseline: every `_orig` value put back, `_orig` dropped.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    protected function originalRow(array $row): array
+    {
+        foreach ((array) ($row['_orig'] ?? []) as $key => $value) {
+            $row[$key] = $value;
+        }
+        unset($row['_orig']);
+
+        return $row;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>>
+     */
+    protected function withoutOriginals(array $rows): array
+    {
+        return array_map(function (array $row): array {
+            unset($row['_orig']);
+
+            return $row;
+        }, $rows);
+    }
+
+    /**
+     * The cells of a kept baseline row whose value differs from its original, compared after
+     * the column's cast (a seeded 10.0 and the applied '10.00' are the same decimal).
+     *
+     * @param  array<string, mixed>  $row
+     * @return array<string, array{from: mixed, to: mixed}>
+     */
+    protected function changedCells(Grid $definition, array $row): array
+    {
+        $casts = app(CastRegistry::class);
+        $cells = [];
+        foreach ((array) ($row['_orig'] ?? []) as $key => $original) {
+            $column = $definition->column((string) $key);
+            if ($column === null) {
+                continue;
+            }
+            $spec = $column->parseSpec();
+            $kind = (string) ($spec['kind'] ?? 'text');
+            $from = $casts->cast($kind, $original, $spec, $column);
+            $to = $casts->cast($kind, $row[$key] ?? null, $spec, $column);
+            if ($from !== $to) {
+                $cells[(string) $key] = ['from' => $from, 'to' => $to];
+            }
+        }
+
+        return $cells;
     }
 
     /**
@@ -923,6 +1290,12 @@ trait WithLaraGrid
             $rows[] = $definition->makeNewRow('l'.bin2hex(random_bytes(4)));
         }
 
+        // A fresh document has no baseline: every row it gains is an insert (F6).
+        if ($definition->tracksChanges()) {
+            $this->laraGridBaseline[$grid] = [];
+            $this->laraGridRemoved[$grid] = [];
+        }
+
         return $rows;
     }
 
@@ -983,6 +1356,16 @@ trait WithLaraGrid
         $footer = [];
         foreach ($definition->getFooter() as $aggregate) {
             $footer[$aggregate->column] = $aggregate->compute($serialized);
+        }
+
+        // Change tracking (F6): the reseeded rows are the document as loaded — a new baseline,
+        // with the bound property's originals forgotten.
+        if ($definition->isEditable() && $definition->tracksChanges()) {
+            $property = $definition->getRowsProperty();
+            if ($property !== null) {
+                $this->{$property} = $this->withoutOriginals((array) ($this->{$property} ?? []));
+            }
+            $this->resetBaseline($grid, $definition, $this->withoutOriginals($rows));
         }
 
         $this->laraGridVersions[$grid] = 0;

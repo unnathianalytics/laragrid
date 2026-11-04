@@ -13,6 +13,7 @@ use LaraGrid\Columns\Column;
 use LaraGrid\Columns\ComputedColumn;
 use LaraGrid\Columns\SearchSelectColumn;
 use LaraGrid\Editing\RowContext;
+use LaraGrid\Editing\RowsContext;
 use LaraGrid\Export\ExporterRegistry;
 use LaraGrid\Filters\Filter;
 
@@ -117,6 +118,13 @@ class Grid
      * @var (Closure(mixed, array<string, mixed>, string): (string|null))|null
      */
     protected ?Closure $cellClassResolver = null;
+
+    /**
+     * Declarative conditional row classes (->rowClassWhen()): list of {column, in, class}.
+     *
+     * @var list<array{column: string, in: list<string>, class: string}>
+     */
+    protected array $rowClassWhen = [];
 
     // ---- Readonly (server-data) mode — M3 ------------------------------------------------
 
@@ -275,6 +283,19 @@ class Grid
      * @var (Closure(): void)|null
      */
     protected ?Closure $afterRowRemoveHook = null;
+
+    /**
+     * Optional grid-level validator (->validateRows()): fn(RowsContext $rows): void.
+     *
+     * @var (Closure(RowsContext): void)|null
+     */
+    protected ?Closure $rowsValidator = null;
+
+    /** Whether the grid-level validator also runs after every gridOps batch. */
+    protected bool $rowsValidatorLive = false;
+
+    /** Whether the host tracks a change set for this grid (->trackChanges(), F6). */
+    protected bool $trackChanges = false;
 
     // ---- P6 chained behaviors (zero-blade-config surface) --------------------------------
 
@@ -622,6 +643,39 @@ class Grid
         $this->cellClassResolver = $resolver;
 
         return $this;
+    }
+
+    /**
+     * Add `$class` to the row element on every row whose `$column` value is one of `$values` —
+     * the row-level twin of a column's ->classWhen(). Evaluated client-side, so the class follows
+     * the controlling value as the operator types. Repeatable; every match applies.
+     *
+     * @param  string|array<int, string>  $values
+     * @param  string  $class  One or more space-separated host classes (never `lgrid-*`).
+     */
+    public function rowClassWhen(string $column, string|array $values, string $class): static
+    {
+        $this->rowClassWhen[] = [
+            'column' => $column,
+            'in' => array_values(array_map(fn ($value): string => (string) $value, (array) $values)),
+            'class' => trim($class),
+        ];
+
+        return $this;
+    }
+
+    /**
+     * @return list<array{column: string, in: list<string>, class: string}>
+     */
+    public function getRowClassWhen(): array
+    {
+        return $this->rowClassWhen;
+    }
+
+    /** Whether a rowClass() or cellClass() closure is declared (op patches then refresh them). */
+    public function hasClassResolvers(): bool
+    {
+        return $this->rowClassResolver !== null || $this->cellClassResolver !== null;
     }
 
     // ---- Readonly (server-data) fluent surface — M3 -------------------------------------
@@ -1005,6 +1059,42 @@ class Grid
         $this->afterRowRemoveHook = $hook;
 
         return $this;
+    }
+
+    /**
+     * Grid-level validation (F5): a validator that sees the whole kept row set at once —
+     * fn(RowsContext $rows): void, reporting through $rows->error() / $rows->unique(). It runs
+     * on save (gridRows / gridChanges) and draft restore; with `live: true` it also runs after
+     * every op batch and its messages ride the op response, so Save stays disabled while any
+     * stands.
+     *
+     * @param  Closure(RowsContext): void  $validator
+     */
+    public function validateRows(Closure $validator, bool $live = false): static
+    {
+        $this->rowsValidator = $validator;
+        $this->rowsValidatorLive = $live;
+
+        return $this;
+    }
+
+    /**
+     * Track a change set (F6): the applier remembers each edited cell's original value (`_orig`
+     * on the host rows, never sent to the browser) and the trait remembers the baseline row
+     * order and every removed baseline row, so WithLaraGrid::gridChanges() can report inserted,
+     * updated, removed and unchanged rows and whether the order changed. Off by default: an
+     * untracked grid keeps today's row shape and snapshot size.
+     */
+    public function trackChanges(bool $track = true): static
+    {
+        $this->trackChanges = $track;
+
+        return $this;
+    }
+
+    public function tracksChanges(): bool
+    {
+        return $this->trackChanges;
     }
 
     // ---- P6 fluent surface ----------------------------------------------------------------
@@ -1448,6 +1538,19 @@ class Grid
     }
 
     /**
+     * @return (Closure(RowsContext): void)|null
+     */
+    public function getRowsValidator(): ?Closure
+    {
+        return $this->rowsValidator;
+    }
+
+    public function validatesRowsLive(): bool
+    {
+        return $this->rowsValidator !== null && $this->rowsValidatorLive;
+    }
+
+    /**
      * Resolve a column by its key, or null when the grid has no such column. Used by the OpApplier
      * to look up a column's cast/rules/write-policy for an incoming op.
      */
@@ -1833,6 +1936,8 @@ class Grid
             );
         }
 
+        $this->assertClassWhenValid($keySet);
+
         if ($this->editable && $this->isServerSide()) {
             throw new InvalidArgumentException(
                 "Grid [{$this->name}] cannot be both editable() and server-side query(); pick one mode."
@@ -1850,6 +1955,42 @@ class Grid
         $this->assertActionsValid();
         $this->assertSortableValid();
         $this->assertPaginationValid();
+    }
+
+    /**
+     * classWhen()/rowClassWhen() declarations: the controlling column must be declared (a typo
+     * would leave the class permanently off), and each class must be a non-empty host class —
+     * `lgrid-*` is the engine's namespace, and a dynamic swap would strip an engine state class.
+     *
+     * @param  array<string, int>  $keySet
+     */
+    protected function assertClassWhenValid(array $keySet): void
+    {
+        $declarations = array_map(fn (array $rule): array => ['rowClassWhen()', $rule], $this->rowClassWhen);
+        foreach ($this->columns as $column) {
+            foreach ($column->getClassWhen() as $rule) {
+                $declarations[] = ["column [{$column->key}] classWhen()", $rule];
+            }
+        }
+
+        foreach ($declarations as [$where, $rule]) {
+            if (! isset($keySet[$rule['column']])) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] {$where} references unknown column [{$rule['column']}]."
+                );
+            }
+            $tokens = preg_split('/\s+/', $rule['class'], -1, PREG_SPLIT_NO_EMPTY) ?: [];
+            if ($tokens === []) {
+                throw new InvalidArgumentException("Grid [{$this->name}] {$where} declares an empty class.");
+            }
+            foreach ($tokens as $token) {
+                if (str_starts_with($token, 'lgrid-')) {
+                    throw new InvalidArgumentException(
+                        "Grid [{$this->name}] {$where} class [{$token}] uses the reserved lgrid- prefix."
+                    );
+                }
+            }
+        }
     }
 
     /**
@@ -2135,6 +2276,18 @@ class Grid
             if ($this->defaultRows > 0 || $this->newRowUsing !== null) {
                 throw new InvalidArgumentException(
                     "Grid [{$this->name}] declares defaultRows()/newRowUsing() but is not editable()."
+                );
+            }
+
+            if ($this->rowsValidator !== null) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] declares validateRows() but is not editable()."
+                );
+            }
+
+            if ($this->trackChanges) {
+                throw new InvalidArgumentException(
+                    "Grid [{$this->name}] declares trackChanges() but is not editable()."
                 );
             }
 

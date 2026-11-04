@@ -6,6 +6,7 @@ namespace LaraGrid\Columns;
 
 use LaraGrid\Columns\Concerns\CanEdit;
 use LaraGrid\Columns\Concerns\HasAlignment;
+use LaraGrid\Columns\Concerns\HasConditionalClasses;
 use LaraGrid\Columns\Concerns\HasFormat;
 use LaraGrid\Columns\Concerns\HasWidth;
 use LaraGrid\Filters\Filter;
@@ -29,6 +30,7 @@ abstract class Column
 {
     use CanEdit;
     use HasAlignment;
+    use HasConditionalClasses;
     use HasFormat;
     use HasWidth;
 
@@ -480,6 +482,7 @@ abstract class Column
         if ($this->filter !== null) {
             $fragment['filter'] = $this->filter->toArray();
         }
+        $fragment += $this->serializeClassWhen();
 
         // Omitted for the common case so existing serialized configurations stay compact.
         if ($this->hiddenByDefault && $this->visible) {

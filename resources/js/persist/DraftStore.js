@@ -148,6 +148,8 @@ export default class DraftStore {
             seqCounter: this.store.seqCounter,
             version: this.store.version,
             queue: this.sync.snapshotQueue(),
+            // Pasted picker labels the server has not resolved yet (F3) — only while one is.
+            ...(this.store.lookups.size > 0 ? { lookups: [...this.store.lookups.keys()] } : {}),
         };
     }
 
@@ -223,10 +225,11 @@ export default class DraftStore {
                     error.retryable = false;
                     throw error;
                 }
-                const response = await this.sync.wire.gridRestoreDraft(this.store.name, {
-                    baseVersion: this.store.version,
-                    rows: draft.rows || [],
-                });
+                const payload = { baseVersion: this.store.version, rows: draft.rows || [] };
+                if (Array.isArray(draft.lookups) && draft.lookups.length > 0) {
+                    payload.lookups = draft.lookups;
+                }
+                const response = await this.sync.wire.gridRestoreDraft(this.store.name, payload);
                 this.applyServerRestore(response || {}, draft);
             });
         } finally {
@@ -251,7 +254,15 @@ export default class DraftStore {
         for (const result of response.results || []) {
             for (const [rowKey, columns] of Object.entries(result.errors || {})) {
                 for (const [colKey, message] of Object.entries(columns || {})) {
-                    this.store.errors.set(this.store.errorKey(rowKey, colKey), message);
+                    const key = this.store.errorKey(rowKey, colKey);
+                    if (result.scope === 'rows' && this.store.errors.has(key)) {
+                        continue; // a cell/row rule already reports here
+                    }
+                    this.store.errors.set(key, message);
+                    if (result.scope === 'rows') {
+                        // Grid-level messages: the next live `scope: 'rows'` result replaces them.
+                        this.store.rowsScopedErrors.add(key);
+                    }
                 }
             }
         }
