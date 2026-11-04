@@ -193,11 +193,13 @@ export function parseDate(raw, spec) {
 }
 
 /**
- * The cast registry: kind → {parse(raw, spec), editText?(value, spec), refusal?}. Core kinds
- * mirror LaraGrid\Casting\CastRegistry; registerCast() adds app kinds (e.g. an accounting app's
- * 'paise'). `editText` is optional — kinds whose model value isn't its own editing text
- * (dates, booleans, scaled money) supply one; others fall back to String(value). `refusal` is
- * the cell message shown when parse returns the `undefined` sentinel (see refusalMessage()).
+ * The cast registry: kind → {parse(raw, spec), editText?(value, spec), refusal?, arithmetic?}.
+ * Core kinds mirror LaraGrid\Casting\CastRegistry; registerCast() adds app kinds (e.g. an
+ * accounting app's 'paise'). `editText` is optional — kinds whose model value isn't its own
+ * editing text (dates, booleans, scaled money) supply one; others fall back to String(value).
+ * `refusal` is the cell message shown when parse returns the `undefined` sentinel (see
+ * refusalMessage()). `arithmetic: true` says the parse evaluates calculator entry (through
+ * evaluateArithmetic()), so the number editor lets the operator type `+ - * / ( ) =`.
  */
 const CASTS = {
     text: {
@@ -206,10 +208,12 @@ const CASTS = {
     int: {
         parse: (raw) => parseInt10(raw),
         refusal: 'Not a valid number or expression.',
+        arithmetic: true,
     },
     decimal: {
         parse: (raw, spec) => parseDecimal(raw, Math.max(0, parseInt(spec && spec.scale, 10) || 0)),
         refusal: 'Not a valid number or expression.',
+        arithmetic: true,
     },
     select: {
         parse: (raw) => parseSelect(raw),
@@ -238,7 +242,7 @@ const CASTS = {
  * client value agrees with the authoritative server cast; pin the pair with a shared vector.
  *
  * @param {string} kind
- * @param {{parse: (raw: *, spec: object) => *, editText?: (value: *, spec: object) => string, refusal?: string}} cast
+ * @param {{parse: (raw: *, spec: object) => *, editText?: (value: *, spec: object) => string, refusal?: string, arithmetic?: boolean}} cast
  */
 export function registerCast(kind, cast) {
     CASTS[kind] = cast;
@@ -256,6 +260,20 @@ export function parseValue(spec, raw) {
     const kind = (spec && spec.kind) || 'text';
     const cast = CASTS[kind] || CASTS.text;
     return cast.parse(raw, spec || {});
+}
+
+/**
+ * Whether a column's parse kind evaluates calculator entry: the core int/decimal kinds, or an
+ * app kind registered with `arithmetic: true`. The number editor accepts `+ - * / ( ) =` only
+ * then — any other kind (an app's 'paise' that never evaluates) keeps the plain number keys,
+ * so `1250*12` can never be typed into a cell that would silently store 0.
+ *
+ * @param {{kind?: string}|null|undefined} spec
+ * @returns {boolean}
+ */
+export function acceptsArithmetic(spec) {
+    const cast = CASTS[(spec && spec.kind) || 'text'];
+    return !!(cast && cast.arithmetic);
 }
 
 /**

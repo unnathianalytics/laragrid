@@ -1801,6 +1801,29 @@ export default class StateStore {
     }
 
     /**
+     * Whether a picker column already holds `value` as an id on some row, and that row's label
+     * for it — how a paste recognises an id copied from the grid itself. Rows whose value is an
+     * unresolved paste-by-label text never count.
+     *
+     * @param {string} colKey
+     * @param {string} value
+     * @returns {{label: string|null}|null}
+     */
+    knownPick(colKey, value) {
+        for (const row of this.rows) {
+            if (row[colKey] == null || String(row[colKey]) !== value) {
+                continue;
+            }
+            if (this.lookups.size > 0 && this.lookups.has(cellMapKey(row._k, colKey))) {
+                continue;
+            }
+            const label = row._labels ? row._labels[colKey] : undefined;
+            return { label: label == null ? null : label };
+        }
+        return null;
+    }
+
+    /**
      * Track (seq) or forget (null) a cell's unresolved paste-by-label lookup. A later plain
      * write to the cell supersedes the lookup, so every commit calls this.
      *

@@ -483,8 +483,19 @@ export default class EditorManager {
         let label = null;
 
         // Server-mode picker: the client never guesses an id — the server resolves the label.
+        // A value this column already holds (an id copied from the grid itself — copy writes
+        // ids) is staged as that id with its known label, as before paste by label existed.
         if (this.isPickerColumn(column) && column.optionsMode === 'server') {
             const needle = String(raw == null ? '' : raw).trim();
+            const known = needle === '' ? null : this.store.knownPick(colKey, needle);
+            if (known) {
+                const staged = this.commitCell(rowKey, colKey, column, {
+                    parsed: needle,
+                    wireValue: needle,
+                    label: known.label,
+                }, { enqueue: false });
+                return { ok: true, op: staged.op, cells: staged.cells };
+            }
             if (needle !== '') {
                 const staged = this.commitCell(rowKey, colKey, column, {
                     parsed: needle,

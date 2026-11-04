@@ -27,7 +27,7 @@ import GridCore from './core/GridCore.js';
 import { registerPainter } from './render/CellPainters.js';
 import { registerEditor } from './edit/EditorRegistry.js';
 import { registerFormatter } from './format/formatters.js';
-import { registerCast } from './format/parse.js';
+import { registerCast, evaluateArithmetic } from './format/parse.js';
 import { el } from './util/dom.js';
 
 /** Every live mount: root element → GridCore. Iterable so removals can be matched. */
@@ -333,6 +333,9 @@ export const LaraGrid = {
     registerEditor,
     registerFormatter,
     registerCast,
+    // Calculator entry for an app cast (`registerCast(kind, {parse, arithmetic: true})`):
+    // returns the number, null (not an expression) or undefined (malformed — refuse).
+    evaluateArithmetic,
 };
 
 if (typeof window !== 'undefined') {

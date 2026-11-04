@@ -64,6 +64,7 @@ An editable entry grid — typed cell editors, ERP cell focus control (`FocusMod
 - [Troubleshooting](#troubleshooting)
 - [Testing](#testing)
 - [License](#license)
+- [What's new](#whats-new)
 
 ## The three modes
 
@@ -548,6 +549,9 @@ cell ("No option matches …" / "… matches 2 options; pick it from the list.")
 The match is made before `->limit()` cuts the list, but only among the rows the closure returns, so
 the closure must filter by the term. The `$row` the closure receives is the row after the earlier
 cells of the same paste, so a pasted D/C side applies to the account pasted beside it.
+A copy from an editable grid writes picker cells as ids. When a pasted text is an id that the
+column already holds on another row, the grid uses that id and its label at once, with no server
+lookup `[v1.46.1+]`. For ids pasted from elsewhere, let the closure also match an exact id.
 
 ## Display-only mode
 
@@ -1199,6 +1203,36 @@ authority. Every PHP formatter/cast you register must have a behaviourally ident
 under the same name, pinned by a shared vector in `tests/fixtures/grid-vectors/` (the package's
 own suite runs 142 vectors through both runtimes on every build).
 
+**Calculator entry in your own numeric kind** `[v1.46.1+]`. The core `int` and `decimal` kinds
+evaluate `1250*12`. An app kind (for example `paise`) does not, so the number editor refuses
+`+ * / ( ) =` in its cells. To give your kind calculator entry, evaluate first in both twins and
+register the JS twin with `arithmetic: true`:
+
+```php
+public function cast(mixed $value, array $spec, Column $column): int
+{
+    try {
+        $number = \LaraGrid\Casting\Arithmetic::evaluate($value); // null = not an expression
+    } catch (\InvalidArgumentException) {
+        return 0;                                                  // malformed: `1+`
+    }
+    // …use $number when it is not null, else parse $value as before.
+}
+```
+
+```js
+LG.registerCast('paise', {
+    parse: (raw) => {
+        const number = LG.evaluateArithmetic(raw); // number, null (not an expression), undefined (malformed)
+        if (number === undefined) {
+            return undefined;                      // the editor refuses the commit
+        }
+        // …use number when it is not null, else parse raw as before.
+    },
+    arithmetic: true,                              // the number editor accepts + - * / ( ) =
+});
+```
+
 ## Host events
 
 Grid → host (bubbling DOM events): `lgrid:complete` (entry finished), `lgrid:activate`
@@ -1247,3 +1281,95 @@ Livewire::test(BookingEntry::class)
 ## License
 
 MIT © Unnathi Analytics
+
+## What's new
+
+The main features and fixes of each release, newest first.
+
+### v1.46.1 — 2026-11-04
+
+- Fix: the number editor accepts `+ * / ( ) =` only in cells whose cast evaluates calculator
+  entry (the core `int` and `decimal` kinds). In 1.46.0 an app kind such as `paise` also accepted
+  them, and `1250*12` committed `0`. An app kind can opt in: `registerCast(kind, {parse,
+  arithmetic: true})` with the new `LaraGrid.evaluateArithmetic()` (see *Extending*).
+- Fix: pasting a picker id copied from the same grid works again. A pasted id that the column
+  already holds is used with its label; in 1.46.0 it went to the server as a label and could be
+  refused.
+
+### v1.46.0 — 2026-11-04
+
+- **Calculator entry** in `IntegerColumn` and `DecimalColumn`: type `1250*12`, `(2+3)*4` or
+  `=100*1.18` and the cell commits the result. A malformed entry (`1+`) keeps the editor open
+  with a message.
+- **Live conditional classes:** `->classWhen('col', values, 'class')` on a column and
+  `->rowClassWhen('col', values, 'class')` on the grid. The class changes as the operator types.
+  The `rowClass()` and `cellClass()` closures now refresh after every cell write and fill.
+- **Paste by label** into a server-mode `SearchSelectColumn`: the server finds the id through
+  `optionsUsing()` and runs `onSelect()`. A label with no match or more than one match is
+  flagged and never stored as an id.
+- **Row move:** `Alt+ArrowUp` / `Alt+ArrowDown` and a drag on the serial gutter. `Ctrl+Z` undoes
+  a move.
+- **Grid-level validation:** `->validateRows(fn (RowsContext $rows), live: false)` with
+  `unique()` and `error()` at grid, row or cell scope. It runs on save and on draft restore; with
+  `live: true` it also runs after every batch and blocks Save while a message stands.
+- **Change sets:** `->trackChanges()` with `gridChanges()` reports inserted, updated (with
+  from/to values), removed and unchanged rows, and whether the order changed. A deleted and then
+  undone row counts as unchanged. `markGridSaved()` starts a new baseline.
+- Fix: the browser now rounds a whole number the same way as the server (`-2.5` gives `-3`).
+
+### v1.45.1 — 2026-10-23
+
+- Fix: a `public/vendor/laragrid` copy published by an older release is no longer served. The
+  copy must carry the current version stamp; otherwise the package route serves the current
+  bundle.
+
+### v1.45.0 — 2026-10-23
+
+- **Faster renders and queries:** a host re-render sends a light shell for grids the browser
+  already shows (no rows, no queries); one aggregate query per fetch; relation columns are
+  eager-loaded.
+- **Faster saves:** one validator per row instead of one per cell, with the same messages; a
+  draft restore now takes time in proportion to its size (2,000 rows restore quickly).
+- **Faster browser:** smoother virtual scrolling, large pastes inserted in one pass, and fewer
+  draft writes.
+- **Streamed exports:** XLSX and PDF exports stream, and large exports page by key.
+- **Smaller downloads:** `.br` and `.gz` bundles are served with the right encoding, and a
+  published `public/vendor/laragrid` copy is used automatically. The ESM bundle
+  (`dist/laragrid.esm.js`) is no longer shipped.
+- Fixes: the `Delete` key and fill-down (`Ctrl+D`) skip locked cells.
+
+### v1.44.0 — 2026-10-17
+
+- **Copy with headers:** after `Ctrl+A`, `Ctrl+C` puts the column labels on the first row
+  (grouped headers on two rows). A paste skips that header row, so a copy and paste between
+  grids stays data only.
+
+### v1.43.0 — 2026-10-13
+
+- **`SearchSelectColumn::optionsDependOn([...])`:** the option cache keys on the typed term and
+  the listed row values, so an `optionsUsing()` closure that reads the row (a D/C side, a party)
+  shows the right list on every row.
+
+### v1.42.0 — 2026-09-13
+
+- Fix: row, cell and footer borders stay correct at browser zoom levels other than 100%, and
+  virtual scrolling keeps the same row spacing.
+
+### v1.41.0 — 2026-08-28
+
+- **`->fitColumns()`:** every visible column fits inside the grid, with no horizontal
+  scrollbar. Column widths act as relative weights.
+
+### v1.40.0 — 2026-08-23
+
+- **Reliable sync:** one request in flight, retry with backoff, a pause while offline, and a
+  clear message when another request changed the grid first.
+- **Draft recovery:** `->persistDraft('local', key)` keeps rows, queued edits, errors and the
+  active cell in IndexedDB. After a reload the operator can restore or discard them.
+- **Safe save:** `grid.commitAndSave('save')`, `whenSettled()`, `markSaved()` and the
+  `lgrid:statechange` event. Every editable grid warns before the operator leaves with unsaved
+  changes.
+- **Error review:** the footer lists every validation message by row and column. `Ctrl+E` jumps
+  to an error, and the footer's previous/next buttons step through them.
+- **Row virtualization:** above 750 rows (`virtualize_above`, or `->virtualizeRowsAbove(n)`) only
+  the visible rows are in the page.

@@ -5,7 +5,8 @@
  *   1. pasteCell on a server-mode picker stages a `lookup` op carrying the trimmed text and no
  *      label, paints the text as a provisional label, and tracks the cell in store.lookups; a
  *      client-mode picker keeps its option-list mapping.
- *   2. A paste announces how many cells went to the server for a lookup.
+ *   2. A paste announces how many cells went to the server for a lookup; an id the column
+ *      already holds (a copy from the grid itself) is staged as that id with its label.
  *   3. The resolved answer to the newest lookup clears it and adopts the id and label; an older
  *      answer does not clear a newer lookup; a refused lookup stays tracked (a reload resolves
  *      it again); a later plain write supersedes the lookup.
@@ -101,6 +102,20 @@ await scenario('a server-mode picker paste stages a lookup op and a provisional 
     assert.equal(client.op.v, 'C', 'a client-mode picker maps the label locally');
     assert.equal(client.op.label, 'Cr');
     assert.equal(client.op.lookup, undefined);
+});
+
+await scenario('an id the column already holds is staged as that id, not looked up', () => {
+    const r = rig();
+    const result = r.editor.pasteCell('r2', 'account_id', COLUMNS[0], ' old ');
+    assert.equal(result.lookup, undefined);
+    assert.deepEqual({ v: result.op.v, label: result.op.label, lookup: result.op.lookup }, { v: 'old', label: 'Old Account', lookup: undefined });
+    assert.equal(r.store.rowByKey.get('r2').row._labels.account_id, 'Old Account');
+    assert.equal(r.store.lookups.size, 0);
+
+    // A row holding unresolved pasted text never vouches for an id.
+    r.editor.pasteCell('r1', 'account_id', COLUMNS[0], 'Cement 50kg');
+    const second = r.editor.pasteCell('r2', 'account_id', COLUMNS[0], 'Cement 50kg');
+    assert.equal(second.op.lookup, true);
 });
 
 await scenario('a paste announces the cells looked up on the server', () => {

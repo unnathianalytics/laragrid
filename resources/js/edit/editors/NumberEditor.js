@@ -1,9 +1,10 @@
 /**
  * What: The numeric floating editor — a right-aligned text input constrained to numeric entry
- *       (digits, decimal points, grouping commas and spaces the parser strips) plus calculator
- *       entry (`+ - * / ( )` and a leading `=`, evaluated by parse.js evaluateArithmetic). Used
- *       for Integer/Decimal/Qty/Amount columns; the column's parse spec (int/decimal/paise) decides
- *       the final cast in the EditorManager.
+ *       (digits, decimal points, a minus, grouping commas). When the column's parse kind
+ *       evaluates calculator entry (core int/decimal, or an app kind registered with
+ *       `arithmetic: true`) it also accepts `+ * / ( ) =` and spaces. Used for
+ *       Integer/Decimal/Qty/Amount columns; the column's parse spec decides the final cast in
+ *       the EditorManager.
  * Why:  Numbers are typed as text (a masked <input type=text>, not type=number) so grouping commas,
  *       partial input, and paste behave predictably and the SAME parse.js path casts them — the
  *       type=number spinner + locale parsing would fight the Indian grouping + paise model (plan G2).
@@ -11,6 +12,13 @@
  * When: Registered as editor id 'number'.
  */
 import { el } from '../../util/dom.js';
+import { acceptsArithmetic } from '../../format/parse.js';
+
+/** Typed characters a plain number cell accepts (digits, point, minus, grouping comma). */
+const NUMBER_KEYS = /^[0-9.,\-]+$/;
+
+/** Typed characters a calculator-entry cell accepts (NUMBER_KEYS plus `+ * / ( ) =` and spaces). */
+const CALCULATOR_KEYS = /^[0-9.,\-+*/()=\s]+$/;
 
 export default class NumberEditor {
     /**
@@ -25,12 +33,14 @@ export default class NumberEditor {
         this.input.setAttribute('autocomplete', 'off');
         this.input.value = ctx.initialText != null ? String(ctx.initialText) : '';
 
-        // Reject characters that can't be part of a number-with-grouping or a calculator entry.
+        // Reject characters that can't be part of a number-with-grouping (or, where the cast
+        // evaluates it, a calculator entry).
+        const allowed = acceptsArithmetic(this.column && this.column.parse) ? CALCULATOR_KEYS : NUMBER_KEYS;
         this.onBeforeInput = (e) => {
             if (e.data == null) {
                 return; // deletions/compositions
             }
-            if (!/^[0-9.,\-+*/()=\s]+$/.test(e.data)) {
+            if (!allowed.test(e.data)) {
                 e.preventDefault();
             }
         };
